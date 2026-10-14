@@ -3,9 +3,9 @@ import cookieParser from 'cookie-parser';
 import { randomBytes, randomUUID, createHash, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import { complete, modelConfig } from './model.mjs';
+import { buildCompletionBody, complete, modelConfig } from './model.mjs';
 import { emptyLevel, levelSchema, seedLevels, compilePrompt, playerLevel, validatePlayable } from './levels.mjs';
-import { addPassportRoutes } from './passport-reference.mjs';
+import { addPassportRoutes, passportContext, passportScenarioForVersion } from './passport-reference.mjs';
 import { addOrchestrationRoutes } from './orchestration.mjs';
 import { addCollectionRoutes, createCollectionModelServices } from './collections.mjs';
 const scrypt = promisify(scryptCallback);
@@ -137,7 +137,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (!results[0].changes) fail(409, 'This collection is no longer accepting attempts. Retry with the same start key if the attempt was already accepted.');
         return { ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', roundId)), accessToken: raw };
     };
-    app.get('/api/bootstrap', async (req, res) => res.json({ needsSetup: !await get('SELECT id FROM users LIMIT 1'), privateEntry: Boolean(ownerKey), user: publicUser(req.user), tutorialDone: Boolean(req.user && await get('SELECT user_id FROM onboarding WHERE user_id = ? AND version >= ?', req.user.id, 1)), model: { model: provider.model, connected: Boolean(provider.apiKey), provider: new URL(provider.baseUrl).hostname } }));
+    app.get('/api/bootstrap', async (req, res) => res.json({ needsSetup: !await get('SELECT id FROM users LIMIT 1'), privateEntry: Boolean(ownerKey), user: publicUser(req.user), tutorialDone: Boolean(req.user && await get('SELECT user_id FROM onboarding WHERE user_id = ? AND version >= ?', req.user.id, 1)), model: { ...(req.user ? { model: provider.model, provider: new URL(provider.baseUrl).hostname } : {}), connected: Boolean(provider.apiKey) } }));
     app.put('/api/tutorial', member, async (req, res) => {
         const { result } = z.object({ result: z.enum(['completed', 'skipped']) }).parse(req.body);
         await run('INSERT INTO onboarding VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET version = excluded.version, result = excluded.result, completed_at = excluded.completed_at', req.user.id, 1, result, Date.now());
@@ -482,6 +482,29 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const assignment = await get('SELECT source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
         if (assignment?.source === 'participant') fail(403, 'Participant attempts do not expose their protection prompt.');
         const messages = JSON.parse(row.messages).filter(m => ['user', 'assistant'].includes(m.role));
+        if (assignment?.source === 'preview') {
+            const config = JSON.parse(row.config), data = JSON.parse(row.data);
+            const latest = await get('SELECT status, started_at, completed_at, latency_ms, error_code, request_context FROM difficulty_provider_calls WHERE round_id = ? ORDER BY started_at DESC, id DESC LIMIT 1', row.id);
+            const frozenConfig = { model: config.model, baseUrl: config.baseUrl, reasoningEffort: config.reasoningEffort || 'low', temperature: data.temperature };
+            if (latest) return res.json({
+                kind: 'collection-preview-request', source: 'preview', roundId: row.id, frozenConfig,
+                latestCall: { status: latest.status, startedAt: latest.started_at, completedAt: latest.completed_at, latencyMs: latest.latency_ms, errorCode: latest.error_code, requestContext: latest.request_context ? JSON.parse(latest.request_context) : null },
+                prospective: null,
+            });
+            let system = await collectionModels.systemForRound(row) || compilePrompt(data);
+            const passportScenario = passportScenarioForVersion(row.version_id, researchWorlds);
+            if (passportScenario) {
+                const desk = await get('SELECT state FROM passport_sessions WHERE round_id = ?', row.id);
+                if (desk) system += `\n\nVERIFIED DESK OBSERVATIONS\n${passportContext(JSON.parse(desk.state), passportScenario)}`;
+            }
+            return res.json({
+                kind: 'collection-preview-request', source: 'preview', roundId: row.id, frozenConfig, latestCall: null,
+                prospective: {
+                    status: 'not_sent', explanation: 'No provider request has been sent. This prospective context uses the saved transcript and desk state now; a future player message is not included.',
+                    requestContext: { baseUrl: config.baseUrl, body: buildCompletionBody({ config, system, messages, temperature: data.temperature }) },
+                },
+            });
+        }
         const lastQuestion = messages.findLast(m => m.role === 'user');
         res.json({ system: (await collectionModels.systemForRound(row) || compilePrompt(JSON.parse(row.data))) + (lastQuestion?.deskContext ? `\n\nVERIFIED DESK OBSERVATIONS\n${lastQuestion.deskContext}` : ''), config: JSON.parse(row.config), messages });
     });

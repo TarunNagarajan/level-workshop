@@ -60,6 +60,12 @@ export function passportStudyWorld(id) {
   const { level, bindings } = bindWorldLevel(passportStudyLevelTemplate, passportStudyFactDefinitions, facts);
   return { id, scenario, facts, level, signatureFact: bindings.cardRelation.value, uvFact: bindings.uvAssessment.value, answer: match && scenario.uvIntact ? 'clear' : 'hold' };
 }
+export function passportScenarioForVersion(version, researchWorlds = false) {
+  if (version === versionId) return passportScenario;
+  const prefix = 'reference-passport-study-v1-';
+  const worldId = version.startsWith(prefix) ? version.slice(prefix.length) : '';
+  return researchWorlds && studyWorldIds.includes(worldId) ? passportStudyWorld(worldId).scenario : null;
+}
 export function playerDocuments(state, scenario = passportScenario) {
   const sceneDocuments = scenario.documents;
   const identitySeen = state.events.some(event => event.page === 1);
@@ -127,11 +133,8 @@ export function addPassportRoutes(app, { store, provider, completion, member, cr
   const { get, all, run, batch } = store;
   const researchVersion = id => `reference-passport-study-v1-${id}`;
   const scenarioFor = row => {
-    if (row.version_id === versionId) return passportScenario;
-    if (researchWorlds) {
-      const id = row.version_id.slice('reference-passport-study-v1-'.length);
-      if (row.version_id === researchVersion(id) && studyWorldIds.includes(id)) return passportStudyWorld(id).scenario;
-    }
+    const scenario = passportScenarioForVersion(row.version_id, researchWorlds);
+    if (scenario) return scenario;
     fail(404, 'This is not a passport-desk session.');
   };
   const ensureReference = async () => {
