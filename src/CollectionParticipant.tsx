@@ -7,12 +7,13 @@ import { PlayPanel } from './Play';
 import { PassportReference } from './PassportReference';
 
 type Entry = { level: PlayerLevel; connected: boolean; kind: 'conversation' | 'passport'; consentTextVersion: string; accepting: boolean; isPassport: boolean };
+type ParticipantEntry = Entry | { kind: 'passport' };
 type Receipt = { tester: string; consent: true; startKey: string; id?: string; accessToken?: string; kind?: string };
 type Admission = { kind: 'conversation' | 'passport'; round: Round; state?: unknown; documents?: unknown };
 
 export function CollectionParticipant({ token }: { token: string }) {
   const storageKey = `workshop-collection:${token}`;
-  const [entry, setEntry] = useState<Entry | null>(null), [round, setRound] = useState<Round | null>(null);
+  const [entry, setEntry] = useState<ParticipantEntry | null>(null), [round, setRound] = useState<Round | null>(null);
   const [name, setName] = useState(''), [consented, setConsented] = useState(false), [error, setError] = useState(''), [busy, setBusy] = useState(false), [loading, setLoading] = useState(true);
   const starting = useRef(false);
   useEffect(() => {
@@ -22,19 +23,34 @@ export function CollectionParticipant({ token }: { token: string }) {
     if (receipt?.tester && receipt.startKey) { setName(receipt.tester); setConsented(true); }
     (async () => {
       try {
-        if (receipt?.tester && receipt.startKey) {
+        if (receipt?.tester && receipt.startKey && receipt.kind === 'passport') {
+          setEntry({ kind: 'passport' });
+          return;
+        }
+        if (receipt?.tester && receipt.startKey && receipt.kind === 'conversation') {
           try {
             const resumed = await api<Admission>(`/collect/${token}`, { method: 'POST', body: { tester: receipt.tester, consent: true, startKey: receipt.startKey } });
             if (!active) return;
             saveReceipt(storageKey, { ...receipt, id: resumed.round.id, accessToken: resumed.round.accessToken, kind: resumed.kind });
-            setRound(resumed.round); setEntry(current => current || { level: resumed.round.level, connected: true, kind: resumed.kind, consentTextVersion: 'collection-recording-v1', accepting: true, isPassport: resumed.kind === 'passport' });
+            setRound(resumed.round); setEntry({ level: resumed.round.level, connected: true, kind: 'conversation', consentTextVersion: 'collection-recording-v1', accepting: true, isPassport: false });
             return;
-          } catch { /* A missing receipt can be entered again; the original key remains available for a safe retry. */ }
+          } catch { /* Continue to the briefing when no accepted assignment can be recovered. */ }
         }
-        if (!active) return;
         const publicEntry = await api<Entry>(`/collect/${token}`);
         if (!active) return;
         setEntry(publicEntry);
+        if (receipt?.tester && receipt.startKey) {
+          // The passport component owns its stateful resume route. Let it recover
+          // after the safe briefing loads, instead of admitting the same receipt twice.
+          if (publicEntry.kind === 'passport') return;
+          try {
+            const resumed = await api<Admission>(`/collect/${token}`, { method: 'POST', body: { tester: receipt.tester, consent: true, startKey: receipt.startKey } });
+            if (!active) return;
+            saveReceipt(storageKey, { ...receipt, id: resumed.round.id, accessToken: resumed.round.accessToken, kind: resumed.kind });
+            setRound(resumed.round); setEntry(current => current?.kind === 'conversation' ? { ...current, level: resumed.round.level, kind: 'conversation', isPassport: false } : current);
+            return;
+          } catch { /* A missing receipt can be entered again; the original key remains available for a safe retry. */ }
+        }
       } catch (e) { if (active) setError((e as Error).message); }
       finally { if (active) setLoading(false); }
     })();
@@ -51,7 +67,7 @@ export function CollectionParticipant({ token }: { token: string }) {
       saveReceipt(storageKey, receipt);
       const result = await api<Admission>(`/collect/${token}`, { method: 'POST', body: { tester: receipt.tester, consent: true, startKey: receipt.startKey } });
       saveReceipt(storageKey, { ...receipt, id: result.round.id, accessToken: result.round.accessToken, kind: result.kind });
-      setRound(result.round); setEntry(current => current ? { ...current, level: result.round.level, kind: result.kind, isPassport: result.kind === 'passport' } : current);
+      setRound(result.round); setEntry(current => current?.kind === 'conversation' ? { ...current, level: result.round.level, kind: 'conversation', isPassport: false } : current);
     } catch (e) { setError((e as Error).message); }
     finally { starting.current = false; setBusy(false); }
   };
@@ -68,7 +84,7 @@ export function CollectionParticipant({ token }: { token: string }) {
         {error && <p className="error" role="alert">{error}</p>}
         <Button className="primary full" disabled={(!entry.accepting || !entry.connected) && !retryingAdmission || !name.trim() || (!consented && !retryingAdmission)} loading={busy} onClick={() => void start()}>Start playthrough<ArrowUpRight size={15} /></Button>
         {!entry.connected && <p className="muted collection-entry-state">The target is temporarily unavailable. Ask the organizer when the collection is ready.</p>}
-      </section> : <><div className="collection-participant-heading"><p className="eyebrow">{round.level.theme}</p><h1>{round.level.title}</h1><p className="muted">This playthrough is being recorded for human review.</p></div><PlayPanel level={round.level} round={round} setRound={next => { setRound(next); const saved = readReceipt(storageKey); if (saved) saveReceipt(storageKey, { ...saved, id: next.id, accessToken: saved.accessToken, kind: 'conversation' }); }} connected={entry.connected} standalone hideModelLabel start={start} restart={start} />{error && <p className="error" role="alert">{error}</p>}</>}
+      </section> : <><div className="collection-participant-heading"><p className="eyebrow">{round.level.theme}</p><h1>{round.level.title}</h1><p className="muted">This playthrough is being recorded for human review.</p></div><PlayPanel level={round.level} round={round} setRound={next => { setRound(next); const saved = readReceipt(storageKey); if (saved) saveReceipt(storageKey, { ...saved, id: next.id, accessToken: saved.accessToken, kind: 'conversation' }); }} connected={entry.connected} standalone hideModelLabel busy={busy} start={start} restart={start} />{error && <p className="error" role="alert">{error}</p>}</>}
     </>}
     <footer className="collection-consent-footer"><Check size={13} />Recorded for collection review. Standard exports omit your name.</footer>
   </div>;

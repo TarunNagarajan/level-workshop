@@ -31,6 +31,7 @@ export function App() {
   const [toast, setToast] = useState('');
   const [dark, setDark] = useState(localStorage.getItem('workshop-theme') === 'dark');
   const [tourOpen, setTourOpen] = useState(false); const [tourUser, setTourUser] = useState('');
+  const standaloneCollection = path.startsWith('/collect/');
   const inWorkspace = !/^\/(play|enter|owner|join|collect)\//.test(path) && !path.startsWith('/reference/play/') && path !== '/reference/research/preview';
   useEffect(() => { if (bootstrap?.user && inWorkspace && tourUser !== bootstrap.user.id) { setTourUser(bootstrap.user.id); if (!bootstrap.tutorialDone) setTourOpen(true); } }, [bootstrap, inWorkspace, tourUser]);
   useEffect(() => {
@@ -58,7 +59,7 @@ export function App() {
     return () => window.removeEventListener('popstate', listener);
   }, []);
   const reload = () => api<Bootstrap>('/bootstrap').then(setBootstrap).catch(e => setError(e.message));
-  useEffect(() => { void reload(); }, []);
+  useEffect(() => { if (!standaloneCollection) void reload(); }, [standaloneCollection]);
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('workshop-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4500); return () => clearTimeout(timer); }, [toast]);
   const notify = (message: string) => setToast(message);
@@ -73,6 +74,7 @@ export function App() {
   else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate('/'); void reload(); }} />;
   else {
     const user = bootstrap.user;
+    const memberModel = { connected: bootstrap.model.connected, model: bootstrap.model.model || 'Not configured', provider: bootstrap.model.provider || 'Not configured' };
     const page = path.startsWith('/levels/') ? 'editor' : path.startsWith('/collections') ? 'collections' : path.startsWith('/attempts') ? 'attempts' : path.startsWith('/reference') ? 'reference' : path.startsWith('/orchestration') ? 'orchestration' : path.startsWith('/team') ? 'team' : path.startsWith('/settings') ? 'settings' : 'levels';
     content = <div className="workspace">
       <aside className="sidebar">
@@ -88,13 +90,13 @@ export function App() {
         </div>
       </aside>
       <main className={`main ${page === 'editor' ? 'editor-main' : ''}`}>
-        {page === 'editor' ? <Editor key={path} levelId={path.split('/')[2]} user={user} model={bootstrap.model} notify={notify} />
+        {page === 'editor' ? <Editor key={path} levelId={path.split('/')[2]} user={user} model={memberModel} notify={notify} />
           : page === 'attempts' ? <Attempts selectedId={path.split('/')[2]} notify={notify} />
           : page === 'collections' ? <CollectionArea path={path} notify={notify} user={user} />
           : page === 'reference' ? <PassportReference key={path} researchWorld={path.startsWith('/reference/research/') && user.role === 'admin' ? path.split('/')[3] : undefined} />
-          : page === 'orchestration' ? <OrchestrationLab user={user} model={bootstrap.model} configId={path.split('/')[2]} runId={path.split('/')[4]} notify={notify} />
+          : page === 'orchestration' ? <OrchestrationLab user={user} model={memberModel} configId={path.split('/')[2]} runId={path.split('/')[4]} notify={notify} />
           : page === 'team' ? <Team user={user} notify={notify} />
-          : page === 'settings' ? <Connection model={bootstrap.model} reload={reload} />
+          : page === 'settings' ? <Connection model={memberModel} reload={reload} />
           : <Library user={user} notify={notify} />}
       </main>
     </div>;
@@ -164,7 +166,7 @@ function Team({ user, notify }: { user: User; notify: (s: string) => void }) {
   </div>;
 }
 
-function Connection({ model, reload }: { model: Bootstrap['model']; reload: () => void }) {
+function Connection({ model, reload }: { model: { connected: boolean; model: string; provider: string }; reload: () => void }) {
   return <div className="page narrow"><div className="breadcrumb">Workshop <ChevronRight size={12} /> Connection</div><header className="page-heading"><div><h1>Target model</h1><p className="muted">One shared baseline for every author.</p></div><Button className="secondary" onClick={reload}><RefreshCcw size={14} />Refresh</Button></header>
     <div className="connection-sheet"><div><span>Connection</span><Status value={model.connected ? 'connected' : 'Not connected'} /></div><div><span>Model</span><code>{model.model}</code></div><div><span>Provider</span><span>{model.provider}</span></div><div><span>Reasoning effort</span><span>Low</span></div><div><span>Evaluation</span><span>Human review</span></div></div>
     <p className="settings-note">{model.connected ? 'A server API key is configured. A successful test conversation confirms provider access.' : 'Set GROQ_API_KEY in the server environment or sandbox/.env, then restart the server.'} Keys and hidden instructions stay on the server. Model outputs are saved with each test.</p>

@@ -28,7 +28,7 @@ export function PlayPanel({ level, round, setRound, start, restart, branch, conn
   };
   const begin = async () => { setStarting(true); setError(''); try { await start(); } catch (e) { setError((e as Error).message); } finally { setStarting(false); } };
   return <section className={`play-panel ${standalone ? 'standalone-panel' : ''}`} aria-label="Player preview">
-    {!standalone && <div className="panel-heading"><span className="eyebrow">PLAYER PREVIEW</span><span className="tiny">{round ? `SAVED SESSION · ${round.source.toUpperCase()}` : 'NOT STARTED'}</span></div>}
+    {!standalone && <div className="panel-heading"><span className="eyebrow">PLAYER PREVIEW</span><span className="tiny">{round ? `SAVED SESSION · ${(round.source || 'session').toUpperCase()}` : 'NOT STARTED'}</span></div>}
     <div className="play-heading"><div><p className="eyebrow">{snapshot.theme}</p><h2>{snapshot.title}</h2></div><span className={`timer ${round && remaining < 60 && !round.endedAt ? 'urgent' : ''}`} aria-label="Time remaining">{time(remaining)}</span></div>
     <details className="briefing" open={!round}><summary>The briefing<ChevronDown size={14} /></summary><p>{snapshot.briefing || 'Add the player briefing in the scenario editor.'}</p></details>
     <div className="conversation" ref={scrollRef} aria-live="polite" aria-relevant="additions">

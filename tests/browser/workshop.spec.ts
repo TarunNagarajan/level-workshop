@@ -35,16 +35,17 @@ test('authoring, blind play, version isolation, human review and responsive layo
   await expect(page.getByText('Answer submitted', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Blind test', exact: true }).click();
   const link = await page.getByLabel('Blind test link', { exact: true }).inputValue();
+  const pinnedVersion = (await (await page.request.get(`/api/play/${link.split('/').at(-1)}`)).json()).version as number;
   await page.getByLabel('Close dialog').click();
   await page.getByLabel('Player briefing').fill('Question the diary. Determine whether the accusation was planned before the confrontation.');
   await page.getByRole('button', { name: 'Save version', exact: true }).click();
   await page.getByLabel('What changed?').fill('Shorter briefing for peer testing.');
   await page.getByRole('dialog').getByRole('button', { name: 'Save version' }).click();
-  await expect(page.getByText('Version 02', { exact: true })).toBeVisible();
+  await expect(page.getByText(`Version ${String(pinnedVersion + 1).padStart(2, '0')}`, { exact: true })).toBeVisible();
   const blindContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const blind = await blindContext.newPage();
   await blind.goto(link);
-  await expect(blind.getByText('VERSION 01')).toBeVisible();
+  await expect(blind.getByText(`VERSION ${String(pinnedVersion).padStart(2, '0')}`)).toBeVisible();
   await expect(blind.getByText('The diary contains a memory of the night Tom Riddle caught Hagrid hiding Aragog.', { exact: false })).toBeVisible();
   await expect(blind.getByLabel('Protected truth')).toHaveCount(0);
   const payload = await (await blind.request.get(`/api/play/${link.split('/').at(-1)}`)).json();
@@ -97,7 +98,7 @@ test('authoring, blind play, version isolation, human review and responsive layo
   await page.getByRole('tab', { name: 'History', exact: true }).click();
   await expect(page.getByRole('button', { name: /Shorter briefing/ })).toBeVisible();
   await page.getByRole('button', { name: /Shorter briefing/ }).click();
-  await expect(page.getByRole('heading', { name: 'Version 2', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: `Version ${pinnedVersion + 1}`, exact: true })).toBeVisible();
   await page.getByLabel('Close dialog').click();
   await page.getByRole('button', { name: 'Team', exact: true }).click();
   await page.getByRole('button', { name: 'Create workshop link' }).click();

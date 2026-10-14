@@ -4,7 +4,10 @@ import { resolve } from 'node:path';
 import { createWorkshop } from '../server/app.mjs';
 
 // Browser tests use an isolated database and an explicit fixture; the production app has no simulated model mode.
+const fixtureFailures = new Set();
 const { app, store } = createWorkshop({ dbPath: ':memory:', researchWorlds: true, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'ui-fixture' }, completion: async input => {
+  const fixtureFailure = input.messages.find(message => message.role === 'user' && message.content.includes('[fixture:rate-limit-once]'))?.content;
+  if (fixtureFailure && !fixtureFailures.has(fixtureFailure)) { fixtureFailures.add(fixtureFailure); throw Object.assign(new Error('Fixed UI fixture provider failure'), { status: 429 }); }
   const system = input.system;
   const text = system.includes('The opened dispatch seal shows amber.') || system.includes('Private seal is amber.') ? 'amber'
     : system.includes('The opened dispatch seal shows cobalt.') || system.includes('Private seal is cobalt.') ? 'cobalt'
