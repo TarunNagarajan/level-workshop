@@ -1,0 +1,9 @@
+# Fixed sealed-card transfer protocol
+
+Fixed before provider calls, 3 October 2026. This is a six-call exploratory engineering study with Groq GPT-OSS 20B through the local HTTP workshop. It tests one amber/cobalt pair twice under the same saved A-to-B contract: amber maps to north, cobalt to south. The two worlds use identical source and recipient prompts, task, case, and questions. The only world-specific value is a server-owned sealed-card binding. Temperature is zero. No prompt edits or retries are allowed after a reply is seen.
+
+First create an unopened pair. Ask A, “Read the dispatch seal.” once in each world. Save the complete provider request, raw reply, and publication verdict. The two complete requests must be identical. A whole color label before opening is a rejected raw answer; `Awaiting inspection.` is an accepted wait. Neither can be shared as a final source label.
+
+Then create a fresh pair under the same configuration. Open the sealed card in each world through the object action; the request sends no fact value. Ask A the same question. Share its saved published label with B, then ask B, “Decode the shared seal.” Save the complete provider requests, raw replies, publication and score-eligibility verdicts, object event sequence, and the server-owned paired audit. A nonpublishable A reply stops its world and leaves the study incomplete without substitution. The expected clean replies are A=`amber`, B=`north` and A=`cobalt`, B=`south`. The audit should show identical A requests before observation, a one-slot difference after observation, identical B requests before sharing, and different B requests after sharing. Actual B replies and score eligibility are separate observations.
+
+This is one synthetic pair and one call per stage and world. It does not estimate reliability, cover alternate object paths, or test an adaptive attacker.

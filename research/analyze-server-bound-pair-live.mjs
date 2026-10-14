@@ -1,0 +1,22 @@
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import assert from 'node:assert/strict';
+
+const digest = value => createHash('sha256').update(value).digest('hex');
+const result = JSON.parse(readFileSync(new URL('./server-bound-pair-live-smoke.json', import.meta.url), 'utf8'));
+assert.equal(result.protocolHash, digest(readFileSync(new URL('./server-bound-pair-live-protocol.md', import.meta.url))));
+assert.equal(result.status, 'complete');
+assert.equal(result.model, 'openai/gpt-oss-20b');
+assert.deepEqual(result.calls.map(call => `${call.world}:${call.lane}`), ['amber:A', 'amber:B', 'cobalt:A', 'cobalt:B']);
+assert.deepEqual(result.calls.map(call => call.publication.status), ['published', 'published', 'published', 'published']);
+assert.deepEqual(result.calls.map(call => call.rawReply), ['amber', 'north', 'cobalt', 'south']);
+assert.deepEqual(result.shares.map(share => share.eventSeq), [2, 2]);
+assert.deepEqual(result.calls.filter(call => call.lane === 'A').map(call => call.requestHash), result.audit.sourceAccess.requestHashes);
+assert.deepEqual(result.calls.filter(call => call.lane === 'B').map(call => call.requestHash), result.audit.requestAudit.afterRequestHashes);
+assert.equal(result.audit.status, 'source-true-necessary-handoff');
+assert.equal(result.audit.sourceTruth, true);
+assert.equal(result.audit.requestNecessity, true);
+assert.equal(result.audit.sourceAccess.onlyFactDifference, true);
+assert.equal(result.audit.requestAudit.identicalBefore, true);
+assert.equal(result.audit.requestAudit.divergesAfter, true);
+console.log(JSON.stringify({ status: result.status, model: result.model, calls: result.calls.length, published: 4, sourceTruth: true, recipientNecessity: true, requestHashesVerified: 4, scope: 'one exploratory synthetic pair' }));

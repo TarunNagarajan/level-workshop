@@ -1,0 +1,9 @@
+# Author diagnosis study: private answer key
+
+**Do not give this file to participants before they submit.** These are the seeded faults in the equipment reducer and the browser-observed paired-world traces.
+
+Task A, fuse-dependent button: the earliest difference is the **opening view**, before `inspectFuse`. The `enabled` action list includes `inspectFuse` only in the blown-fuse world under the injected `leakFuseByAvailability` option. The differing control reaches the initial `/api/state` GET response and therefore DOM text, accessibility, and pixels. A valid repair makes `inspectFuse` available independently of the hidden fuse condition until the player actually inspects it. The fuse value should first appear in the `inspectFuse` action response and screen.
+
+Task B, clipboard shortcut: the earliest difference is **moveClipboard**, before `measureVoltage`. Under injected `shortcutViaClipboard`, that action sets `voltageSeen`, so its POST response and subsequent DOM/accessibility/pixels reveal stable or unstable voltage. The GET-only resource channel remains equal on the tested path. A valid repair keeps `moveClipboard` from setting `voltageSeen` or serializing voltage; `measureVoltage`, after opening the panel, remains the reading action. Simply hiding the visible text while retaining voltage in the POST response does not repair the information leak.
+
+The scoring rubric is three points per task: first action or opening stage, affected channel, and repair preserving the intended reveal. For channel credit, the participant need not name every channel, but must identify at least one actually differing channel and not rely solely on a channel that stayed equal. An answer such as “the model might guess” does not identify a browser exposure. An answer that removes the inspection action entirely fails the preservation criterion.

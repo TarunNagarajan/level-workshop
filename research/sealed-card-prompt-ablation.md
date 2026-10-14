@@ -1,0 +1,7 @@
+# Post-inspection source prompt diagnostic
+
+Fixed before calls, 3 October 2026. The six-call sealed-card transfer stopped when Groq returned HTTP 400 on the first post-inspection A call. A separate one-call diagnostic reproduced `tool_use_failed`: the provider said the model tried to call a tool even though the request declared none. This ablation tests whether one earlier hypothetical wait sentence in A's base prompt is associated with that failure. It does not resume or replace the interrupted transfer.
+
+Use the same GPT-OSS 20B model, Groq API, zero temperature, shared task, test case, amber observation block, and A question as the failed call. Compare two base prompts. The original says both “Before inspection, reply exactly Awaiting inspection” and “After inspection, give the observed seal color.” The simplified prompt removes only the before-inspection sentence. Make four independent provider calls in original, simplified, simplified, original order. Record full request-body hashes, HTTP status, visible answer or provider error, and any provider-generated malformed tool text. No retries or prompt changes during the four calls. A provider 429 stops the study as incomplete.
+
+This is a tiny controlled diagnostic of the prompt sentence and provider behavior, not a population reliability estimate or proof of a general fix. If both variants fail, inspect a different mechanism. If the simplified variant succeeds, validate it with a fresh paired HTTP protocol rather than treating this direct-call diagnostic as a completed game run.

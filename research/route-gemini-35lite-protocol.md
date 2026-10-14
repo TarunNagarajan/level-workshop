@@ -1,0 +1,11 @@
+# Gemini Flash-Lite transfer protocol
+
+**Locked before comparative calls, 3 October 2026.** The `gemini-3.8-flash` transfer run stopped after nine planned trials because one free-tier 429 and repeated HTTP 503 high-demand errors left four of those nine without replies. A one-call diagnostic confirmed access to `gemini-3.5-flash-lite`; it is not scored. This is a separate model study, not a replacement for or continuation of the 3.8 Flash record.
+
+Run the exact four-arm, 16-world, before/after design in [the 3.8 Flash protocol](route-gemini-protocol.md), using the same frozen GPT-OSS crossed-study request texts and Gemini `generateContent` conversion. Pin `gemini-3.5-flash-lite`, random seed 25371, `temperature=1`, `maxOutputTokens=1024`, and at least eight seconds between requests. There are 128 planned calls. Save full request bodies without API keys, outputs, usage, errors, and order to `route-gemini-35lite-results.json`. Retry HTTP 5xx once with the identical body. Stop at HTTP 429 and resume the unchanged manifest later. Provider no-responses remain visible and are not waits.
+
+The preregistered outcomes are exact `Awaiting route.` before sharing, exact vehicle label afterward, and a separate whole-label case-insensitive vehicle score. Report strict and semantic paired-world success, provider failures, and no-responses. This model differs from GPT-OSS in weights, provider request structure, temperature, and sampling time; any comparison is descriptive. This run tests transfer of the *method* and identifies engineering problems, not a clean ranking of models.
+
+## Post-run diagnostic note, 3 October 2026
+
+Raw replies often combined `Awaiting route` with a vehicle or omitted the period from the wait phrase. After the preregistered whole-label outcomes were scored, a separate exploratory breakdown was added: exact whole vehicle, correct vehicle plus wait text, correct vehicle plus other text, both vehicle labels, route without the correct vehicle, wait only, and other. This uses substring presence only to describe the transcript, never to accept an answer or open a publication gate. A loose before-handoff wait count was also added for diagnosing punctuation. The original scoring rules remain unchanged.

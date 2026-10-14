@@ -1,0 +1,14 @@
+.git
+.openai
+.env*
+.dev.vars*
+.wrangler
+data
+work
+verification
+test-results
+playwright-report
+tests
+drizzle
+dist
+node_modules

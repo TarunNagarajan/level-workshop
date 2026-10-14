@@ -1,0 +1,13 @@
+# Gemini transfer protocol
+
+**Locked before comparative calls, 3 October 2026.** This study asks whether the benign route-handoff finding transfers to a second model family. One successful API diagnostic (`Reply with only OK`) established model access and REST request shape; it is not scored as a study trial.
+
+Use the same eight authored route pairs and the same base vehicle-planner instruction, narrative/typed handoff sentences, shared case, and final query as the crossed GPT-OSS study. The model is `gemini-3.8-flash` through the Gemini Developer API. For a user-channel handoff, insert one user content between the case and final query. For a system-channel handoff, append the sentence to Gemini's top-level `systemInstruction` because Gemini's `generateContent` API has no later system-message slot. This difference in API representation prevents a literal byte-for-byte provider comparison. Within each Gemini arm, pre-handoff requests across the twin worlds must be identical, and an after request must differ only by the handoff sentence.
+
+The four arms are user/narrative, user/typed, system/narrative, and system/typed. Each of the 16 worlds gets a before and an after request in every arm, for 128 planned calls. A verified oracle artifact supplies the true route after sharing. Randomize call order with seed 22271. Use `generationConfig.temperature=1` in line with current Gemini 3.x guidance and `maxOutputTokens=1024`; archive all full request bodies without the API key, responses, errors, usage metadata, order, and timestamps. Pace calls at least 6.5 seconds apart. On HTTP 429, stop and resume the same manifest later rather than treating the missing reply as a wait. Retry an HTTP 5xx once with the identical body. Other errors produce no-response observations.
+
+Primary scoring is exact `Awaiting route.` before sharing and an exact vehicle label after. Also report a preregistered semantic vehicle score that trims and case-folds the whole label, with no synonym, punctuation, or substring allowance. Keep format compliance and vehicle choice separate. Report provider errors and no-response requests separately. Compare only descriptively with GPT-OSS: model, API message structure, temperature, and sampling time differ, so a rate difference cannot be attributed solely to model weights.
+
+## Operational amendment after the first quota stop
+
+The first run saved three replies, then received HTTP 429. The provider reported a free-tier request limit of five for `gemini-3.8-flash`. The minimum spacing was raised from 6.5 to 15 seconds before resuming the unchanged manifest. No prompt, answer key, scoring rule, or trial order changed. The quota errors remain in the raw record and are not scored as model replies.

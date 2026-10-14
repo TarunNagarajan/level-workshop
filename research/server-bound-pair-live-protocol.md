@@ -1,0 +1,7 @@
+# Exploratory server-bound pair smoke protocol
+
+Fixed before any provider call, 3 October 2026. This is a four-call engineering smoke check, not a reliability study. Use the configured Groq GPT-OSS 20B model through the local HTTP workshop with a fresh in-memory database. The app creates an amber/cobalt pair from one saved root A-to-B handoff. Amber maps to north; cobalt maps to south. The shared task, test case, recipient prompt, and questions are identical in both worlds. Only A's one-slot system fact differs. Use temperature zero for both slots and do not adapt prompts after seeing a reply.
+
+In order, ask A to read the private seal in the amber world, share its saved reply to B, and ask B to decode the shared seal. Repeat in the cobalt world. Save each full provider request hash, raw reply, and app publication verdict. Then call the server-owned pair audit with the same hypothetical B question. A whole-label correct source reply, a published board share, a whole-label mapped B reply, and `source-true-necessary-handoff` are the expected results. A non-label A reply stops that world's path; provider errors are recorded separately. No retries, prompt edits, or substitutions are permitted in this smoke check. An incomplete run remains incomplete.
+
+This protocol tests the actual paired-run creation, source fact injection, model call path, publication gate, event checkpoint, and author audit for one synthetic pair. It does not evaluate varied task families, adversarial messages, or the probability of success.

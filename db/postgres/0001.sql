@@ -1,0 +1,16 @@
+CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, role TEXT NOT NULL, created_at BIGINT NOT NULL);
+CREATE TABLE auth (token TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id), expires BIGINT NOT NULL);
+CREATE TABLE invites (id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, role TEXT NOT NULL, expires BIGINT NOT NULL, used INTEGER DEFAULT 0);
+CREATE TABLE levels (id TEXT PRIMARY KEY, owner_id TEXT REFERENCES users(id), draft TEXT NOT NULL, revision INTEGER DEFAULT 1, status TEXT DEFAULT 'draft', created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+CREATE TABLE versions (id TEXT PRIMARY KEY, level_id TEXT REFERENCES levels(id), number INTEGER NOT NULL, data TEXT NOT NULL, note TEXT NOT NULL, author_id TEXT REFERENCES users(id), created_at BIGINT NOT NULL, UNIQUE(level_id, number));
+CREATE TABLE links (id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, version_id TEXT REFERENCES versions(id), created_at BIGINT NOT NULL, expires BIGINT NOT NULL, revoked INTEGER DEFAULT 0);
+CREATE TABLE rounds (id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, level_id TEXT REFERENCES levels(id), version_id TEXT REFERENCES versions(id), author_id TEXT REFERENCES users(id), source TEXT NOT NULL, data TEXT NOT NULL, config TEXT NOT NULL, tester TEXT NOT NULL, messages TEXT NOT NULL, hints_used INTEGER DEFAULT 0, started_at BIGINT NOT NULL, ended_at BIGINT, answer TEXT, parent_id TEXT);
+CREATE TABLE reviews (round_id TEXT PRIMARY KEY REFERENCES rounds(id), outcome TEXT NOT NULL, note TEXT NOT NULL, evidence TEXT NOT NULL, reviewer_id TEXT REFERENCES users(id), updated_at BIGINT NOT NULL);
+CREATE TABLE comments (id TEXT PRIMARY KEY, level_id TEXT REFERENCES levels(id), user_id TEXT REFERENCES users(id), text TEXT NOT NULL, created_at BIGINT NOT NULL);
+CREATE INDEX rounds_level ON rounds(level_id, started_at);
+CREATE UNIQUE INDEX one_workspace_owner ON users(role) WHERE role = 'admin';
+CREATE TABLE workshop_links (id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, created_at BIGINT NOT NULL, expires BIGINT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE link_sessions (auth_token TEXT PRIMARY KEY REFERENCES auth(token) ON DELETE CASCADE, link_id TEXT NOT NULL REFERENCES workshop_links(id));
+CREATE TABLE invite_claims (invite_id TEXT PRIMARY KEY REFERENCES invites(id), user_id TEXT NOT NULL);
+CREATE TABLE round_locks (round_id TEXT PRIMARY KEY REFERENCES rounds(id), token TEXT NOT NULL, expires BIGINT NOT NULL);
+CREATE TABLE onboarding (user_id TEXT PRIMARY KEY REFERENCES users(id), version INTEGER NOT NULL, result TEXT NOT NULL, completed_at BIGINT NOT NULL);

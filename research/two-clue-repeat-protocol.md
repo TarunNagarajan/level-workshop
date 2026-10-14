@@ -1,0 +1,5 @@
+# Two-clue stability replication
+
+**Locked before provider calls, 3 October 2026.** Repeat the complete [two-clue protocol](two-clue-protocol.md) twice without changing its prompts, four worlds, four inspection stages, vague/explicit arms, exact-label parser, provider settings, or outcome rule. This adds two independent stateless calls per condition to the original one, for 64 new GPT-OSS 20B requests and three observations per condition in the combined record. Shuffle the 64 jobs with seed 1775; label repetitions 1 and 2. The original archived run remains immutable. Save full bodies, hashes, replies, errors, timing, and order. Stop on 429 and resume only the same manifest.
+
+Primary analysis reports exact required lowercase labels by arm and by evidence state over the two new repetitions, then alongside the original. Report any format deviations, provider failures, and within-identical-request variation. The three samples per condition are a stability check, not a population reliability estimate: authored states and prompt wording remain fixed and model sampling can be correlated.

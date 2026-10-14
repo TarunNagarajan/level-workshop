@@ -1,0 +1,5 @@
+CREATE TABLE orchestration_configs (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), draft TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+CREATE TABLE orchestration_versions (id TEXT PRIMARY KEY, config_id TEXT NOT NULL REFERENCES orchestration_configs(id), number INTEGER NOT NULL, data TEXT NOT NULL, note TEXT NOT NULL, author_id TEXT NOT NULL REFERENCES users(id), created_at BIGINT NOT NULL, UNIQUE(config_id, number));
+CREATE TABLE orchestration_runs (id TEXT PRIMARY KEY, config_id TEXT NOT NULL REFERENCES orchestration_configs(id), author_id TEXT NOT NULL REFERENCES users(id), snapshot TEXT NOT NULL, test_input TEXT NOT NULL, model TEXT NOT NULL, messages TEXT NOT NULL, board TEXT NOT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+CREATE INDEX orchestration_runs_config ON orchestration_runs(config_id, created_at);
+CREATE TABLE orchestration_locks (run_id TEXT PRIMARY KEY REFERENCES orchestration_runs(id), token TEXT NOT NULL, expires BIGINT NOT NULL);
