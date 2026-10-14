@@ -214,6 +214,14 @@ test('collections freeze profiles, allocate blindly and idempotently, log provid
   const authorExport = await request(`/collections/${collection.id}/export?includeAuthor=true`);
   assert.equal(authorExport.status, 200);
   assert.equal(authorExport.body.trials.length, 6);
+  const exportedRoundIds = new Set(authorExport.body.trials.map(trial => trial.roundId));
+  assert.equal(exportedRoundIds.size, authorExport.body.trials.length, 'every export trial includes a unique round UUID');
+  for (const source of ['branch', 'replay']) {
+    const diagnostic = authorExport.body.trials.find(trial => trial.source === source);
+    assert.ok(diagnostic.parentId);
+    assert.ok(exportedRoundIds.has(diagnostic.parentId), `${source} parentId resolves to an exported roundId`);
+  }
+  assert.ok(authorExport.body.trials.every(trial => trial.participantId && !('accessToken' in trial) && !('tester' in trial)), 'lineage IDs do not add participant names or bearer capabilities');
   assert.equal(authorExport.body.trials.some(trial => trial.providerCalls.some(call => call.requestContext)), true);
   const capturedCompletion = completions.at(-1);
   const expectedProviderContext = { baseUrl: 'https://provider.example/v1', body: buildCompletionBody(capturedCompletion) };
