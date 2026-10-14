@@ -55,6 +55,8 @@ test('target receives the frozen secret; failed cross-session access is denied',
   assert.ok(requests[0].system.includes(level.draft.secret));
   assert.ok(!requests[0].system.includes('A newly written secret.'));
   assert.equal(turn.body.messages.length, 3);
+  const legacyPrompt = await request(`/attempts/${round.id}/prompt`);
+  assert.deepEqual(Object.keys(legacyPrompt.body).sort(), ['config', 'messages', 'system']);
   assert.equal(JSON.stringify(turn.body).includes('test-only-key'), false);
   const saved = await store.get('SELECT config FROM rounds WHERE id = ?', round.id);
   assert.equal(saved.config.includes('test-only-key'), false);

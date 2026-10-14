@@ -1,6 +1,8 @@
 # Difficulty collection API
 
-All routes below are under `/api`. Collection management, module/taxonomy inspection, reviews, summaries, exports, and previews require an authenticated workshop member. Collection entry and participant routes use an unguessable collection link and per-round capability instead. Responses never include provider API keys. The collection snapshot pins a saved scenario version, provider model/endpoint/reasoning settings, module catalogue version, eight profile definitions, and each compiled prompt. A trial changes only its assigned protection profile; scenario, provider settings, temperature, and duration stay fixed.
+All routes below are under `/api`. Collection management, module/taxonomy inspection, reviews, summaries, exports, and previews require an authenticated workshop member. Collection entry and participant routes use an unguessable collection link and per-round capability instead. Responses never include provider API keys. The collection snapshot pins a saved scenario version, provider model/endpoint/reasoning settings, module catalogue version, selected profile definitions, and each compiled prompt. A trial changes only its assigned protection profile; scenario, provider settings, temperature, and duration stay fixed.
+
+`GET /bootstrap` keeps the model `connected` boolean for anonymous requests but includes model name and provider hostname only for authenticated workshop members. Public collection pages should use the collection entry response for connection status.
 
 ## Modules and review labels
 
@@ -31,6 +33,8 @@ Resume a saved conversation with `GET /rounds/:id` and header `x-round-token: <a
 ## Author previews
 
 `POST /collections/:id/previews` accepts `{profileId}` and returns `201`. A conversation preview is `{kind:"conversation",round,preview:true,profileId,profileLabel}`. A passport preview is `{kind:"passport",round,state,documents,preview:true,profileId,profileLabel}`. These are author sessions using the collection's frozen scenario, provider config, and profile. Preview assignments are marked separately and excluded from participant allocation and participant outcome distributions. Normal legacy active-round lookups exclude all collection-assigned rounds; previews should be reopened from the collection.
+
+`GET /attempts/:id/prompt` keeps its legacy `{system,config,messages}` response for ordinary attempts. For a collection preview it returns `{kind:"collection-preview-request",source:"preview",roundId,frozenConfig,latestCall,prospective}`. `frozenConfig` is `{model,baseUrl,reasoningEffort,temperature}`. When a provider call exists, `latestCall` is `{status,startedAt,completedAt,latencyMs,errorCode,requestContext}` where `requestContext` is the persisted exact `{baseUrl,body}` sent to the completion adapter; `prospective` is `null`. Before any provider call, `latestCall` is `null` and `prospective` is `{status:"not_sent",explanation,requestContext}`. The prospective body is compiled from the current saved transcript and passport state, if applicable; it is not a sent request and does not contain a future player message. Participant attempts continue to return `403`.
 
 ## Attempts and summary
 
