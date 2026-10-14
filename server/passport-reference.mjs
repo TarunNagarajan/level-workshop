@@ -123,7 +123,7 @@ export const passportStoryboard = [
   { title: 'The decision', time: '4:30–5:00', object: 'card', purpose: 'End the scene with a physical action and an accountable finding.', action: 'Choose HOLD or CLEAR, explain the finding, and select supporting replies.', context: 'The server freezes the decision and transcript for manual review.', response: 'The case is filed. The stamp is a player decision, not an automatic success judgement.', branch: 'Review in Tests, replay the scene, or inspect the design. The timer stops new questions after five minutes.' },
 ];
 
-export function addPassportRoutes(app, { store, provider, completion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds = false, researchWorldId = '' }) {
+export function addPassportRoutes(app, { store, provider, completion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds = false, researchWorldId = '', collectionModels }) {
   const { get, all, run, batch } = store;
   const researchVersion = id => `reference-passport-study-v1-${id}`;
   const scenarioFor = row => {
@@ -186,7 +186,7 @@ export function addPassportRoutes(app, { store, provider, completion, member, cr
   });
   app.get('/api/reference/design', member, (req, res) => res.json({ level: passportLevel, storyboard: passportStoryboard, contextContract: 'Actions are validated enums. Observed facts are reconstructed on the server. The secret and prompt are author-only. Item movement never supplies authority or changes the truth. Each question stores its exact desk context alongside the transcript.' }));
   app.get('/api/reference/active', member, async (req, res) => {
-    const row = await get("SELECT rounds.* FROM rounds JOIN passport_sessions ON passport_sessions.round_id = rounds.id WHERE rounds.author_id = ? AND rounds.version_id = ? AND rounds.ended_at IS NULL ORDER BY rounds.started_at DESC LIMIT 1", req.user.id, versionId);
+    const row = await get("SELECT rounds.* FROM rounds JOIN passport_sessions ON passport_sessions.round_id = rounds.id WHERE rounds.author_id = ? AND rounds.version_id = ? AND rounds.ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY rounds.started_at DESC LIMIT 1", req.user.id, versionId);
     res.json(row ? await snapshot(row) : null);
   });
   app.post('/api/reference/start', member, async (req, res) => res.status(201).json(await start({ userId: req.user.id, tester: req.user.name, source: 'reference' })));
@@ -229,8 +229,11 @@ export function addPassportRoutes(app, { store, provider, completion, member, cr
   app.get('/api/reference/rounds/:id', async (req, res) => res.json(await snapshot(await accessRound(req))));
   app.get('/api/reference/rounds/:id/context', member, async (req, res) => {
     const row = await accessRound(req), state = await stateFor(row);
+    const assignment = await get('SELECT source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
+    if (assignment?.source === 'participant') fail(403, 'Participant attempts do not expose their protection prompt.');
     const observations = passportContext(state, scenarioFor(row));
-    res.json({ observations, system: `${compilePrompt(JSON.parse(row.data))}\n\nVERIFIED DESK OBSERVATIONS\n${observations}`, events: state.events });
+    const baseSystem = await collectionModels.systemForRound(row) || compilePrompt(JSON.parse(row.data));
+    res.json({ observations, system: `${baseSystem}\n\nVERIFIED DESK OBSERVATIONS\n${observations}`, events: state.events });
   });
   app.post('/api/reference/rounds/:id/action', async (req, res) => withRoundLock(req, async (row, lease) => {
     active(referenceRound(row));
@@ -246,10 +249,11 @@ export function addPassportRoutes(app, { store, provider, completion, member, cr
     const context = passportContext(state, scenarioFor(row)), data = JSON.parse(row.data), config = JSON.parse(row.config);
     if (config.baseUrl !== provider.baseUrl) fail(409, 'The provider changed. Start a fresh interview.');
     const player = { id: randomUUID(), role: 'user', content, createdAt: Date.now(), deskContext: context, presented: [...state.presented] };
-    const result = await completion({ config: { ...config, apiKey: provider.apiKey }, system: `${compilePrompt(data)}\n\nVERIFIED DESK OBSERVATIONS\n${context}`, messages: [...messages, player], temperature: data.temperature });
+    const system = `${await collectionModels.systemForRound(row) || compilePrompt(data)}\n\nVERIFIED DESK OBSERVATIONS\n${context}`;
+    const { result, callId } = await collectionModels.request({ row, system, messages: [...messages, player], temperature: data.temperature });
     const next = [...messages, player, { id: randomUUID(), role: 'assistant', content: result.text, createdAt: Date.now(), latencyMs: result.latencyMs, usage: result.usage, model: result.model }];
-    const saved = await run('UPDATE rounds SET messages = ? WHERE id = ? AND EXISTS (SELECT 1 FROM round_locks WHERE round_id = rounds.id AND token = ? AND expires > ?)', JSON.stringify(next), row.id, lease, Date.now());
-    if (!saved.changes) fail(409, 'This reply could not be saved in time. Retry it.');
+    const saved = await collectionModels.finish({ row, lease, messages: next, callId, result });
+    if (!saved) fail(409, 'This reply could not be saved in time. Retry it.');
     res.json(await snapshot(await get('SELECT * FROM rounds WHERE id = ?', row.id)));
   }));
   app.post('/api/reference/rounds/:id/finish', async (req, res) => withRoundLock(req, async (row, lease) => {

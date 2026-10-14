@@ -29,6 +29,20 @@
       "when": 1790967342947,
       "tag": "0003_strong_talon",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1791982690341,
+      "tag": "0004_difficulty_collections",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1791983702799,
+      "tag": "0005_difficulty_question_count",
+      "breakpoints": true
     }
   ]
 }

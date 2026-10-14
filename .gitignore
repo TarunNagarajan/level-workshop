@@ -13,7 +13,10 @@ playwright-report/
 verification/**
 public/assets/
 public/index.html
+public/reference-assets/
 work/migration-*.json
+work/
+*.log
 research/**/*.json
 research/**/*.png
 research/**/*.svg

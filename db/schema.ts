@@ -175,3 +175,66 @@ export const orchestration_locks = sqliteTable('orchestration_locks', {
   token: text('token').notNull(),
   expires: integer('expires').notNull(),
 });
+
+export const difficulty_collections = sqliteTable('difficulty_collections', {
+  id: text('id').primaryKey(),
+  owner_id: text('owner_id').notNull().references(() => users.id),
+  source_level_id: text('source_level_id').notNull().references(() => levels.id),
+  source_version_id: text('source_version_id').notNull().references(() => versions.id),
+  snapshot: text('snapshot').notNull(),
+  status: text('status').notNull().default('active'),
+  revision: integer('revision').notNull().default(1),
+  created_at: integer('created_at').notNull(),
+}, t => [index('difficulty_collections_owner_created').on(t.owner_id, t.created_at)]);
+
+export const difficulty_collection_links = sqliteTable('difficulty_collection_links', {
+  id: text('id').primaryKey(),
+  collection_id: text('collection_id').notNull().references(() => difficulty_collections.id),
+  token_hash: text('token_hash').notNull(),
+  created_at: integer('created_at').notNull(),
+  expires: integer('expires').notNull(),
+  revoked: integer('revoked').notNull().default(0),
+}, t => [uniqueIndex('difficulty_collection_links_token_hash_unique').on(t.token_hash), index('difficulty_collection_links_collection').on(t.collection_id, t.created_at)]);
+
+export const difficulty_collection_assignments = sqliteTable('difficulty_collection_assignments', {
+  id: text('id').primaryKey(),
+  collection_id: text('collection_id').notNull().references(() => difficulty_collections.id),
+  round_id: text('round_id').notNull().references(() => rounds.id),
+  profile_id: text('profile_id').notNull(),
+  profile_snapshot: text('profile_snapshot').notNull(),
+  source: text('source').notNull(),
+  parent_id: text('parent_id'),
+  link_id: text('link_id').references(() => difficulty_collection_links.id),
+  start_key_hash: text('start_key_hash'),
+  consent_at: integer('consent_at'),
+  consent_version: text('consent_version'),
+  assigned_at: integer('assigned_at').notNull(),
+  question_count: integer('question_count').notNull().default(0),
+}, t => [uniqueIndex('difficulty_assignments_round_unique').on(t.round_id), uniqueIndex('difficulty_assignments_link_key_unique').on(t.link_id, t.start_key_hash), index('difficulty_assignments_collection_profile').on(t.collection_id, t.profile_id, t.assigned_at), index('difficulty_assignments_collection_cursor').on(t.collection_id, t.assigned_at, t.id)]);
+
+export const difficulty_collection_leases = sqliteTable('difficulty_collection_leases', {
+  collection_id: text('collection_id').primaryKey().references(() => difficulty_collections.id),
+  token: text('token').notNull(),
+  expires: integer('expires').notNull(),
+});
+
+export const difficulty_provider_calls = sqliteTable('difficulty_provider_calls', {
+  id: text('id').primaryKey(),
+  collection_id: text('collection_id').notNull().references(() => difficulty_collections.id),
+  round_id: text('round_id').notNull().references(() => rounds.id),
+  status: text('status').notNull(),
+  started_at: integer('started_at').notNull(),
+  completed_at: integer('completed_at'),
+  latency_ms: integer('latency_ms'),
+  error_code: text('error_code'),
+  request_context: text('request_context'),
+}, t => [index('difficulty_provider_calls_collection').on(t.collection_id, t.started_at), index('difficulty_provider_calls_round').on(t.round_id, t.started_at)]);
+
+export const difficulty_annotations = sqliteTable('difficulty_annotations', {
+  round_id: text('round_id').primaryKey().references(() => rounds.id),
+  attempted_strategies: text('attempted_strategies').notNull(),
+  observed_failures: text('observed_failures').notNull(),
+  note: text('note').notNull(),
+  reviewer_id: text('reviewer_id').notNull().references(() => users.id),
+  updated_at: integer('updated_at').notNull(),
+});
