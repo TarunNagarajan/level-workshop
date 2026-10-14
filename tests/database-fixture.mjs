@@ -1,18 +1,17 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createWorkshop } from '../server/workshop.mjs';
 import { openStore } from '../server/store.mjs';
 import { postgresStore } from '../server/postgres-store.mjs';
 
 export async function createFixture(options) {
-  let store;
-  if (process.env.TEST_DATABASE === 'postgres') {
+  const { wrapStore, store: injectedStore, ...workshopOptions } = options;
+  let store = injectedStore;
+  if (!store && process.env.TEST_DATABASE === 'postgres') {
     const { PGlite } = await import('@electric-sql/pglite');
     const db = new PGlite();
-    await db.exec(readFileSync(new URL('../db/postgres/0001.sql', import.meta.url), 'utf8'));
-    await db.exec(readFileSync(new URL('../db/postgres/0002.sql', import.meta.url), 'utf8'));
-    await db.exec(readFileSync(new URL('../db/postgres/0003.sql', import.meta.url), 'utf8'));
-    await db.exec(readFileSync(new URL('../db/postgres/0004.sql', import.meta.url), 'utf8'));
-    await db.exec(readFileSync(new URL('../db/postgres/0005.sql', import.meta.url), 'utf8'));
+    for (const name of readdirSync(new URL('../db/postgres/', import.meta.url)).filter(name => name.endsWith('.sql')).sort()) {
+      await db.exec(readFileSync(new URL(`../db/postgres/${name}`, import.meta.url), 'utf8'));
+    }
     const result = value => ({ ...value, rowCount: value.affectedRows });
     // Neon queries are lazy. Transaction queries must not execute before BEGIN.
     const sql = {
@@ -28,8 +27,9 @@ export async function createFixture(options) {
       },
     };
     store = { ...postgresStore(sql), db };
-  } else {
-    store = openStore(':memory:');
+  } else if (!store) {
+    store = openStore(options.dbPath || ':memory:');
   }
-  return createWorkshop({ ...options, store });
+  store = wrapStore ? wrapStore(store) : store;
+  return createWorkshop({ ...workshopOptions, store });
 }

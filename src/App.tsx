@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { PanelsTopLeft, FlaskConical, Users, SlidersHorizontal, Sun, Moon, LogOut, ArrowUpRight, Plus, Search, ChevronRight, Copy, Check, RefreshCcw, CircleHelp, Network, BookOpen } from 'lucide-react';
+import { PanelsTopLeft, FlaskConical, Users, SlidersHorizontal, Sun, Moon, LogOut, ArrowUpRight, Plus, Search, ChevronRight, Copy, Check, RefreshCcw, CircleHelp, Network, BookOpen, Layers3 } from 'lucide-react';
 import { api, date } from './api';
 import type { Bootstrap, Summary, User } from './types';
 import { Mark, Status, Button, Field, Empty } from './ui';
@@ -9,6 +9,8 @@ import { BlindPlay } from './Play';
 import { Tutorial } from './Tutorial';
 import { OrchestrationLab } from './Orchestration';
 import { PassportReference } from './PassportReference';
+import { CollectionArea } from './Collections';
+import { CollectionParticipant } from './CollectionParticipant';
 
 let historyIndex = 0;
 let approvedNavigation: string | null = null;
@@ -29,7 +31,8 @@ export function App() {
   const [toast, setToast] = useState('');
   const [dark, setDark] = useState(localStorage.getItem('workshop-theme') === 'dark');
   const [tourOpen, setTourOpen] = useState(false); const [tourUser, setTourUser] = useState('');
-  const inWorkspace = !/^\/(play|enter|owner|join)\//.test(path) && !path.startsWith('/reference/play/') && path !== '/reference/research/preview';
+  const standaloneCollection = path.startsWith('/collect/');
+  const inWorkspace = !/^\/(play|enter|owner|join|collect)\//.test(path) && !path.startsWith('/reference/play/') && path !== '/reference/research/preview';
   useEffect(() => { if (bootstrap?.user && inWorkspace && tourUser !== bootstrap.user.id) { setTourUser(bootstrap.user.id); if (!bootstrap.tutorialDone) setTourOpen(true); } }, [bootstrap, inWorkspace, tourUser]);
   useEffect(() => {
     if (typeof window.history.state?.__workshopIndex === 'number') historyIndex = window.history.state.__workshopIndex;
@@ -56,13 +59,14 @@ export function App() {
     return () => window.removeEventListener('popstate', listener);
   }, []);
   const reload = () => api<Bootstrap>('/bootstrap').then(setBootstrap).catch(e => setError(e.message));
-  useEffect(() => { void reload(); }, []);
+  useEffect(() => { if (!standaloneCollection) void reload(); }, [standaloneCollection]);
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('workshop-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4500); return () => clearTimeout(timer); }, [toast]);
   const notify = (message: string) => setToast(message);
   let content: ReactNode;
   if (path === '/reference/research/preview') content = <PassportReference researchPreview />;
   else if (path.startsWith('/reference/play/')) content = <PassportReference blindToken={path.split('/')[3]} />;
+  else if (path.startsWith('/collect/')) content = <CollectionParticipant key={path.split('/')[2]} token={path.split('/')[2]} />;
   else if (path.startsWith('/play/')) content = <BlindPlay token={path.split('/')[2]} />;
   else if (!bootstrap) content = <div className="auth-shell"><Mark />{error ? <><p className="error">{error}</p><Button onClick={reload}>Retry</Button></> : <p className="muted">Opening workshop…</p>}</div>;
   else if (path.startsWith('/enter/') || path.startsWith('/owner/')) content = <LinkEntry token={path.split('/')[2]} owner={path.startsWith('/owner/')} onDone={() => { navigate('/'); void reload(); }} />;
@@ -70,12 +74,13 @@ export function App() {
   else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate('/'); void reload(); }} />;
   else {
     const user = bootstrap.user;
-    const page = path.startsWith('/levels/') ? 'editor' : path.startsWith('/attempts') ? 'attempts' : path.startsWith('/reference') ? 'reference' : path.startsWith('/orchestration') ? 'orchestration' : path.startsWith('/team') ? 'team' : path.startsWith('/settings') ? 'settings' : 'levels';
+    const memberModel = { connected: bootstrap.model.connected, model: bootstrap.model.model || 'Not configured', provider: bootstrap.model.provider || 'Not configured' };
+    const page = path.startsWith('/levels/') ? 'editor' : path.startsWith('/collections') ? 'collections' : path.startsWith('/attempts') ? 'attempts' : path.startsWith('/reference') ? 'reference' : path.startsWith('/orchestration') ? 'orchestration' : path.startsWith('/team') ? 'team' : path.startsWith('/settings') ? 'settings' : 'levels';
     content = <div className="workspace">
       <aside className="sidebar">
         <div className="sidebar-top"><Mark /><span className="tiny">PRIVATE WORKSPACE</span></div>
         <nav aria-label="Main navigation">
-          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/reference', 'Reference', BookOpen, 'reference'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team']].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
+          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/reference', 'Reference', BookOpen, 'reference'], ['/collections', 'Collections', Layers3, 'collections'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team']].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
         </nav>
         <div className="sidebar-bottom">
           <button className="nav-item" aria-label="Quick tour" onClick={() => setTourOpen(true)}><CircleHelp size={17} strokeWidth={1.5} />Quick tour</button>
@@ -85,12 +90,13 @@ export function App() {
         </div>
       </aside>
       <main className={`main ${page === 'editor' ? 'editor-main' : ''}`}>
-        {page === 'editor' ? <Editor key={path} levelId={path.split('/')[2]} user={user} model={bootstrap.model} notify={notify} />
+        {page === 'editor' ? <Editor key={path} levelId={path.split('/')[2]} user={user} model={memberModel} notify={notify} />
           : page === 'attempts' ? <Attempts selectedId={path.split('/')[2]} notify={notify} />
+          : page === 'collections' ? <CollectionArea path={path} notify={notify} user={user} />
           : page === 'reference' ? <PassportReference key={path} researchWorld={path.startsWith('/reference/research/') && user.role === 'admin' ? path.split('/')[3] : undefined} />
-          : page === 'orchestration' ? <OrchestrationLab user={user} model={bootstrap.model} configId={path.split('/')[2]} runId={path.split('/')[4]} notify={notify} />
+          : page === 'orchestration' ? <OrchestrationLab user={user} model={memberModel} configId={path.split('/')[2]} runId={path.split('/')[4]} notify={notify} />
           : page === 'team' ? <Team user={user} notify={notify} />
-          : page === 'settings' ? <Connection model={bootstrap.model} reload={reload} />
+          : page === 'settings' ? <Connection model={memberModel} reload={reload} />
           : <Library user={user} notify={notify} />}
       </main>
     </div>;
@@ -160,7 +166,7 @@ function Team({ user, notify }: { user: User; notify: (s: string) => void }) {
   </div>;
 }
 
-function Connection({ model, reload }: { model: Bootstrap['model']; reload: () => void }) {
+function Connection({ model, reload }: { model: { connected: boolean; model: string; provider: string }; reload: () => void }) {
   return <div className="page narrow"><div className="breadcrumb">Workshop <ChevronRight size={12} /> Connection</div><header className="page-heading"><div><h1>Target model</h1><p className="muted">One shared baseline for every author.</p></div><Button className="secondary" onClick={reload}><RefreshCcw size={14} />Refresh</Button></header>
     <div className="connection-sheet"><div><span>Connection</span><Status value={model.connected ? 'connected' : 'Not connected'} /></div><div><span>Model</span><code>{model.model}</code></div><div><span>Provider</span><span>{model.provider}</span></div><div><span>Reasoning effort</span><span>Low</span></div><div><span>Evaluation</span><span>Human review</span></div></div>
     <p className="settings-note">{model.connected ? 'A server API key is configured. A successful test conversation confirms provider access.' : 'Set GROQ_API_KEY in the server environment or sandbox/.env, then restart the server.'} Keys and hidden instructions stay on the server. Model outputs are saved with each test.</p>

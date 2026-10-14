@@ -118,3 +118,13 @@ The author’s Explore the design view contains six storyboard beats, object rol
 Artwork provenance and generation prompts are in `docs/passport-art.md`. Raster source assets live in `static/reference-assets/`; `public/` is generated build output. Names, dates, signatures and functional stamps are rendered as crisp interface text. No images of people are used.
 
 `tests/passport.test.mjs` verifies context reconstruction, secrecy, capability access, version separation, concurrency, provider failure, deadlines and filing. `tests/browser/passport.spec.ts` verifies dragging, inspection, comparison, interviewing, evidence, the author guide and blind mobile refresh. `tests/live-passport-eval.mjs` exercises the actual configured model in an isolated database; it records samples, not a reliability guarantee.
+
+## Difficulty collections
+
+Open **Collections** in the workshop, or choose **Create collection** from a saved level version or the interactive reference desk. Choose the saved version and protection profiles, inspect the modules and added instructions, then confirm the freeze. A collection pins the complete scenario and provider configuration; tune it by creating another collection from the saved snapshot. Profiles supplement the base instructions, and their names do not predict measured success rates.
+
+The collection comparison separates allocated participants, manual previews, branches, replays, provider failures, submitted attempts, expirations, review coverage and outcomes. Solved, partial and unsolved counts use reviewed participant attempts only; an unreviewed attempt is not an unsolved result. Review the transcript and passport action trail, select evidence from target replies, and label attempted strategies and observed failures. These labels describe observations, not proven causes.
+
+Participant links open a blind briefing without showing a profile assignment or author configuration. The participant supplies a name and agrees that the transcript and actions are recorded; transcript text can appear in exports, while standard exports omit names. An explicit full-export option includes author-only scenario and prompt context. Export downloads every page and can be cancelled while pages are being retrieved.
+
+`tests/browser/collections.spec.ts` covers frozen reference creation, profile ID editing, blind admission and recovery after a pause, review, export, mobile width, and a new member creating a reference collection. API pagination, allocation, privacy, and failure cases are exercised by the server collection tests.
