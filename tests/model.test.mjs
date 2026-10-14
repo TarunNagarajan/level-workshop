@@ -33,3 +33,26 @@ test('non-Groq provider body omits Groq-specific reasoning switches', () => {
   assert.equal('reasoning_effort' in body, false);
   assert.equal('include_reasoning' in body, false);
 });
+
+test('Groq GPT-OSS request records the frozen reasoning effort', () => {
+  const body = buildCompletionBody({ config: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', reasoningEffort: 'medium' }, system: 'System', messages: [], temperature: 0.1 });
+  assert.equal(body.reasoning_effort, 'medium');
+});
+
+test('provider adapter classifies timeout, unavailable, rate limit, and credential rejection safely', async () => {
+  const priorFetch = globalThis.fetch;
+  const config = { model: 'fixture-model', baseUrl: 'https://example.test/v1', apiKey: 'fixture-key' };
+  const input = { config, system: 'System', messages: [], temperature: 0.2 };
+  try {
+    globalThis.fetch = async () => { throw Object.assign(new Error('socket deadline'), { name: 'TimeoutError' }); };
+    await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'timeout');
+    globalThis.fetch = async () => { throw new Error('socket closed'); };
+    await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'provider_unavailable');
+    globalThis.fetch = async () => ({ ok: false, status: 429 });
+    await assert.rejects(complete(input), error => error.status === 429 && error.providerCode === 'rate_limited');
+    globalThis.fetch = async () => ({ ok: false, status: 401 });
+    await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'provider_auth');
+    globalThis.fetch = async () => ({ ok: false, status: 503 });
+    await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'provider_unavailable');
+  } finally { globalThis.fetch = priorFetch; }
+});

@@ -1,0 +1,1 @@
+ALTER TABLE `difficulty_collection_assignments` ADD `question_count` integer DEFAULT 0 NOT NULL;

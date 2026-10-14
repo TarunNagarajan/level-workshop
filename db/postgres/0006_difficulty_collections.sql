@@ -1,0 +1,12 @@
+CREATE TABLE difficulty_collections (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), source_level_id TEXT NOT NULL REFERENCES levels(id), source_version_id TEXT NOT NULL REFERENCES versions(id), snapshot TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', revision BIGINT NOT NULL DEFAULT 1, created_at BIGINT NOT NULL);
+CREATE INDEX difficulty_collections_owner_created ON difficulty_collections(owner_id, created_at DESC);
+CREATE TABLE difficulty_collection_links (id TEXT PRIMARY KEY, collection_id TEXT NOT NULL REFERENCES difficulty_collections(id), token_hash TEXT NOT NULL UNIQUE, created_at BIGINT NOT NULL, expires BIGINT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX difficulty_collection_links_collection ON difficulty_collection_links(collection_id, created_at DESC);
+CREATE TABLE difficulty_collection_assignments (id TEXT PRIMARY KEY, collection_id TEXT NOT NULL REFERENCES difficulty_collections(id), round_id TEXT NOT NULL UNIQUE REFERENCES rounds(id), profile_id TEXT NOT NULL, profile_snapshot TEXT NOT NULL, source TEXT NOT NULL, parent_id TEXT, link_id TEXT REFERENCES difficulty_collection_links(id), start_key_hash TEXT, consent_at BIGINT, consent_version TEXT, assigned_at BIGINT NOT NULL, question_count BIGINT NOT NULL DEFAULT 0, UNIQUE(link_id, start_key_hash));
+CREATE INDEX difficulty_assignments_collection_profile ON difficulty_collection_assignments(collection_id, profile_id, assigned_at);
+CREATE INDEX difficulty_assignments_collection_cursor ON difficulty_collection_assignments(collection_id, assigned_at DESC, id DESC);
+CREATE TABLE difficulty_collection_leases (collection_id TEXT PRIMARY KEY REFERENCES difficulty_collections(id), token TEXT NOT NULL, expires BIGINT NOT NULL);
+CREATE TABLE difficulty_provider_calls (id TEXT PRIMARY KEY, collection_id TEXT NOT NULL REFERENCES difficulty_collections(id), round_id TEXT NOT NULL REFERENCES rounds(id), status TEXT NOT NULL, started_at BIGINT NOT NULL, completed_at BIGINT, latency_ms BIGINT, error_code TEXT, request_context TEXT);
+CREATE INDEX difficulty_provider_calls_collection ON difficulty_provider_calls(collection_id, started_at DESC);
+CREATE INDEX difficulty_provider_calls_round ON difficulty_provider_calls(round_id, started_at);
+CREATE TABLE difficulty_annotations (round_id TEXT PRIMARY KEY REFERENCES rounds(id), attempted_strategies TEXT NOT NULL, observed_failures TEXT NOT NULL, note TEXT NOT NULL, reviewer_id TEXT NOT NULL REFERENCES users(id), updated_at BIGINT NOT NULL);

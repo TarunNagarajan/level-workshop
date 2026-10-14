@@ -7,6 +7,7 @@ import { complete, modelConfig } from './model.mjs';
 import { emptyLevel, levelSchema, seedLevels, compilePrompt, playerLevel, validatePlayable } from './levels.mjs';
 import { addPassportRoutes } from './passport-reference.mjs';
 import { addOrchestrationRoutes } from './orchestration.mjs';
+import { addCollectionRoutes, createCollectionModelServices } from './collections.mjs';
 const scrypt = promisify(scryptCallback);
 const id = () => randomUUID();
 const token = () => randomBytes(32).toString('base64url');
@@ -102,7 +103,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     };
     const serializeLevel = async (row) => ({ id: row.id, draft: JSON.parse(row.draft), revision: row.revision, status: row.status, ownerId: row.owner_id, owner: (await get('SELECT name FROM users WHERE id = ?', row.owner_id))?.name, updatedAt: row.updated_at });
     const versions = async (levelId) => (await all('SELECT versions.*, users.name AS author FROM versions JOIN users ON users.id = versions.author_id WHERE level_id = ? ORDER BY number DESC', levelId)).map(v => ({ id: v.id, number: v.number, data: JSON.parse(v.data), note: v.note, author: v.author, createdAt: v.created_at }));
-    const publicRound = row => ({ id: row.id, versionId: row.source === 'reference-research-preview' ? 'reference-passport-study' : row.version_id, level: playerLevel(JSON.parse(row.data)), model: JSON.parse(row.config).model, tester: row.tester, messages: JSON.parse(row.messages), startedAt: row.started_at, endedAt: row.ended_at, deadline: row.started_at + JSON.parse(row.data).duration * 1000, answer: row.answer, hintsUsed: row.hints_used, source: row.source });
+    const publicRound = row => ({ id: row.id, ...(row.source === 'collection-participant' ? {} : { versionId: row.source === 'reference-research-preview' ? 'reference-passport-study' : row.version_id, model: JSON.parse(row.config).model, source: row.source }), level: playerLevel(JSON.parse(row.data)), tester: row.tester, messages: row.source === 'collection-participant' ? JSON.parse(row.messages).map(({ id: messageId, role, content, createdAt, opening, latencyMs }) => ({ id: messageId, role, content, createdAt, ...(opening ? { opening: true } : {}), ...(Number.isFinite(latencyMs) ? { latencyMs } : {}) })) : JSON.parse(row.messages), startedAt: row.started_at, endedAt: row.ended_at, deadline: row.started_at + JSON.parse(row.data).duration * 1000, answer: row.answer, hintsUsed: row.hints_used });
     const accessRound = async (req) => {
         const row = await get('SELECT * FROM rounds WHERE id = ?', req.params.id);
         if (!row)
@@ -112,16 +113,28 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             fail(403, 'This test session is private.');
         return row;
     };
-    const createRound = async ({ version, userId = null, tester, source, messages, parentId = null, deskState }) => {
+    const createRound = async ({ version, userId = null, tester, source, messages, parentId = null, deskState, roundId: requestedRoundId, rawToken: requestedToken, collectionAssignment, frozenConfig, allocationLeaseToken }) => {
         if (isPassportVersion(version.id) && !deskState) fail(409, 'Start this reference from the interactive passport desk.');
-        const raw = token();
-        const roundId = id();
+        const raw = requestedToken || token();
+        const roundId = requestedRoundId || id();
         const data = JSON.parse(version.data);
         validatePlayable(data);
         const initial = messages || [{ id: id(), role: 'assistant', content: data.opening, createdAt: Date.now(), opening: true }];
-        const statements = [['INSERT INTO rounds (id, token, level_id, version_id, author_id, source, data, config, tester, messages, started_at, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', roundId, hash(raw), version.level_id, version.id, userId, source, version.data, JSON.stringify(safeConfig()), tester, JSON.stringify(initial), Date.now(), parentId]];
-        if (deskState) statements.push(['INSERT INTO passport_sessions VALUES (?, ?)', roundId, JSON.stringify(deskState)]);
-        await batch(statements);
+        const config = frozenConfig || safeConfig();
+        const roundValues = [roundId, hash(raw), version.level_id, version.id, userId, source, version.data, JSON.stringify(config), tester, JSON.stringify(initial), Date.now(), parentId];
+        const allocationGuard = allocationLeaseToken && collectionAssignment?.source === 'participant';
+        const roundInsert = allocationGuard
+          ? ['INSERT INTO rounds (id, token, level_id, version_id, author_id, source, data, config, tester, messages, started_at, parent_id) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM difficulty_collection_leases l JOIN difficulty_collections c ON c.id = l.collection_id JOIN difficulty_collection_links k ON k.id = ? AND k.collection_id = c.id WHERE l.collection_id = ? AND l.token = ? AND l.expires > ? AND c.status = ? AND k.revoked = 0 AND k.expires > ?)', ...roundValues, collectionAssignment.linkId, collectionAssignment.collectionId, allocationLeaseToken, Date.now(), 'active', Date.now()]
+          : ['INSERT INTO rounds (id, token, level_id, version_id, author_id, source, data, config, tester, messages, started_at, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', ...roundValues];
+        const statements = [roundInsert];
+        if (deskState) statements.push(allocationGuard
+          ? ['INSERT INTO passport_sessions (round_id, state) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM rounds WHERE id = ?)', roundId, JSON.stringify(deskState), roundId]
+          : ['INSERT INTO passport_sessions VALUES (?, ?)', roundId, JSON.stringify(deskState)]);
+        if (collectionAssignment) statements.push(allocationGuard
+          ? ['INSERT INTO difficulty_collection_assignments (id, collection_id, round_id, profile_id, profile_snapshot, source, parent_id, link_id, start_key_hash, consent_at, consent_version, assigned_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM rounds WHERE id = ?)', collectionAssignment.id, collectionAssignment.collectionId, roundId, collectionAssignment.profileId, JSON.stringify(collectionAssignment.profileSnapshot), collectionAssignment.source, collectionAssignment.parentId ?? parentId, collectionAssignment.linkId, collectionAssignment.startKeyHash, collectionAssignment.consentAt, collectionAssignment.consentVersion, collectionAssignment.assignedAt, roundId]
+          : ['INSERT INTO difficulty_collection_assignments (id, collection_id, round_id, profile_id, profile_snapshot, source, parent_id, link_id, start_key_hash, consent_at, consent_version, assigned_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', collectionAssignment.id, collectionAssignment.collectionId, roundId, collectionAssignment.profileId, JSON.stringify(collectionAssignment.profileSnapshot), collectionAssignment.source, collectionAssignment.parentId ?? parentId, collectionAssignment.linkId, collectionAssignment.startKeyHash, collectionAssignment.consentAt, collectionAssignment.consentVersion, collectionAssignment.assignedAt]);
+        const results = await batch(statements);
+        if (!results[0].changes) fail(409, 'This collection is no longer accepting attempts. Retry with the same start key if the attempt was already accepted.');
         return { ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', roundId)), accessToken: raw };
     };
     app.get('/api/bootstrap', async (req, res) => res.json({ needsSetup: !await get('SELECT id FROM users LIMIT 1'), privateEntry: Boolean(ownerKey), user: publicUser(req.user), tutorialDone: Boolean(req.user && await get('SELECT user_id FROM onboarding WHERE user_id = ? AND version >= ?', req.user.id, 1)), model: { model: provider.model, connected: Boolean(provider.apiKey), provider: new URL(provider.baseUrl).hostname } }));
@@ -350,13 +363,21 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (v.level_id !== req.params.id)
             fail(400, 'This version belongs to another level.');
         const replayOf = req.body.replayOf ? z.string().parse(req.body.replayOf) : null;
-        if (replayOf && !await get('SELECT id FROM rounds WHERE id = ? AND level_id = ?', replayOf, req.params.id))
+        const parentRound = replayOf ? await get('SELECT * FROM rounds WHERE id = ? AND level_id = ?', replayOf, req.params.id) : null;
+        if (replayOf && !parentRound)
             fail(400, 'Choose an earlier test of this level.');
-        res.status(201).json(await createRound({ version: v, userId: req.user.id, tester: req.user.name, source: replayOf ? 'replay' : 'preview', parentId: replayOf }));
+        const parentAssignment = parentRound ? await get('SELECT * FROM difficulty_collection_assignments WHERE round_id = ?', replayOf) : null;
+        let version = v, collectionAssignment, frozenConfig;
+        if (parentAssignment) {
+            version = { id: parentRound.version_id, level_id: parentRound.level_id, data: parentRound.data };
+            collectionAssignment = { id: id(), collectionId: parentAssignment.collection_id, profileId: parentAssignment.profile_id, profileSnapshot: JSON.parse(parentAssignment.profile_snapshot), source: 'replay', parentId: replayOf, linkId: null, startKeyHash: null, consentAt: null, consentVersion: null, assignedAt: Date.now() };
+            frozenConfig = JSON.parse(parentRound.config);
+        }
+        res.status(201).json(await createRound({ version, frozenConfig, collectionAssignment, userId: req.user.id, tester: req.user.name, source: replayOf ? 'replay' : 'preview', parentId: replayOf }));
     });
     app.get('/api/levels/:id/active-round', member, async (req, res) => {
         await levelRow(req.params.id);
-        const row = await get('SELECT * FROM rounds WHERE level_id = ? AND author_id = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', req.params.id, req.user.id);
+        const row = await get('SELECT * FROM rounds WHERE level_id = ? AND author_id = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY started_at DESC LIMIT 1', req.params.id, req.user.id);
         res.json(row && row.started_at + JSON.parse(row.data).duration * 1000 > Date.now() ? publicRound(row) : null);
     });
     app.get('/api/rounds/:id', async (req, res) => res.json(publicRound(await accessRound(req))));
@@ -368,6 +389,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         try { return await action(await accessRound(req), lease); }
         finally { await run('DELETE FROM round_locks WHERE round_id = ? AND token = ?', initial.id, lease); }
     };
+    const collectionModels = createCollectionModelServices({ store, provider, completion });
     app.post('/api/rounds/:id/messages', async (req, res) => withRoundLock(req, async (row, lease) => {
         if (isPassportVersion(row.version_id)) fail(409, 'Continue this interview at the interactive reference desk.');
         const content = z.string().trim().min(1).max(4000).parse(req.body.content);
@@ -377,14 +399,16 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (messages.filter(m => m.role === 'user').length >= 40)
             fail(409, 'This test has reached its 40-turn limit.');
         const config = JSON.parse(row.config);
-        if (config.baseUrl !== provider.baseUrl)
+        const collectionSystem = await collectionModels.systemForRound(row);
+        if (!collectionSystem && config.baseUrl !== provider.baseUrl)
             fail(409, 'The provider changed since this test started. Start a fresh test.');
             const playerMessage = { id: id(), role: 'user', content, createdAt: Date.now() };
             const data = JSON.parse(row.data);
-            const result = await completion({ config: { ...config, apiKey: provider.apiKey }, system: compilePrompt(data), messages: [...messages, playerMessage], temperature: data.temperature });
+            const system = collectionSystem || compilePrompt(data);
+            const { result, callId } = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature });
             const next = [...messages, playerMessage, { id: id(), role: 'assistant', content: result.text, createdAt: Date.now(), latencyMs: result.latencyMs, usage: result.usage, model: result.model }];
-            const saved = await run('UPDATE rounds SET messages = ? WHERE id = ? AND EXISTS (SELECT 1 FROM round_locks WHERE round_id = rounds.id AND token = ? AND expires > ?)', JSON.stringify(next), row.id, lease, Date.now());
-            if (!saved.changes) fail(409, 'This reply took too long to save. Retry your message.');
+            const saved = await collectionModels.finish({ row, lease, messages: next, callId, result });
+            if (!saved) fail(409, 'This reply took too long to save. Retry your message.');
             res.json(publicRound(await get('SELECT * FROM rounds WHERE id = ?', row.id)));
     }));
     app.post('/api/rounds/:id/hint', async (req, res) => withRoundLock(req, async row => {
@@ -415,18 +439,23 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (index < 0)
             fail(400, 'Branch from a target reply.');
         const inherited = messages.slice(0, index + 1).map(m => ({ ...m, id: id() }));
-        const next = await createRound({ version: await versionRow(row.version_id), userId: req.user.id, tester: req.user.name, source: 'branch', messages: inherited, parentId: row.id });
+        const parentAssignment = await get('SELECT * FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
+        const collectionAssignment = parentAssignment ? { id: id(), collectionId: parentAssignment.collection_id, profileId: parentAssignment.profile_id, profileSnapshot: JSON.parse(parentAssignment.profile_snapshot), source: 'branch', parentId: row.id, linkId: null, startKeyHash: null, consentAt: null, consentVersion: null, assignedAt: Date.now() } : undefined;
+        const version = { id: row.version_id, level_id: row.level_id, data: row.data };
+        const next = await createRound({ version, frozenConfig: parentAssignment ? JSON.parse(row.config) : undefined, collectionAssignment, userId: req.user.id, tester: req.user.name, source: 'branch', messages: inherited, parentId: row.id });
         await run('UPDATE rounds SET hints_used = ? WHERE id = ?', inherited.filter(m => m.role === 'hint').length, next.id);
         res.status(201).json({ ...next, hintsUsed: inherited.filter(m => m.role === 'hint').length });
     });
     app.get('/api/attempts', member, async (req, res) => {
-        const rows = req.query.levelId ? await all('SELECT * FROM rounds WHERE level_id = ? ORDER BY started_at DESC LIMIT 200', String(req.query.levelId)) : await all('SELECT * FROM rounds ORDER BY started_at DESC LIMIT 200');
+        const rows = req.query.levelId ? await all('SELECT * FROM rounds WHERE level_id = ? AND NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY started_at DESC LIMIT 200', String(req.query.levelId)) : await all('SELECT * FROM rounds WHERE NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY started_at DESC LIMIT 200');
         res.json(await Promise.all(rows.map(async row => ({ ...publicRound(row), version: (await versionRow(row.version_id)).number, review: await get('SELECT outcome, note, evidence FROM reviews WHERE round_id = ?', row.id) || null }))));
     });
     app.get('/api/attempts/:id', member, async (req, res) => {
         const row = await get('SELECT * FROM rounds WHERE id = ?', req.params.id);
         if (!row)
             fail(404, 'Test not found.');
+        const assignment = await get('SELECT source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
+        if (assignment?.source === 'participant') fail(403, 'Review participant attempts from their collection to keep collection context attached.');
         const desk = isPassportVersion(row.version_id) ? await get('SELECT state FROM passport_sessions WHERE round_id = ?', row.id) : null;
         res.json({ ...publicRound(row), ...(desk ? { desk: JSON.parse(desk.state) } : {}), data: JSON.parse(row.data), config: JSON.parse(row.config), version: (await versionRow(row.version_id)).number, parentId: row.parent_id, review: await get('SELECT reviews.*, users.name AS reviewer FROM reviews JOIN users ON users.id = reviews.reviewer_id WHERE round_id = ?', row.id) || null });
     });
@@ -440,20 +469,26 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             fail(400, 'Evidence must reference target replies from this conversation.');
         if (['solved', 'partial'].includes(input.outcome) && !input.evidence.length)
             fail(400, 'Select a target reply as evidence for this outcome.');
-        await run('INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(round_id) DO UPDATE SET outcome = excluded.outcome, note = excluded.note, evidence = excluded.evidence, reviewer_id = excluded.reviewer_id, updated_at = excluded.updated_at', row.id, input.outcome, input.note, JSON.stringify(input.evidence), req.user.id, Date.now());
+        await batch([
+            ['INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(round_id) DO UPDATE SET outcome = excluded.outcome, note = excluded.note, evidence = excluded.evidence, reviewer_id = excluded.reviewer_id, updated_at = excluded.updated_at', row.id, input.outcome, input.note, JSON.stringify(input.evidence), req.user.id, Date.now()],
+            ['DELETE FROM difficulty_annotations WHERE round_id = ?', row.id],
+        ]);
         res.json({ ok: true });
     });
     app.get('/api/attempts/:id/prompt', member, async (req, res) => {
         const row = await get('SELECT * FROM rounds WHERE id = ?', req.params.id);
         if (!row)
             fail(404, 'Test not found.');
+        const assignment = await get('SELECT source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
+        if (assignment?.source === 'participant') fail(403, 'Participant attempts do not expose their protection prompt.');
         const messages = JSON.parse(row.messages).filter(m => ['user', 'assistant'].includes(m.role));
         const lastQuestion = messages.findLast(m => m.role === 'user');
-        res.json({ system: compilePrompt(JSON.parse(row.data)) + (lastQuestion?.deskContext ? `\n\nVERIFIED DESK OBSERVATIONS\n${lastQuestion.deskContext}` : ''), config: JSON.parse(row.config), messages });
+        res.json({ system: (await collectionModels.systemForRound(row) || compilePrompt(JSON.parse(row.data))) + (lastQuestion?.deskContext ? `\n\nVERIFIED DESK OBSERVATIONS\n${lastQuestion.deskContext}` : ''), config: JSON.parse(row.config), messages });
     });
     app.get('/api/levels/:id/prompt', member, async (req, res) => res.json({ system: compilePrompt(JSON.parse((await levelRow(req.params.id)).draft)), config: safeConfig() }));
     addOrchestrationRoutes(app, { store, provider, completion });
-    addPassportRoutes(app, { store, provider, completion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds, researchWorldId });
+    addCollectionRoutes(app, { store, provider, member, owner, versionRow, createRound });
+    addPassportRoutes(app, { store, provider, completion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds, researchWorldId, collectionModels });
     app.use('/api', async (req, res) => res.status(404).json({ error: 'Endpoint not found.' }));
     app.use(async (error, req, res, next) => {
         if (error instanceof z.ZodError)
