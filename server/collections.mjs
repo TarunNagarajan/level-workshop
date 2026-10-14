@@ -377,7 +377,7 @@ export function addCollectionRoutes(app, { store, provider, member, owner, versi
       const calls = await all('SELECT status, started_at, completed_at, latency_ms, error_code, request_context FROM difficulty_provider_calls WHERE round_id = ? ORDER BY started_at, id', round.id);
       const desk = await get('SELECT state FROM passport_sessions WHERE round_id = ?', round.id);
       return {
-        participantId: assignment.id, profileId: assignment.profile_id,
+        participantId: assignment.id, roundId: round.id, profileId: assignment.profile_id,
         profile: includeAuthor ? JSON.parse(assignment.profile_snapshot) : (({ id, label, moduleIds }) => ({ id, label, moduleIds }))(JSON.parse(assignment.profile_snapshot)), source: assignment.source,
         parentId: assignment.parent_id, assignedAt: assignment.assigned_at, consentAt: assignment.consent_at, consentTextVersion: assignment.consent_version,
         startedAt: round.started_at, submittedAt: round.ended_at, answer: round.answer, hintsUsed: round.hints_used,
