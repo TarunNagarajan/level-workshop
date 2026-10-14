@@ -4,9 +4,9 @@ import { api, time } from './api';
 import type { Round, PlayerLevel } from './types';
 import { Button, Field, Mark, Modal } from './ui';
 
-export function PlayPanel({ level, round, setRound, start, restart, branch, connected, busy = false, standalone = false }: {
+export function PlayPanel({ level, round, setRound, start, restart, branch, connected, busy = false, standalone = false, hideModelLabel = false }: {
   level: PlayerLevel; round: Round | null; setRound: (r: Round) => void; start: () => Promise<void>;
-  restart?: () => Promise<void>; branch?: (messageId: string) => Promise<void>; connected: boolean; busy?: boolean; standalone?: boolean;
+  restart?: () => Promise<void>; branch?: (messageId: string) => Promise<void>; connected: boolean; busy?: boolean; standalone?: boolean; hideModelLabel?: boolean;
 }) {
   const [message, setMessage] = useState(''); const [answer, setAnswer] = useState('');
   const [error, setError] = useState(''); const [sending, setSending] = useState(false); const [answerOpen, setAnswerOpen] = useState(false);
@@ -44,7 +44,7 @@ export function PlayPanel({ level, round, setRound, start, restart, branch, conn
         {closed ? <p className="muted time-ended">Time is up. Submit what you discovered.</p> : <div className="composer"><textarea aria-label="Message to target" placeholder={`Question ${snapshot.character}…`} value={message} maxLength={4000} disabled={busy} rows={2} onChange={e => setMessage(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} /><button className="send-button" aria-label="Send message" disabled={!message.trim() || sending || busy} onClick={send}><ArrowUp size={18} /></button></div>}
         <div className="chat-actions"><div>{restart && <button className="text-button" disabled={sending || busy} onClick={() => restart().catch(e => setError(e.message))}><RefreshCcw size={13} />Restart</button>}{snapshot.hintCount > 0 && <button className="text-button" disabled={closed || sending || busy || round.hintsUsed >= snapshot.hintCount} onClick={async () => { try { update(await api<Round>(`/rounds/${round.id}/hint`, { method: 'POST', token: round.accessToken })); } catch (e) { setError((e as Error).message); } }}><Lightbulb size={13} />Hint{round.hintsUsed ? ` ${round.hintsUsed}/${snapshot.hintCount}` : ''}</button>}</div><button className="text-button submit-action" disabled={sending || busy} onClick={() => setAnswerOpen(true)}>Submit answer<ArrowUpRight size={13} /></button></div>
       </div>}
-    <div className="model-footer"><span className={`connection-dot ${connected ? 'connected' : ''}`} /><span>{round?.model.replace('openai/', '') || 'gpt-oss-20b'}</span>{round && <span>{round.messages.filter(m => m.role === 'user').length} prompts</span>}</div>
+    <div className="model-footer"><span className={`connection-dot ${connected ? 'connected' : ''}`} />{!hideModelLabel && <span>{round?.model?.replace('openai/', '') || 'gpt-oss-20b'}</span>}{round && <span>{round.messages.filter(m => m.role === 'user').length} prompts</span>}</div>
     {answerOpen && round && <Modal title="What did you discover?" error={error} close={() => setAnswerOpen(false)}><form onSubmit={async e => { e.preventDefault(); setSending(true); setError(''); try { update(await api<Round>(`/rounds/${round.id}/submit`, { method: 'POST', body: { answer }, token: round.accessToken })); setAnswerOpen(false); } catch (err) { setError((err as Error).message); } finally { setSending(false); } }}><Field label="Your answer" hint="Use your own words"><textarea autoFocus required rows={5} maxLength={4000} value={answer} onChange={e => setAnswer(e.target.value)} /></Field><p className="muted small">Your answer and conversation will be saved for the level reviewer.</p><Button className="primary full" loading={sending}>Submit answer<ArrowUpRight size={15} /></Button></form></Modal>}
   </section>;
 }

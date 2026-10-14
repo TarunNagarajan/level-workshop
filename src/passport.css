@@ -7,6 +7,8 @@
 .reference-header-actions button { font-size: 11px; min-height: 36px; }
 .reference-shell .primary { background: #52634e; color: #fffdf5; }
 .reference-shell .secondary { background: #f9f7ef; color: #313b30; border-color: #d6d9cd; }
+.collection-consent { display: flex; align-items: flex-start; gap: 10px; margin: 2px 0 18px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.collection-consent input { width: 16px; height: 16px; flex: none; margin: 2px 0 0; accent-color: var(--accent); }
 .reference-error { display: flex; justify-content: space-between; gap: 12px; padding: 12px 16px; font-size: 12px; background: #f7e6df; color: #883c2d; border: 1px solid #e0baab; margin-bottom: 16px; }
 .reference-loading { padding: 50px; font-size: 13px; }
 .reference-intro { display: grid; grid-template-columns: 1.15fr 1fr; min-height: 620px; border: 1px solid #d7d7c8; background: #fbf9f2; border-radius: 5px; overflow: hidden; }
