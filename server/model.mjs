@@ -6,7 +6,7 @@ export function buildCompletionBody({ config, system, messages, temperature }) {
   return {
     model: config.model, messages: [{ role: 'system', content: system }, ...messages.filter(m => ['user', 'assistant'].includes(m.role)).map(({ role, content }) => ({ role, content }))],
     temperature, max_completion_tokens: 2048, stream: false,
-    ...(config.baseUrl.includes('api.groq.com') && config.model.includes('gpt-oss') ? { reasoning_effort: 'low', include_reasoning: false } : {}),
+    ...(config.baseUrl.includes('api.groq.com') && config.model.includes('gpt-oss') ? { reasoning_effort: config.reasoningEffort || 'low', include_reasoning: false } : {}),
   };
 }
 

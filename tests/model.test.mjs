@@ -34,6 +34,11 @@ test('non-Groq provider body omits Groq-specific reasoning switches', () => {
   assert.equal('include_reasoning' in body, false);
 });
 
+test('Groq GPT-OSS request records the frozen reasoning effort', () => {
+  const body = buildCompletionBody({ config: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', reasoningEffort: 'medium' }, system: 'System', messages: [], temperature: 0.1 });
+  assert.equal(body.reasoning_effort, 'medium');
+});
+
 test('provider adapter classifies timeout, unavailable, rate limit, and credential rejection safely', async () => {
   const priorFetch = globalThis.fetch;
   const config = { model: 'fixture-model', baseUrl: 'https://example.test/v1', apiKey: 'fixture-key' };

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { playerLevel, validatePlayable } from './levels.mjs';
 import { MODULE_CATALOGUE_VERSION, defaultProfiles, normalizeProfiles, protectionModules, compileProfilePrompt } from './difficulty.mjs';
 import { initialPassportState, passportLevel, passportScenario, playerDocuments } from './passport-reference.mjs';
+import { buildCompletionBody } from './model.mjs';
 
 export const CONSENT_TEXT_VERSION = 'collection-recording-v1';
 export const attemptedStrategyOptions = [
@@ -93,10 +94,7 @@ export function createCollectionModelServices({ store, provider, completion }) {
       const config = JSON.parse(row.config);
       if (!assignment) return { result: await completion({ config: { ...config, apiKey: provider.apiKey }, system, messages, temperature }), callId: null };
       const callId = id(), startedAt = Date.now();
-      const context = {
-        model: config.model, baseUrl: config.baseUrl, temperature,
-        messages: [{ role: 'system', content: system }, ...messages.filter(message => ['user', 'assistant'].includes(message.role)).map(({ role, content }) => ({ role, content }))],
-      };
+      const context = { baseUrl: safeBaseUrl(config.baseUrl), body: buildCompletionBody({ config, system, messages, temperature }) };
       await run('INSERT INTO difficulty_provider_calls (id, collection_id, round_id, status, started_at, request_context) VALUES (?, ?, ?, ?, ?, ?)', callId, assignment.collection_id, row.id, 'started', startedAt, JSON.stringify(context));
       if (!provider.apiKey || safeBaseUrl(config.baseUrl) !== safeBaseUrl(provider.baseUrl) || config.model !== provider.model) {
         await run('UPDATE difficulty_provider_calls SET status = ?, completed_at = ?, error_code = ? WHERE id = ?', 'failed', Date.now(), 'provider_configuration_changed', callId);

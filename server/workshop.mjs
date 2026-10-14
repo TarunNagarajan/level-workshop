@@ -399,11 +399,12 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (messages.filter(m => m.role === 'user').length >= 40)
             fail(409, 'This test has reached its 40-turn limit.');
         const config = JSON.parse(row.config);
-        if (config.baseUrl !== provider.baseUrl)
+        const collectionSystem = await collectionModels.systemForRound(row);
+        if (!collectionSystem && config.baseUrl !== provider.baseUrl)
             fail(409, 'The provider changed since this test started. Start a fresh test.');
             const playerMessage = { id: id(), role: 'user', content, createdAt: Date.now() };
             const data = JSON.parse(row.data);
-            const system = await collectionModels.systemForRound(row) || compilePrompt(data);
+            const system = collectionSystem || compilePrompt(data);
             const { result, callId } = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature });
             const next = [...messages, playerMessage, { id: id(), role: 'assistant', content: result.text, createdAt: Date.now(), latencyMs: result.latencyMs, usage: result.usage, model: result.model }];
             const saved = await collectionModels.finish({ row, lease, messages: next, callId, result });

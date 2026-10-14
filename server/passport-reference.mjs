@@ -247,9 +247,10 @@ export function addPassportRoutes(app, { store, provider, completion, member, cr
     const messages = JSON.parse(row.messages);
     if (messages.filter(message => message.role === 'user').length >= 40) fail(409, 'This interview has reached its turn limit.');
     const context = passportContext(state, scenarioFor(row)), data = JSON.parse(row.data), config = JSON.parse(row.config);
-    if (config.baseUrl !== provider.baseUrl) fail(409, 'The provider changed. Start a fresh interview.');
+    const collectionSystem = await collectionModels.systemForRound(row);
+    if (!collectionSystem && config.baseUrl !== provider.baseUrl) fail(409, 'The provider changed. Start a fresh interview.');
     const player = { id: randomUUID(), role: 'user', content, createdAt: Date.now(), deskContext: context, presented: [...state.presented] };
-    const system = `${await collectionModels.systemForRound(row) || compilePrompt(data)}\n\nVERIFIED DESK OBSERVATIONS\n${context}`;
+    const system = `${collectionSystem || compilePrompt(data)}\n\nVERIFIED DESK OBSERVATIONS\n${context}`;
     const { result, callId } = await collectionModels.request({ row, system, messages: [...messages, player], temperature: data.temperature });
     const next = [...messages, player, { id: randomUUID(), role: 'assistant', content: result.text, createdAt: Date.now(), latencyMs: result.latencyMs, usage: result.usage, model: result.model }];
     const saved = await collectionModels.finish({ row, lease, messages: next, callId, result });
