@@ -12,11 +12,23 @@ type MetricEvent = {
 };
 type Queued = { event: MetricEvent; token?: string; sessionId: string };
 type RequestTicket = { category: RequestCategory; roundId?: string; token?: string; start: number; pageId: string; view: View; previousPhase?: Phase };
-const uuid = () => crypto.randomUUID();
+function uuid(): string | null {
+  try {
+    const source = globalThis.crypto;
+    if (typeof source?.randomUUID === 'function') return source.randomUUID();
+    if (typeof source?.getRandomValues === 'function') {
+      const bytes = source.getRandomValues(new Uint8Array(16));
+      bytes[6] = (bytes[6] & 0x0f) | 0x40; bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+  } catch { /* telemetry is optional on older or restricted clients */ }
+  return null;
+}
 const now = () => performance.now();
 const phaseTime: Record<'read_think' | 'compose' | 'waiting', number> = { read_think: 0, compose: 0, waiting: 0 };
 let tabId = '';
-let pageId = uuid();
+let pageId = '';
 let view: View = 'other';
 let routeKey = '';
 let enabled = false;
@@ -50,7 +62,7 @@ function stableTabId() {
     const key = 'workshop-metrics-tab';
     const saved = sessionStorage.getItem(key);
     if (saved && /^[0-9a-f-]{36}$/i.test(saved)) return saved;
-    const created = uuid(); sessionStorage.setItem(key, created); return created;
+    const created = uuid(); if (created) sessionStorage.setItem(key, created); return created;
   } catch { return uuid(); }
 }
 
@@ -67,7 +79,9 @@ function classify(path: string): View {
 
 function enqueue(event: Omit<MetricEvent, 'eventId' | 'tabId' | 'pageId' | 'view'> & { pageId?: string; view?: View }, scope?: { id: string; token?: string }) {
   if (!started || !enabled || !sessionId) return;
-  const item: Queued = { sessionId, event: { eventId: uuid(), tabId, pageId: event.pageId || pageId, view: event.view || view, ...event, ...(scope?.id ? { roundId: scope.id } : {}) }, ...(scope?.token ? { token: scope.token } : {}) };
+  const eventId = uuid();
+  if (!eventId) { enabled = false; sessionId = null; if (timer !== null) { window.clearInterval(timer); timer = null; } return; }
+  const item: Queued = { sessionId, event: { eventId, tabId, pageId: event.pageId || pageId, view: event.view || view, ...event, ...(scope?.id ? { roundId: scope.id } : {}) }, ...(scope?.token ? { token: scope.token } : {}) };
   queue.push(item);
   if (queue.length > MAX_QUEUED_EVENTS) queue.splice(0, queue.length - MAX_QUEUED_EVENTS);
   if (queue.length >= 8) void flush(false);
@@ -161,6 +175,7 @@ async function flush(keepalive: boolean) {
 }
 
 async function openSession() {
+  if (!started || !pageId || !tabId) return;
   if (sessionFlight) return sessionFlight;
   const sessionIdentity = identity;
   const generation = sessionGeneration;
@@ -220,14 +235,18 @@ function installListeners() {
 export function navigateMetrics(path: string) {
   const nextView = classify(path);
   if (!started) {
-    started = true; tabId = stableTabId(); view = nextView; routeKey = path; intervalAt = now(); phaseAt = intervalAt; lastActivity = intervalAt; visible = document.visibilityState !== 'hidden';
+    const nextTab = stableTabId(); const nextPage = uuid();
+    if (!nextTab || !nextPage) { enabled = false; return; }
+    started = true; tabId = nextTab; pageId = nextPage; view = nextView; routeKey = path; intervalAt = now(); phaseAt = intervalAt; lastActivity = intervalAt; visible = document.visibilityState !== 'hidden';
     installListeners(); if (identity !== undefined) void openSession(); return;
   }
   if (path === routeKey) return;
   flushInterval('page_exit');
   void flush(false);
   currentRound = null; lastReplyAt = null;
-  pageId = uuid(); view = nextView; routeKey = path; intervalAt = now(); phaseAt = intervalAt; lastActivity = intervalAt; currentPhase = visible ? 'read_think' : 'hidden';
+  const nextPage = uuid();
+  if (!nextPage) { enabled = false; sessionId = null; return; }
+  pageId = nextPage; view = nextView; routeKey = path; intervalAt = now(); phaseAt = intervalAt; lastActivity = intervalAt; currentPhase = visible ? 'read_think' : 'hidden';
   enqueue({ kind: 'page_enter' });
 }
 
@@ -264,6 +283,9 @@ function category(path: string, method: string): RequestCategory | null {
 }
 
 export function beginMeasuredRequest(path: string, method: string, token?: string): RequestTicket | null {
+  // App bootstrap can run before the first routed view has a UUID-backed page scope.
+  // Skip that early request instead of emitting an invalid pageId into the collector.
+  if (!started || !pageId) return null;
   const requestCategory = category(path, method);
   if (!requestCategory) return null;
   const ticket: RequestTicket = { category: requestCategory, start: now(), pageId, view };

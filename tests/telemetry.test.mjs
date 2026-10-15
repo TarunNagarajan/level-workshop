@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { webcrypto } from 'node:crypto';
+import { randomUUID, webcrypto } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 let testQueue = Promise.resolve();
@@ -16,9 +16,9 @@ function serialTest(name, run) {
 }
 
 const source = fileURLToPath(new URL('../src/telemetry.ts', import.meta.url));
-async function harness({ holdEvents = false, rejectFirstBatch = false } = {}) {
+async function harness({ holdEvents = false, rejectFirstBatch = false, cryptoMode = 'full' } = {}) {
   const result = await build({ entryPoints: [source], bundle: true, format: 'esm', platform: 'browser', write: false });
-  const moduleUrl = `data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}#${crypto.randomUUID()}`;
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}#${randomUUID()}`;
   let clock = 1000;
   const windows = new Map(); const documents = new Map(); const intervals = new Map();
   let intervalId = 0;
@@ -26,7 +26,10 @@ async function harness({ holdEvents = false, rejectFirstBatch = false } = {}) {
   let releaseEvents;
   let sessions = 0; let eventBatches = 0;
   const descriptors = Object.fromEntries(['window', 'document', 'sessionStorage', 'performance', 'crypto', 'fetch'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+  const cryptoValue = cryptoMode === 'none' ? undefined : cryptoMode === 'fallback'
+    ? { getRandomValues: webcrypto.getRandomValues.bind(webcrypto) }
+    : webcrypto;
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: cryptoValue });
   Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => clock } });
   globalThis.sessionStorage = new MapStorage();
   globalThis.window = {
@@ -196,5 +199,52 @@ serialTest('authenticated identity change drops unsent events from the previous 
     assert.ok(previousVisitBatches.every(request => request.body.events.every(event => event.kind === 'page_enter')));
     const newVisitBatches = eventRequests.filter(request => request.body.sessionId === 'a78f7502-fdb1-4fa3-8757-cc062fed7d38');
     assert.ok(newVisitBatches.every(request => request.body.events.every(event => event.kind !== 'interaction')));
+  } finally { h.restore(); }
+});
+
+serialTest('UUID fallback works without randomUUID on HTTP contexts', async () => {
+  const h = await harness({ cryptoMode: 'fallback' });
+  try {
+    h.start('/'); await h.tick();
+    const entered = events(h).find(event => event.kind === 'page_enter');
+    assert.ok(entered);
+    assert.match(entered.pageId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    assert.match(entered.tabId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  } finally { h.restore(); }
+});
+
+serialTest('requests before routed page initialization are not emitted with an empty page ID', async () => {
+  const h = await harness();
+  try {
+    const early = h.api.beginMeasuredRequest('/bootstrap', 'GET');
+    assert.equal(early, null);
+    h.api.finishMeasuredRequest(early, 'success');
+    h.start('/'); await h.tick();
+    await h.flushAll();
+    const recorded = events(h);
+    assert.ok(recorded.some(event => event.kind === 'page_enter'));
+    assert.ok(recorded.every(event => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(event.pageId)));
+    assert.equal(recorded.some(event => event.kind === 'request' && event.requestCategory === 'navigation'), false);
+  } finally { h.restore(); }
+});
+
+serialTest('telemetry gracefully disables without crypto and workshop API requests still succeed', async () => {
+  const h = await harness({ cryptoMode: 'none' });
+  try {
+    assert.doesNotThrow(() => h.start('/'));
+    assert.doesNotThrow(() => h.api.setMetricsPhase('compose'));
+    assert.doesNotThrow(() => h.api.recordMetricsInteraction('submit'));
+    assert.doesNotThrow(() => h.api.recordMetricsReply('d4b2f85e-1d43-4d95-b3a6-f1cbabf9bd1b'));
+
+    const result = await build({ entryPoints: [fileURLToPath(new URL('../src/api.ts', import.meta.url))], bundle: true, format: 'esm', platform: 'browser', write: false });
+    const moduleUrl = `data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}#${randomUUID()}`;
+    globalThis.fetch = async (url, options) => {
+      h.requests.push({ url: String(url), options, body: options.body ? JSON.parse(options.body) : null, headers: options.headers || {} });
+      return response({ available: true });
+    };
+    const api = await import(moduleUrl);
+    assert.deepEqual(await api.api('/bootstrap'), { available: true });
+    assert.ok(h.requests.some(request => request.url === '/api/bootstrap'));
+    assert.equal(h.requests.some(request => request.url.includes('/telemetry/')), false);
   } finally { h.restore(); }
 });
