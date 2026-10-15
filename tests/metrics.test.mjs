@@ -68,6 +68,27 @@ for (const adapter of ['sqlite','pglite']) test(`${adapter}: workshop completion
     assert.equal(summary.body.rounds.started,1);
     assert.equal(summary.body.rounds.diagnostics.started,1);
     assert.equal(summary.body.rounds.bySource.find(item=>item.source==='reference-research').started,1);
+    const collectionInput={levelId:level.id,versionId:detail.versions[0].id,profiles:[{id:'same-profile',label:'Same label',notes:'test notes',moduleIds:['secret-boundary'],additionalInstructions:''}]};
+    const collectionA=await fixture.request('/collections',{method:'POST',cookie:ownerCookie,body:collectionInput});
+    const collectionB=await fixture.request('/collections',{method:'POST',cookie:ownerCookie,body:collectionInput});
+    assert.equal(collectionA.status,201,JSON.stringify(collectionA.body));
+    assert.equal(collectionB.status,201,JSON.stringify(collectionB.body));
+    const callStart=Date.now();
+    for(const [collectionId,latency,status] of [[collectionA.body.id,20,'succeeded'],[collectionA.body.id,40,'failed'],[collectionB.body.id,100,'succeeded']]) {
+      await fixture.store.run('INSERT INTO metrics_model_calls (id,context_kind,collection_id,profile_id,source,started_at,latency_ms,requested_model,status,request_fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?)',uuid(),'round',collectionId,'same-profile','participant',callStart,latency,'test-model',status,uuid());
+    }
+    const profileSummary=await fixture.request(`/metrics/summary?from=${Date.now()-60000}`,{cookie:ownerCookie});
+    const profiles=profileSummary.body.byProfile;
+    assert.equal(profiles.length,2,'identically named profile IDs in separate collections stay separate');
+    const profileA=profiles.find(item=>item.collectionId===collectionA.body.id);
+    assert.equal(profileA.calls,2);
+    assert.equal(profileA.succeeded,1);
+    assert.equal(profileA.failed,1);
+    assert.equal(profileA.latency.count,2);
+    assert.equal(profileA.latency.meanMs,30);
+    assert.equal(profileA.latency.p50Ms,20);
+    assert.equal(profileA.latency.p95Ms,40);
+    assert.equal(profiles.find(item=>item.collectionId===collectionB.body.id).latency.p95Ms,100);
   } finally { await fixture.close(); }
 });
 
