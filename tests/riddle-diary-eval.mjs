@@ -232,14 +232,15 @@ export function parseProviderInterval(value = '0') {
 
 export function createProviderPacer(intervalMs, { now = () => Date.now(), sleep = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds)) } = {}) {
   let lastStartedAt = null;
-  return async () => {
+  const wait = async () => {
     const beforeWait = now();
     const requestedWaitMs = lastStartedAt === null ? 0 : Math.max(0, intervalMs - (beforeWait - lastStartedAt));
     if (requestedWaitMs > 0) await sleep(requestedWaitMs);
     const actualWaitMs = Math.max(0, now() - beforeWait);
-    lastStartedAt = now();
     return { requestedWaitMs, actualWaitMs };
   };
+  wait.markStarted = (startedAt = now()) => { lastStartedAt = startedAt; };
+  return wait;
 }
 
 export function isProviderRequest(method, path) {
@@ -408,8 +409,9 @@ async function main() {
         await checkpoint(activeRecord);
       }
     }
-    const requestStartedAt = new Date().toISOString();
     const requestStarted = Date.now();
+    const requestStartedAt = new Date(requestStarted).toISOString();
+    if (providerIntervalMs > 0 && isProviderRequest(method, path)) waitForProvider.markStarted(requestStarted);
     let response;
     if (useVercelCli) {
       try {

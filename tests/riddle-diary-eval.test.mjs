@@ -83,6 +83,7 @@ test('provider pacing is disabled by default, bounded, and keeps waiting separat
   const waits = [];
   const disabled = createProviderPacer(0, { now: () => now, sleep: async () => { throw new Error('disabled pacer must not sleep'); } });
   assert.deepEqual(await disabled(), { requestedWaitMs: 0, actualWaitMs: 0 });
+  disabled.markStarted(now);
   assert.deepEqual(await disabled(), { requestedWaitMs: 0, actualWaitMs: 0 });
   assert.deepEqual(waits, []);
 
@@ -91,11 +92,48 @@ test('provider pacing is disabled by default, bounded, and keeps waiting separat
     sleep: async milliseconds => { waits.push(milliseconds); now += milliseconds + 125; },
   });
   assert.deepEqual(await paced(), { requestedWaitMs: 0, actualWaitMs: 0 });
+  paced.markStarted(now);
   now += 250;
   assert.deepEqual(await paced(), { requestedWaitMs: 750, actualWaitMs: 875 });
+  paced.markStarted(now);
   now += 1_250;
   assert.deepEqual(await paced(), { requestedWaitMs: 0, actualWaitMs: 0 });
   assert.deepEqual(waits, [750]);
+});
+
+test('provider pacing anchors to actual request starts after caller checkpoint overhead', async () => {
+  let now = 0;
+  const waits = [];
+  const actualRequestStarts = [];
+  const paced = createProviderPacer(20_000, {
+    now: () => now,
+    sleep: async milliseconds => { waits.push(milliseconds); now += milliseconds; },
+  });
+
+  await paced();
+  now += 25;
+  actualRequestStarts.push(now);
+  paced.markStarted(now);
+
+  now += 500;
+  const secondWait = await paced();
+  assert.equal(secondWait.requestedWaitMs, 19_500);
+  assert.equal(secondWait.actualWaitMs, 19_500);
+  now += 375;
+  actualRequestStarts.push(now);
+  paced.markStarted(now);
+
+  now += 9_000;
+  const thirdWait = await paced();
+  assert.equal(thirdWait.requestedWaitMs, 11_000);
+  assert.equal(thirdWait.actualWaitMs, 11_000);
+  now += 125;
+  actualRequestStarts.push(now);
+  paced.markStarted(now);
+
+  assert.deepEqual(waits, [19_500, 11_000]);
+  assert.deepEqual(actualRequestStarts.map((start, index) => index ? start - actualRequestStarts[index - 1] : null), [null, 20_375, 20_125]);
+  assert(actualRequestStarts.slice(1).every((start, index) => start - actualRequestStarts[index] >= 20_000));
 });
 
 test('saved target context copies only whitelisted fields from the actual matching user turn', () => {
