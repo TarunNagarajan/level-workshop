@@ -22,6 +22,7 @@ if (!process.env.DATABASE_URL || !process.env.WORKSHOP_OWNER_KEY || (!process.en
     ownerKey: process.env.WORKSHOP_OWNER_KEY,
     sharingKey: process.env.WORKSHOP_SHARE_KEY,
     rootEntry,
+    metricsEnabled: process.env.WORKSHOP_METRICS !== 'false',
     secureCookies: true,
     publicOrigin: process.env.PUBLIC_ORIGIN || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : ''),
   });

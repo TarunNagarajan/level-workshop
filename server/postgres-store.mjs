@@ -24,6 +24,7 @@ export function postgresRows(result) {
 export function postgresStore(sql) {
   const query = (text, args) => sql.query(postgresSql(text), args);
   return {
+    dialect: 'postgres',
     get: async (text, ...args) => postgresRows(await query(text, args))[0],
     all: async (text, ...args) => postgresRows(await query(text, args)),
     run: async (text, ...args) => ({ changes: (await query(text, args)).rowCount }),

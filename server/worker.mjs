@@ -6,7 +6,7 @@ import { d1Store } from './d1-store.mjs';
 import { modelConfig } from './model.mjs';
 
 if (!env.WORKSHOP_OWNER_KEY) throw new Error('The private owner credential is not configured.');
-const { app } = createWorkshop({ store: d1Store(env.DB), provider: modelConfig(env), ownerKey: env.WORKSHOP_OWNER_KEY, sharingKey: env.WORKSHOP_SHARE_KEY, secureCookies: true, publicOrigin: env.PUBLIC_ORIGIN || '' });
+const { app } = createWorkshop({ store: d1Store(env.DB), provider: modelConfig(env), ownerKey: env.WORKSHOP_OWNER_KEY, sharingKey: env.WORKSHOP_SHARE_KEY, secureCookies: true, publicOrigin: env.PUBLIC_ORIGIN || '', metricsEnabled: env.WORKSHOP_METRICS !== 'false' });
 const nodeHandler = httpServerHandler(createServer(app));
 
 export default {
