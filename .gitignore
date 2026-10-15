@@ -25,3 +25,4 @@ research/**/*.html
 research/**/__pycache__/
 __pycache__/
 *.py[cod]
+.vercel
