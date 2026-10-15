@@ -106,7 +106,7 @@ test('authoring, blind play, version isolation, human review and responsive layo
   await restartRequestStarted;
   await expect(page.getByLabel('Message to target')).toBeDisabled();
   await expect(page.getByRole('status').filter({ hasText: 'Starting a fresh round' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Branch from this reply' })).toBeDisabled();
+  expect(await page.getByRole('button', { name: 'Branch from this reply' }).evaluateAll(buttons => buttons.every(button => (button as HTMLButtonElement).disabled))).toBe(true);
   releaseRestart();
   await expect(page.getByLabel('Message to target')).toBeEnabled();
   await page.unroute('**/api/levels/*/rounds', delayNewRound);

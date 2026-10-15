@@ -2,6 +2,24 @@ import { test, expect } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { signInOwner } from './auth';
 
+async function diaryVerticalSpace(page: import('@playwright/test').Page) {
+  return page.evaluate(() => {
+    const box = (selector: string) => {
+      const element = document.querySelector(selector)!;
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return { top: rect.top, bottom: rect.bottom, height: rect.height, minHeight: style.minHeight, overflowY: style.overflowY, flex: style.flex, position: style.position };
+    };
+    const bookStyle = getComputedStyle(document.querySelector('.diary-open-book')!);
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      book: box('.diary-open-book'), leftPage: box('.diary-page-left'), earlier: box('.diary-page-left .diary-page-scroll'),
+      rightPage: box('.diary-page-right'), recent: box('.diary-page-right .diary-page-scroll'), composer: box('.diary-composer-wrap'),
+      composerReserve: bookStyle.getPropertyValue('--diary-composer-height').trim(),
+    };
+  });
+}
+
 test.describe('Riddle diary scene', () => {
   test.use({ baseURL: 'http://127.0.0.1:4323' });
   test.beforeAll(async () => { await mkdir('verification', { recursive: true }); });
@@ -308,14 +326,14 @@ test.describe('Riddle diary scene', () => {
     await page.getByLabel('Ask the diary').fill(edited);
     await page.clock.fastForward(6 * 60 * 1000);
     await expect(page.getByRole('button', { name: 'Send question' })).toBeDisabled();
-    const layoutAfterExpiry = await page.evaluate(() => {
-      const composer = document.querySelector('.diary-composer-wrap')!.getBoundingClientRect();
-      const recent = document.querySelector('.diary-page-right .diary-page-scroll')!.getBoundingClientRect();
-      const earlier = document.querySelector('.diary-page-left .diary-page-scroll')!.getBoundingClientRect();
-      return { composerTop: composer.top, recentBottom: recent.bottom, earlierBottom: earlier.bottom, reserve: getComputedStyle(document.querySelector('.diary-open-book')!).getPropertyValue('--diary-composer-height'), earlierBottomCss: getComputedStyle(document.querySelector('.diary-page-left')!).bottom };
-    });
-    expect(layoutAfterExpiry.recentBottom).toBeLessThanOrEqual(layoutAfterExpiry.composerTop - 8);
-    expect(layoutAfterExpiry.earlierBottom).toBeLessThanOrEqual(layoutAfterExpiry.composerTop - 8);
+    await expect(page.locator('.diary-expired-note')).toBeVisible();
+    await expect.poll(async () => {
+      const layout = await diaryVerticalSpace(page);
+      return Math.max(layout.recent.bottom - layout.composer.top, layout.earlier.bottom - layout.composer.top);
+    }).toBeLessThanOrEqual(-8);
+    const layoutAfterExpiry = await diaryVerticalSpace(page);
+    expect(layoutAfterExpiry.recent.bottom, JSON.stringify(layoutAfterExpiry)).toBeLessThanOrEqual(layoutAfterExpiry.composer.top - 8);
+    expect(layoutAfterExpiry.earlier.bottom, JSON.stringify(layoutAfterExpiry)).toBeLessThanOrEqual(layoutAfterExpiry.composer.top - 8);
     await page.getByRole('button', { name: 'Check previous submission' }).click();
     await expect(page.getByRole('button', { name: 'Check previous submission' })).toHaveCount(0);
     await expect(page.getByLabel('Ask the diary')).toHaveValue(edited);
