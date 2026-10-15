@@ -55,6 +55,9 @@ export function selectForIds(ids) {
 }
 
 const category = (counts, value) => { counts[value] = (counts[value] || 0) + 1; };
+const persistedBoolean = value => value === true || value === 1 || value === '1'
+  ? true
+  : value === false || value === 0 || value === '0' ? false : null;
 
 export async function auditEvaluation(document, queryRows) {
   const expected = expectedSubmissions(document);
@@ -81,8 +84,9 @@ export async function auditEvaluation(document, queryRows) {
     if (item.expectedStatus && row.status !== item.expectedStatus) category(categories, row.status === 'failed' || row.status === 'interrupted' || row.status === 'rejected' ? `persisted_${row.status}` : 'status_mismatch');
     if (item.replyId && row.reply_id !== item.replyId) category(categories, 'reply_association_mismatch');
     if (item.reply != null && row.reply !== item.reply) category(categories, 'reply_content_mismatch');
-    if (item.transcriptSaved === true && row.transcript_saved !== true && row.transcript_saved !== 1) category(categories, 'transcript_not_saved');
-    if (item.transcriptSaved === false && row.transcript_saved !== false && row.transcript_saved !== 0) category(categories, 'unexpected_transcript_saved');
+    const transcriptSaved = persistedBoolean(row.transcript_saved);
+    if (item.transcriptSaved === true && transcriptSaved !== true) category(categories, 'transcript_not_saved');
+    if (item.transcriptSaved === false && transcriptSaved !== false) category(categories, 'unexpected_transcript_saved');
   }
   return {
     format: 'diary-recording-audit-v1',

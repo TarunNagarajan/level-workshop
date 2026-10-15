@@ -29,6 +29,33 @@ test('audits only supplied UUIDs with bound parameters and compares saved conten
   assert.equal(calls[0].text.includes(subId), false);
 });
 
+test('accepts PostgreSQL bigint text representations of persisted transcript flags', async () => {
+  const row = {
+    id: subId, client_request_id: requestId, round_id: roundId, source: 'diary-diagnostic', profile_id: 'chronology',
+    content: 'What did the note say?', status: 'succeeded', reply: 'It mentioned the west corridor.', reply_id: replyId, transcript_saved: '1',
+  };
+  const result = await auditEvaluation(fixture(), async () => [row]);
+  assert.equal(result.passed, true);
+
+  const failedDocument = fixture();
+  failedDocument.records[0].prompts[0] = { content: 'What did the note say?', requestId, submissionId: subId };
+  failedDocument.records[0].replies = [];
+  failedDocument.records[0].status = 'failed';
+  failedDocument.records[0].error = { submission: { id: subId, status: 'failed', transcriptSaved: false } };
+  const failedRow = { ...row, status: 'failed', reply: null, reply_id: null, transcript_saved: '0' };
+  const failedResult = await auditEvaluation(failedDocument, async () => [failedRow]);
+  assert.equal(failedResult.passed, true);
+});
+
+test('does not accept other truthy text values for transcript flags', async () => {
+  const row = {
+    id: subId, client_request_id: requestId, round_id: roundId, source: 'diary-diagnostic', profile_id: 'chronology',
+    content: 'What did the note say?', status: 'succeeded', reply: 'It mentioned the west corridor.', reply_id: replyId, transcript_saved: 'true',
+  };
+  const result = await auditEvaluation(fixture(), async () => [row]);
+  assert.equal(result.mismatchCounts.transcript_not_saved, 1);
+});
+
 test('reports a persisted failure and never includes row content or identifiers in summary', async () => {
   const result = await auditEvaluation(fixture(), async () => [{
     id: subId, client_request_id: requestId, round_id: roundId, source: 'diary-diagnostic', profile_id: 'chronology',
