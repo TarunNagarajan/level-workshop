@@ -85,6 +85,10 @@ function validateEvent(event) {
   if (!event || typeof event !== 'object' || Array.isArray(event) || Object.keys(event).some(key => !eventFields.has(key))) throw Object.assign(new Error('Event contains an unsupported field.'), { status: 400 });
   if (!uuid(event.eventId) || !uuid(event.tabId) || !uuid(event.pageId) || !kinds.has(event.kind) || !views.has(event.view)) throw Object.assign(new Error('Event identity or category is invalid.'), { status: 400 });
   if (event.roundId !== undefined && !uuid(event.roundId)) throw Object.assign(new Error('Round ID is invalid.'), { status: 400 });
+  event.eventId = event.eventId.toLowerCase();
+  event.tabId = event.tabId.toLowerCase();
+  event.pageId = event.pageId.toLowerCase();
+  if (event.roundId !== undefined) event.roundId = event.roundId.toLowerCase();
   for (const key of durationFields) if (event[key] !== undefined && (!Number.isSafeInteger(event[key]) || event[key] < 0 || event[key] > 86400000)) throw Object.assign(new Error(`${key} must be a bounded integer.`), { status: 400 });
   if (event.requestWallMs !== undefined && (!Number.isSafeInteger(event.requestWallMs) || event.requestWallMs < 0 || event.requestWallMs > 600000)) throw Object.assign(new Error('requestWallMs must be a bounded integer.'), { status: 400 });
   if (event.retryCount !== undefined && (!Number.isSafeInteger(event.retryCount) || event.retryCount < 0 || event.retryCount > 20)) throw Object.assign(new Error('retryCount must be a bounded integer.'), { status: 400 });
@@ -240,7 +244,8 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
     let window=windowFromQuery(req.query);const {limit,cursor}=pageArgs(req.query);window=applyCursorWindow(req.query,window,cursor);
     if(!enabled)return res.json({items:[],limit,nextCursor:null,window});
     const at=cursor?.at??window.to-1,id=cursor?.id??'\uffff';
-    const rows=await all(`SELECT *,${timeColumn} AS _at,id AS _id FROM ${table} WHERE ${timeColumn}>=? AND ${timeColumn}<? AND (${timeColumn}<? OR (${timeColumn}=? AND id<?)) ORDER BY ${timeColumn} DESC,id DESC LIMIT ?`,window.from,window.to,at,at,id,limit+1);
+    const idCollation = store.dialect === 'postgres' ? ' COLLATE "C"' : ' COLLATE BINARY';
+    const rows=await all(`SELECT *,${timeColumn} AS _at,id AS _id FROM ${table} WHERE ${timeColumn}>=? AND ${timeColumn}<? AND (${timeColumn}<? OR (${timeColumn}=? AND id${idCollation}<?)) ORDER BY ${timeColumn} DESC,id${idCollation} DESC LIMIT ?`,window.from,window.to,at,at,id,limit+1);
     const page=rows.slice(0,limit),items=await Promise.all(page.map(row=>table==='metrics_sessions'?sessionDto(row,store):callDto(row)));
     res.json({items,limit,nextCursor:rows.length>limit?nextCursor(page.at(-1),window):null,window});
   });
@@ -248,16 +253,17 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
     let window=windowFromQuery(req.query);const {limit,cursor}=pageArgs({...req.query,limit:req.query.limit??100},{allowType:true,requireType:true});window=applyCursorWindow(req.query,window,cursor);
     if(!enabled)return res.json({schema:'owner-metrics',schemaVersion:1,window,items:[],nextCursor:null,pageLimit:limit});
     const at=cursor?.at??window.to-1,id=cursor?.id??'\uffff',cap=limit+1;
+    const idCollation = store.dialect === 'postgres' ? ' COLLATE "C"' : ' COLLATE BINARY';
     const [eventRows,callRows,sessionRows]=await Promise.all([
-      all("SELECT * FROM metrics_events WHERE created_at>=? AND created_at<? AND (created_at<? OR (created_at=? AND (event_id<? OR (event_id=? AND 'event'>?)))) ORDER BY created_at DESC,event_id DESC LIMIT ?",window.from,window.to,at,at,id,id,cursor?.type||'',cap),
-      all("SELECT * FROM metrics_model_calls WHERE started_at>=? AND started_at<? AND (started_at<? OR (started_at=? AND (id<? OR (id=? AND 'model_call'>?)))) ORDER BY started_at DESC,id DESC LIMIT ?",window.from,window.to,at,at,id,id,cursor?.type||'',cap),
-      all("SELECT * FROM metrics_sessions WHERE created_at>=? AND created_at<? AND (created_at<? OR (created_at=? AND (id<? OR (id=? AND 'session'>?)))) ORDER BY created_at DESC,id DESC LIMIT ?",window.from,window.to,at,at,id,id,cursor?.type||'',cap),
+      all(`SELECT * FROM metrics_events WHERE created_at>=? AND created_at<? AND (created_at<? OR (created_at=? AND (event_id${idCollation}<? OR (event_id${idCollation}=? AND 'event'>?)))) ORDER BY created_at DESC,event_id${idCollation} DESC LIMIT ?`,window.from,window.to,at,at,id,id,cursor?.type||'',cap),
+      all(`SELECT * FROM metrics_model_calls WHERE started_at>=? AND started_at<? AND (started_at<? OR (started_at=? AND (id${idCollation}<? OR (id${idCollation}=? AND 'model_call'>?)))) ORDER BY started_at DESC,id${idCollation} DESC LIMIT ?`,window.from,window.to,at,at,id,id,cursor?.type||'',cap),
+      all(`SELECT * FROM metrics_sessions WHERE created_at>=? AND created_at<? AND (created_at<? OR (created_at=? AND (id${idCollation}<? OR (id${idCollation}=? AND 'session'>?)))) ORDER BY created_at DESC,id${idCollation} DESC LIMIT ?`,window.from,window.to,at,at,id,id,cursor?.type||'',cap),
     ]);
     const records=[
       ...eventRows.map(r=>({type:'event',id:r.event_id,recordedAt:r.created_at,sessionId:r.session_id,userId:r.user_id,kind:r.event_kind,view:r.view_category,tabId:r.tab_id,pageId:r.page_id,roundId:r.round_id,collectionId:r.collection_id,source:r.source,profileId:r.profile_id,versionId:r.version_id,phase:r.phase,elapsedMs:r.elapsed_ms,activeMs:r.active_ms,visibleMs:r.visible_ms,idleMs:r.idle_ms,readThinkMs:r.read_think_ms,composeMs:r.compose_ms,waitingMs:r.waiting_ms,sinceReplyMs:r.since_reply_ms,requestCategory:r.request_category,requestOutcome:r.request_outcome,requestWallMs:r.request_wall_ms,retryCount:r.retry_count,interaction:r.interaction})),
       ...callRows.map(r=>({type:'model_call',id:r.id,recordedAt:r.started_at,...callDto(r)})),
       ...await Promise.all(sessionRows.map(async r=>({type:'session',id:r.id,recordedAt:r.created_at,...await sessionDto(r,store)}))),
-    ].sort((a,b)=>b.recordedAt-a.recordedAt||b.id.localeCompare(a.id)||a.type.localeCompare(b.type));
+    ].sort((a,b)=>b.recordedAt-a.recordedAt||(a.id===b.id?0:a.id<b.id?1:-1)||(a.type===b.type?0:a.type<b.type?-1:1));
     const items=records.slice(0,limit),last=items.at(-1);
     res.json({schema:'owner-metrics',schemaVersion:1,window,items,nextCursor:records.length>limit?Buffer.from(JSON.stringify({at:last.recordedAt,id:last.id,type:last.type,from:window.from,to:window.to})).toString('base64url'):null,pageLimit:limit});
   });

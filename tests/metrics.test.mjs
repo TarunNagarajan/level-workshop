@@ -139,10 +139,12 @@ for (const adapter of ['sqlite', 'pglite']) test(`${adapter}: metrics session, e
     assert.match(session.body.sessionId,/^[0-9a-f-]{36}$/i);
     assert.match(session.cookie, /^workshop_metrics=/);
     const cookie = `${session.cookie}; ${ownerCookie}`;
-    const event = { eventId: uuid(), tabId: uuid(), pageId: uuid(), kind: 'heartbeat', view: 'workshop', elapsedMs: 18000, activeMs: 17000, visibleMs: 18000, idleMs: 0 };
+    const uppercaseEventId = uuid().toUpperCase();
+    const event = { eventId: uppercaseEventId, tabId: uuid(), pageId: uuid(), kind: 'heartbeat', view: 'workshop', elapsedMs: 18000, activeMs: 17000, visibleMs: 18000, idleMs: 0 };
     const marker = { eventId: uuid(), tabId: event.tabId, pageId: event.pageId, kind: 'phase', view: 'workshop', phase: 'read_think' };
     assert.deepEqual((await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { sessionId:session.body.sessionId,events: [event,marker] } })).body, { accepted: 2, duplicates: 0 });
-    assert.deepEqual((await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { sessionId:session.body.sessionId,events: [event,marker] } })).body, { accepted: 0, duplicates: 2 });
+    assert.equal((await fixture.store.get('SELECT event_id FROM metrics_events WHERE event_id=?',uppercaseEventId.toLowerCase()))?.event_id,uppercaseEventId.toLowerCase(),'UUID event IDs are stored in canonical lowercase');
+    assert.deepEqual((await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { sessionId:session.body.sessionId,events: [{...event,eventId:uppercaseEventId.toLowerCase()},marker] } })).body, { accepted: 0, duplicates: 2 },'uppercase and lowercase spellings share the same idempotency key');
     const invalid = await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { sessionId:session.body.sessionId,events: [{ ...event, activeMs: 19000 }] } });
     assert.equal(invalid.status, 400);
     const leak = await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { sessionId:session.body.sessionId,events: [{ ...event, eventId: uuid(), message: 'unsent secret' }] } });
@@ -192,6 +194,19 @@ for (const adapter of ['sqlite', 'pglite']) test(`${adapter}: metrics session, e
     assert.equal(JSON.stringify(exported).includes('private-api-key'), false);
     const dbText = JSON.stringify(await fixture.store.all('SELECT * FROM metrics_events'));
     assert.equal(dbText.includes('unsent secret'), false);
+    const orderingAt=Date.now()-60000,uppercaseId='F0000000-0000-4000-8000-000000000001',lowercaseId='a0000000-0000-4000-8000-000000000001';
+    await fixture.store.batch([
+      ['INSERT INTO metrics_events (event_id,session_id,tab_id,page_id,event_kind,view_category,created_at) VALUES (?,?,?,?,?,?,?)',uppercaseId,sessionId,uuid(),uuid(),'page_enter','workshop',orderingAt],
+      ['INSERT INTO metrics_model_calls (id,context_kind,started_at,requested_model,status,request_fingerprint) VALUES (?,?,?,?,?,?)',lowercaseId,'round',orderingAt,'test-model','failed','case-ordering'],
+    ]);
+    let orderingCursor,ordered=[];
+    do {
+      const page=await fixture.request(`/metrics/export?limit=1&from=${orderingAt}&to=${orderingAt+1}${orderingCursor?`&cursor=${encodeURIComponent(orderingCursor)}`:''}`,{cookie:ownerCookie});
+      assert.equal(page.status,200);
+      ordered.push(...page.body.items.map(item=>item.id));
+      orderingCursor=page.body.nextCursor;
+    } while(orderingCursor);
+    assert.deepEqual(ordered,[lowercaseId,uppercaseId],'mixed-case UUIDs at one timestamp stay in deterministic database/cursor order without skipped rows');
   } finally { await fixture.close(); }
 });
 
