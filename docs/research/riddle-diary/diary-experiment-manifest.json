@@ -1,0 +1,69 @@
+{
+  "format": "riddle-diary-experiment-manifest-v1",
+  "frozenAt": "2026-10-15T18:23:16.185308Z",
+  "appCommit": "678f3ba753bc3bd2221ce5c2bcdc194227e300df",
+  "deploymentId": "dpl_6wiQZRDsriyg5ACUi8jotCNAaneq",
+  "publicUrl": "https://level-workshop.vercel.app",
+  "runnerSha256": "3da4596bc57e36d68505e4cd6795d07e7c93e58885d3de75e45375e4ef74297d",
+  "baselinePlanSha256": "a895db3ea375682240fa4d3d2833b265ace3add5d7d643f1823bdd1513e5e16e",
+  "baselinePlanned": 50,
+  "baselineProfileCounts": {
+    "story": 13,
+    "standard": 13,
+    "guarded": 12,
+    "sealed": 12
+  },
+  "reviewerProtocol": "saved-reply-selection-v2",
+  "providerMinimumIntervalMs": 20000,
+  "model": "openai/gpt-oss-20b",
+  "configuredTargetSettings": {
+    "reasoningEffort": "low",
+    "temperature": 0.6,
+    "maxCompletionTokens": 2048
+  },
+  "settingsProvenance": "authored configured defaults, not all returned as runtime facts",
+  "sceneCondition": "All diagnostic plans inspect and present both papers before questioning",
+  "matrixDeploymentNote": "Started on1ce4a2a; final678f3ba differs only in CSS and offline recording audit; provider, prompts, reviewer and runner unchanged",
+  "independentReview": "Codex Sol semantic assessment, not human adjudication",
+  "profiles": [
+    {
+      "profileId": "story",
+      "revision": 1,
+      "promptHash": "1813575e64839b269e75e3997b49afb08041d9d307ecc92b381b0b795dfadd8a",
+      "snapshotHash": "28140d2fe351714bac65afeb57b46dedab0b91c25b66c2e0e88293388f69ce1e"
+    },
+    {
+      "profileId": "standard",
+      "revision": 1,
+      "promptHash": "6bfb8184680fd3e0f734c0e4207d1b4ac6e19b4e62e3d182bd911251a7573ed2",
+      "snapshotHash": "9169f8d601c37e1e11de3a60d24919b8f4175fcf52487b41122b9100bde0826c"
+    },
+    {
+      "profileId": "guarded",
+      "revision": 1,
+      "promptHash": "6266cf9993ff3666100c32ddc3741e957c723c20d28ef4aaf9effdf1c5345061",
+      "snapshotHash": "bb6fbeaf3dbef774c3d9c9e3a5e0e4062db4b1b8b8f266101171f5f5588ece62"
+    },
+    {
+      "profileId": "sealed",
+      "revision": 1,
+      "promptHash": "63356e95f39445cd8747f39686ec1bb898b1ad790c3289c84a9dd09b677c5148",
+      "snapshotHash": "fb42e8351ddb27de9b2736aa397472ba265919f5cad0612bc50d059192af4a81"
+    }
+  ],
+  "appTree": "275108a0f3da68450fd8cbc83ec79d015f797f15",
+  "matrixRunnerSha256": "92cf4962c6d7dc0c99e84368bb47ad55804ade569357c486c3aeab66102b3017",
+  "runnerCommit": "29333b42cfd3d66366b278f21a1e6007d6644cab",
+  "matrixPacingObservedMinimumMs": 19982,
+  "pacingCorrection": "Baseline pacer anchors at recorded actual request start; matrix retained unchanged",
+  "replacementRunnerCommit": "c5090d7",
+  "replacementRunnerSha256": "e0dc778c4ec2fa8f1db356edb57b42ca469dfabf4ee6ae9033abbc302c058227",
+  "primaryBaselineSha256": "54b0f1fdd5877a9d56c56521b94b5e30afe880c3db3df8a8ddf7a41695efef0f",
+  "replacementBaselineSha256": "2701162aeab033b83176531b260dfc909427ff7b5017640f4dda087be5f7891e",
+  "completedTargetInterviews": 50,
+  "totalAttemptRecords": 52,
+  "savedTargetReplies": 66,
+  "primaryObservedMinimumProviderStartGapMs": 20005,
+  "replacementObservedMinimumProviderStartGapMs": 20010,
+  "presentationUpdate": "After baseline execution, UI-only notebook composer, typography and spoiler-safe story/character cards; target profiles and recorded experiment conditions unchanged."
+}

@@ -1,0 +1,41 @@
+{
+  "format": "riddle-diary-cached-review-retry-v1",
+  "roundId": "eb724e6e-948b-44ca-99ab-3db1d7aa7fbe",
+  "profileId": "guarded",
+  "promptRevision": 1,
+  "promptHash": "6266cf9993ff3666100c32ddc3741e957c723c20d28ef4aaf9effdf1c5345061",
+  "snapshotHash": "bb6fbeaf3dbef774c3d9c9e3a5e0e4062db4b1b8b8f266101171f5f5588ece62",
+  "transcriptHash": "a7abe47f3d976a8fa099108213eea84c7b36b5eab8354d2b3add565743b00dbd",
+  "originalReview": {
+    "status": "unavailable",
+    "attempts": 1,
+    "retryable": true,
+    "errorCode": "citation_invalid"
+  },
+  "events": [
+    {
+      "requestedAt": "2026-10-15T16:56:32.863Z",
+      "completedAt": "2026-10-15T16:56:57.308Z",
+      "httpStatus": 200,
+      "review": {
+        "status": "unavailable",
+        "attempts": 2,
+        "retryable": true,
+        "errorCode": "citation_invalid"
+      },
+      "errorCode": null
+    },
+    {
+      "requestedAt": "2026-10-15T16:56:57.310Z",
+      "completedAt": "2026-10-15T16:57:20.655Z",
+      "httpStatus": 200,
+      "review": {
+        "status": "unavailable",
+        "attempts": 3,
+        "retryable": false,
+        "errorCode": "citation_invalid"
+      },
+      "errorCode": null
+    }
+  ]
+}

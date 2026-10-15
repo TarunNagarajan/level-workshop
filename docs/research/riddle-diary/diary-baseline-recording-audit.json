@@ -1,0 +1,13 @@
+{
+  "format": "diary-recording-audit-v1",
+  "evaluationFormat": "riddle-diary-live-baseline-v1",
+  "submittedTurnCount": 63,
+  "foundCount": 63,
+  "missingCount": 0,
+  "persistedStatuses": {
+    "succeeded": 63
+  },
+  "mismatchCounts": {},
+  "passed": true,
+  "auditedAt": "2026-10-15T19:23:37.244Z"
+}
