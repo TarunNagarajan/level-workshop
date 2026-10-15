@@ -25,7 +25,7 @@ async function verifyPassword(password, stored) {
     const actual = Buffer.from(await scrypt(password, salt, 64));
     return timingSafeEqual(actual, Buffer.from(expected, 'hex'));
 }
-export function createWorkshop({ store, provider = modelConfig(), completion = complete, ownerKey = '', sharingKey = '', secureCookies = false, publicOrigin = '', researchWorlds = false, researchWorldId = '' } = {}) {
+export function createWorkshop({ store, provider = modelConfig(), completion = complete, ownerKey = '', sharingKey = '', rootEntry = false, secureCookies = false, publicOrigin = '', researchWorlds = false, researchWorldId = '' } = {}) {
     if (!store)
         throw new Error('A persistent store is required.');
     const cookieOptions = { httpOnly: true, sameSite: 'strict', path: '/', secure: secureCookies, maxAge: 30 * 86400000 };
@@ -137,7 +137,12 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (!results[0].changes) fail(409, 'This collection is no longer accepting attempts. Retry with the same start key if the attempt was already accepted.');
         return { ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', roundId)), accessToken: raw };
     };
-    app.get('/api/bootstrap', async (req, res) => res.json({ needsSetup: !await get('SELECT id FROM users LIMIT 1'), privateEntry: Boolean(ownerKey), user: publicUser(req.user), tutorialDone: Boolean(req.user && await get('SELECT user_id FROM onboarding WHERE user_id = ? AND version >= ?', req.user.id, 1)), model: { ...(req.user ? { model: provider.model, provider: new URL(provider.baseUrl).hostname } : {}), connected: Boolean(provider.apiKey) } }));
+    app.get('/api/bootstrap', async (req, res) => {
+      const hasOwner = Boolean(await get("SELECT id FROM users WHERE role = 'admin' LIMIT 1"));
+      const publicRootEntry = Boolean(rootEntry && hasOwner);
+      if (publicRootEntry) await ensureRootEntryLink();
+      res.json({ needsSetup: !await get('SELECT id FROM users LIMIT 1'), privateEntry: Boolean(ownerKey), rootEntry: publicRootEntry, user: publicUser(req.user), tutorialDone: Boolean(req.user && await get('SELECT user_id FROM onboarding WHERE user_id = ? AND version >= ?', req.user.id, 1)), model: { ...(req.user ? { model: provider.model, provider: new URL(provider.baseUrl).hostname } : {}), connected: Boolean(provider.apiKey) } });
+    });
     app.put('/api/tutorial', member, async (req, res) => {
         const { result } = z.object({ result: z.enum(['completed', 'skipped']) }).parse(req.body);
         await run('INSERT INTO onboarding VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET version = excluded.version, result = excluded.result, completed_at = excluded.completed_at', req.user.id, 1, result, Date.now());
@@ -226,23 +231,65 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
       if (!link) fail(404, 'This workshop link has expired or has been revoked. Ask the owner for a new link.');
       return link;
     };
-    app.get('/api/enter/:token', async (req, res) => { await sharedLink(req.params.token); res.json({ role: 'editor' }); });
-    app.post('/api/enter/:token', authThrottle, async (req, res) => {
-      const link = await sharedLink(req.params.token);
-      const name = z.string().trim().min(1).max(70).parse(req.body.name);
+    const ensureRootEntryLink = async () => {
+      if (!rootEntry || !await get("SELECT id FROM users WHERE role = 'admin' LIMIT 1")) fail(404, 'Main website entry is not enabled.');
+      await run('INSERT INTO workshop_links (id, token, created_at, expires) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING', 'root-workshop-entry', hash(token()), Date.now(), Number.MAX_SAFE_INTEGER);
+      const link = await get('SELECT * FROM workshop_links WHERE id = ?', 'root-workshop-entry');
+      if (!link) fail(404, 'Main website entry is not available.');
+      return link;
+    };
+    const activeRootEntryLink = async () => {
+      const link = await ensureRootEntryLink();
+      if (link.revoked || link.expires <= Date.now()) fail(404, 'Main website name-only entry is paused. Ask the workspace owner to reopen it.');
+      return link;
+    };
+    const setRootEntryEnabled = async enabled => {
+      const link = await ensureRootEntryLink();
+      await batch(enabled
+        ? [['UPDATE workshop_links SET revoked = 0 WHERE id = ?', link.id]]
+        : [['UPDATE workshop_links SET revoked = 1 WHERE id = ?', link.id], ['DELETE FROM auth WHERE token IN (SELECT auth_token FROM link_sessions WHERE link_id = ?)', link.id]]);
+      return { enabled };
+    };
+    const createEditorEntry = async (req, res, link, name) => {
       if (req.user) return res.json({ user: publicUser(req.user) });
       const user = { id: id(), name, email: `${id()}@workshop.invalid`, password: 'link-only', role: 'editor' };
       await run('INSERT INTO users VALUES (?, ?, ?, ?, ?, ?)', user.id, user.name, user.email, user.password, user.role, Date.now());
       await enter(res, user, link.id);
+    };
+    app.get('/api/enter/:token', async (req, res) => { await sharedLink(req.params.token); res.json({ role: 'editor' }); });
+    app.post('/api/enter/:token', authThrottle, async (req, res) => {
+      const link = await sharedLink(req.params.token);
+      const name = z.string().trim().min(1).max(70).parse(req.body.name);
+      await createEditorEntry(req, res, link, name);
     });
-    app.get('/api/workshop-links', member, admin, async (req, res) => res.json((await all('SELECT id, created_at AS "createdAt", expires, revoked FROM workshop_links ORDER BY created_at DESC')).map(link => ({ ...link, ...(link.id === 'initial-workshop-link' && sharingKey && !link.revoked && link.expires > Date.now() ? { path: `/enter/${sharingKey}` } : {}) }))));
+    app.get('/api/entry', async (req, res) => {
+      const link = await activeRootEntryLink();
+      res.json({ role: req.user?.role || 'editor', ready: Boolean(link) });
+    });
+    app.post('/api/entry', authThrottle, async (req, res) => {
+      const link = await activeRootEntryLink();
+      const { name } = z.object({ name: z.string().trim().min(1).max(70) }).strict().parse(req.body);
+      await createEditorEntry(req, res, link, name);
+    });
+    app.put('/api/entry', member, admin, async (req, res) => {
+      const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(req.body);
+      res.json(await setRootEntryEnabled(enabled));
+    });
+    app.get('/api/workshop-links', member, admin, async (req, res) => {
+      const rows = await all('SELECT id, created_at AS "createdAt", expires, revoked FROM workshop_links ORDER BY created_at DESC');
+      res.json(rows.filter(link => link.id !== 'root-workshop-entry' || rootEntry).map(link => link.id === 'root-workshop-entry'
+        ? { id: link.id, createdAt: link.createdAt, revoked: link.revoked, rootEntry: true, enabled: !link.revoked && link.expires > Date.now(), path: '/' }
+        : { ...link, ...(link.id === 'initial-workshop-link' && sharingKey && !link.revoked && link.expires > Date.now() ? { path: `/enter/${sharingKey}` } : {}) }));
+    });
     app.post('/api/workshop-links', member, admin, async (req, res) => {
       const raw = token(); const linkId = id(); const expires = Date.now() + 30 * 86400000;
       await run('INSERT INTO workshop_links (id, token, created_at, expires) VALUES (?, ?, ?, ?)', linkId, hash(raw), Date.now(), expires);
       res.json({ id: linkId, path: `/enter/${raw}`, expires });
     });
     app.delete('/api/workshop-links/:id', member, admin, async (req, res) => {
-      await run('UPDATE workshop_links SET revoked = 1 WHERE id = ?', req.params.id); res.json({ ok: true });
+      if (req.params.id === 'root-workshop-entry' && rootEntry) await setRootEntryEnabled(false);
+      else await run('UPDATE workshop_links SET revoked = 1 WHERE id = ?', req.params.id);
+      res.json({ ok: true });
     });
     app.post('/api/invites', member, admin, async (req, res) => {
         const raw = token();

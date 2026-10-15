@@ -4,9 +4,10 @@ import { openStore } from '../server/store.mjs';
 import { postgresStore } from '../server/postgres-store.mjs';
 
 export async function createFixture(options) {
-  const { wrapStore, store: injectedStore, ...workshopOptions } = options;
+  const { wrapStore, store: injectedStore, adapter = 'auto', ...workshopOptions } = options;
   let store = injectedStore;
-  if (!store && process.env.TEST_DATABASE === 'postgres') {
+  const postgresFixture = adapter === 'pglite' || (adapter === 'auto' && process.env.TEST_DATABASE === 'postgres');
+  if (!store && postgresFixture) {
     const { PGlite } = await import('@electric-sql/pglite');
     const db = new PGlite();
     for (const name of readdirSync(new URL('../db/postgres/', import.meta.url)).filter(name => name.endsWith('.sql')).sort()) {

@@ -5,7 +5,7 @@ import { createWorkshop } from '../server/app.mjs';
 
 // Browser tests use an isolated database and an explicit fixture; the production app has no simulated model mode.
 const fixtureFailures = new Set();
-const { app, store } = createWorkshop({ dbPath: ':memory:', researchWorlds: true, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'ui-fixture' }, completion: async input => {
+const { app, store } = createWorkshop({ dbPath: ':memory:', researchWorlds: true, sharingKey: 'ui-root-entry-fixture-key', rootEntry: process.env.WORKSHOP_ROOT_ENTRY === 'true', provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'ui-fixture' }, completion: async input => {
   const fixtureFailure = input.messages.find(message => message.role === 'user' && message.content.includes('[fixture:rate-limit-once]'))?.content;
   if (fixtureFailure && !fixtureFailures.has(fixtureFailure)) { fixtureFailures.add(fixtureFailure); throw Object.assign(new Error('Fixed UI fixture provider failure'), { status: 429 }); }
   const system = input.system;
@@ -19,5 +19,6 @@ const { app, store } = createWorkshop({ dbPath: ':memory:', researchWorlds: true
 } });
 app.use(express.static(resolve('dist/client')));
 app.get('/{*path}', (req, res) => res.sendFile(resolve('dist/client/index.html')));
-const server = app.listen(4318, '127.0.0.1', () => console.log('Isolated UI verification: http://127.0.0.1:4318'));
+const port = Number(process.env.TEST_PORT || 4318);
+const server = app.listen(port, '127.0.0.1', () => console.log(`Isolated UI verification: http://127.0.0.1:${port}`));
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close(() => { store.db.close(); process.exit(0); }));
