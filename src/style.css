@@ -396,6 +396,53 @@ summary::-webkit-details-marker { display: none; }
 @media (max-width: 900px) { .sidebar { width: 64px; padding: 25px 9px 14px; } .sidebar-top { margin: 0 6px 35px; } .sidebar-top .tiny, .account-row, .nav-item .connection-dot { display: none; } .nav-item { width: 46px; height: 43px; padding: 12px 14px; overflow: hidden; font-size: 0; gap: 0; } .nav-item svg { flex: none; } .utility-row { padding: 0; justify-content: center; flex-direction: column; align-items: center; gap: 6px; margin-top: 15px; } .main { margin-left: 64px; width: calc(100% - 64px); } .editor-header { padding: 14px 18px; } .review-grid { grid-template-columns: 1fr; } .review-sheet { position: static; } }
 @media (max-width: 730px) { .editor-main { height: auto; min-height: 100dvh; } .editor-columns { grid-template-columns: minmax(0, 1fr); } .author-panel { min-height: 590px; max-height: 75dvh; border-right: none; border-bottom: 1px solid var(--line); } .author-tools { gap: 10px; padding-inline: 12px; } .author-tools .text-button { max-width: 88px; text-align: center; font-size: 10px; } .preview-column { min-height: 650px; padding: 15px 18px 23px; } .editor-header { gap: 10px; } .editor-location .breadcrumb { display: none; } .editor-save { gap: 5px; } .compact { font-size: 10px; padding: 7px 9px; } .page { padding: 24px 21px; } .page-heading { margin-top: 31px; } h1 { font-size: 30px; } .page-heading .primary { padding: 9px 11px; font-size: 10px; } .library-toolbar { flex-direction: column-reverse; align-items: stretch; gap: 7px; margin-top: 23px; } .filter-tabs { gap: 20px; overflow: auto; } .filter-tabs button { font-size: 10px; } .search { width: 100%; } .level-row { grid-template-columns: minmax(0, 1fr) 78px 16px; gap: 10px; padding: 22px 2px; } .level-row .owner-cell, .level-row .test-count, .table-heading span:nth-child(3), .table-heading span:nth-child(4) { display: none; } .scenario-cell { gap: 10px; } .level-title { font-size: 18px; } .scenario-cell small { font-size: 9px; } .scenario-cell small .middot { margin: 0 4px; } .level-row .status { font-size: 10px; } .level-number { font-size: 9px; min-width: 16px; } .heading-count { display: none; } .page-heading .muted { font-size: 11px; } .attempt-row { grid-template-columns: minmax(0, 1fr) 90px 14px; gap: 11px; } .attempt-row > span:nth-child(2) { display: none; } .attempt-row .level-title { font-size: 18px; } .member-row { gap: 10px; } .member-row small { font-size: 9px; } .panel-heading { padding: 13px 16px; } .review-transcript, .review-form { padding: 17px; } .blind-shell { padding: 22px 17px; } .standalone-panel { min-height: 65dvh; } .toast { font-size: 11px; } }
 
+.metrics-page { max-width: 1440px; }
+.metrics-page > .breadcrumb { display: flex; align-items: center; gap: 7px; }
+.metrics-heading-actions, .metrics-export-actions { display: flex; align-items: end; gap: 10px; }
+.metrics-window { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+.metrics-window select { min-width: 142px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--ink); }
+.metrics-caveat { margin: 0 0 18px; padding: 12px 14px; border-left: 2px solid var(--green); background: var(--panel); color: var(--muted); font-size: 11px; line-height: 1.55; }
+.metrics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.metrics-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+.metrics-card > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.metrics-card .eyebrow { font-size: 9px; }
+.metrics-card i { color: var(--green); }
+.metrics-card > strong { display: block; margin: 13px 0 7px; font: 22px 'IBM Plex Mono', monospace; }
+.metrics-card > small { display: block; min-height: 28px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.metrics-section { margin-top: 33px; }
+.metrics-section-heading { display: flex; align-items: end; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+.metrics-section-heading h2 { margin: 0; font-size: 19px; }
+.metrics-section-heading .muted { margin: 5px 0 0; font-size: 11px; }
+.metrics-detail-grid, .metrics-breakdown-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.metrics-detail-card, .metrics-breakdown { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+.metrics-detail-card h3, .metrics-breakdown h3 { margin: 0 0 10px; font-size: 13px; }
+.metrics-data-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); }
+.metrics-data-line span { color: var(--muted); font-size: 10px; }
+.metrics-data-line strong { text-align: right; font: 10px 'IBM Plex Mono', monospace; }
+.metrics-breakdown-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.metrics-table-scroll { overflow-x: auto; }
+.metrics-breakdown table { width: 100%; border-collapse: collapse; font-size: 10px; }
+.metrics-breakdown th, .metrics-breakdown td { padding: 8px 7px; border-top: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.metrics-breakdown th { color: var(--muted); font-weight: 500; }
+.metrics-tabs { margin: 4px 0 13px; }
+.metrics-sample-list { display: grid; gap: 8px; }
+.metrics-sample { padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.metrics-sample-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; }
+.metrics-sample-top > span { color: var(--muted); font-size: 10px; }
+.metrics-sample-facts, .metrics-session-usage { display: flex; flex-wrap: wrap; gap: 7px 16px; margin-top: 10px; color: var(--muted); font-size: 10px; }
+.metrics-state { text-transform: capitalize; }
+.metrics-state.succeeded { color: var(--green); }
+.metrics-state.failed, .metrics-state.interrupted { color: var(--danger); }
+.metrics-session-usage { padding-top: 9px; border-top: 1px solid var(--line); }
+.metrics-sample-details { margin-top: 11px; padding-top: 9px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+.metrics-sample-details summary { width: fit-content; cursor: pointer; color: var(--ink); }
+.metrics-sample-details .metrics-detail-grid { margin-top: 10px; }
+.metrics-round-detail { display: grid; gap: 4px; padding: 9px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.metrics-round-detail strong { color: var(--ink); font: 10px 'IBM Plex Mono', monospace; }
+.metrics-more { margin-top: 13px; }
+@media (max-width: 1000px) { .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 730px) { .metrics-heading-actions, .metrics-section-heading { align-items: stretch; flex-direction: column; } .metrics-heading-actions { align-items: flex-start; } .metrics-detail-grid, .metrics-breakdown-grid { grid-template-columns: minmax(0, 1fr); } .metrics-card { padding: 12px; } .metrics-card > strong { font-size: 18px; } .metrics-card .eyebrow { font-size: 8px; } .metrics-export-actions { justify-content: space-between; } }
+
 /* Difficulty collections */
 .collection-page { max-width: 1360px; }
 .collection-page .breadcrumb-back { justify-content: flex-start; gap: 5px; padding: 0; color: var(--muted); font-size: 10px; }
