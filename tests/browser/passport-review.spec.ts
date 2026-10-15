@@ -59,6 +59,19 @@ test.describe('enabled automated passenger review', () => {
     await page.screenshot({ path: 'verification/passport-review-mobile.png', fullPage: true, animations: 'disabled' });
     await expect(page.getByRole('heading', { name: /Case facts: Genuine passport, wrong traveller/ })).toBeVisible();
   });
+
+  test('times out a stalled review request without losing the finding', async ({ page }) => {
+    test.setTimeout(75_000);
+    await setup(page);
+    await page.route('**/api/reference/rounds/*/review', async () => await new Promise(() => {}));
+    const reviewRequest = page.waitForRequest(request => request.method() === 'POST' && /\/api\/reference\/rounds\/[^/]+\/review$/.test(request.url()));
+    await fileCase(page);
+    await reviewRequest;
+    await expect(page.getByText('The automated review could not be completed. Your filed finding is saved.')).toBeVisible({ timeout: 55_000 });
+    await expect(page.getByRole('button', { name: 'Retry automated review' })).toBeVisible();
+    await expect(page.locator('.filed-summary')).toContainText('The passenger admits the passport belongs to his brother.');
+    await expect(page.getByRole('heading', { name: 'Secret recovered' })).toHaveCount(0);
+  });
 });
 
 test.describe('review recovery after a provider failure', () => {

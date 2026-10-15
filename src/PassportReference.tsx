@@ -21,6 +21,19 @@ type Action = { action: string; object?: Item; value?: string; position?: Positi
 const labels: Record<Item, string> = { passport: 'Passport', ticket: 'Boarding pass', card: 'Arrival card' };
 const asset = (name: string) => `/reference-assets/${name}.webp`;
 
+function raceRequestTimeout<T>(request: Promise<T>, controller: AbortController, timeoutMs: number): Promise<T> {
+  let timer = 0;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = window.setTimeout(() => { controller.abort(); reject(new Error('Request timed out.')); }, timeoutMs);
+  });
+  return Promise.race([request, timeout]).finally(() => window.clearTimeout(timer));
+}
+
+async function timedApi<T>(path: string, options: { method?: string; body?: unknown; token?: string }, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  return raceRequestTimeout(api<T>(path, { ...options, signal: controller.signal }), controller, timeoutMs);
+}
+
 const buildSteps = [
   { title: 'Start with one truth', field: 'Protected truth + Success requirements', text: 'Write one natural sentence that the character is protecting. Read this example’s protected truth in the author-only Model context view. Define the exact disclosure a reviewer needs to see. A suspicious signature is a lead; a reply identifying the protected ownership is evidence.', check: 'Can another person identify a successful reply without guessing your intent?', beat: 5 },
   { title: 'Give each object a job', field: 'Clues + physical scene', text: 'Choose three or four objects with different purposes. The passport carries identity and travel history, the ticket makes the itinerary plausible, and the requested card introduces a second signature. Write the visible facts before generating artwork. Keep important text in the interface so it stays crisp and easy to change.', check: 'If you remove an object, does a useful question or decision disappear?', beat: 2 },
@@ -84,11 +97,11 @@ export function PassportReference({ blindToken, researchWorld, researchPreview =
     reviewStarted.current.add(target.id);
     setReviewSubmittingRoundId(target.id); setReviewRequestError(null);
     try {
-      const result = await api<{ machineReview: MachineReview }>(`/reference/rounds/${target.id}/review`, { method: 'POST', token: target.accessToken });
+      const result = await timedApi<{ machineReview: MachineReview }>(`/reference/rounds/${target.id}/review`, { method: 'POST', token: target.accessToken }, 45_000);
       setSession(previous => previous?.round.id === target.id ? { ...previous, machineReview: result.machineReview } : previous);
     } catch {
       try {
-        const latest = await api<Session>(`/reference/rounds/${target.id}`, { token: target.accessToken });
+        const latest = await timedApi<Session>(`/reference/rounds/${target.id}`, { token: target.accessToken }, 8_000);
         if (latest.machineReview) {
           setSession(previous => previous?.round.id === target.id ? { ...previous, machineReview: latest.machineReview } : previous);
           return;
@@ -116,22 +129,26 @@ export function PassportReference({ blindToken, researchWorld, researchPreview =
   }, [round?.id, ended, reviewEnabled, session?.machineReview?.status]);
   useEffect(() => {
     if (!round || session?.machineReview?.status !== 'pending') return;
-    let cancelled = false, checks = 0, polling = false;
+    let cancelled = false, checks = 0, polling = false, activeRequest: AbortController | null = null;
+    const markUnavailable = () => setSession(previous => previous?.round.id === round.id && previous.machineReview?.status === 'pending' ? { ...previous, machineReview: { ...previous.machineReview, status: 'unavailable', retryable: previous.machineReview.attempts < 3, errorCode: 'interrupted' } } : previous);
+    const deadline = window.setTimeout(markUnavailable, 60_000);
     const timer = window.setInterval(async () => {
       if (polling) return;
       polling = true;
       checks++;
+      const controller = new AbortController();
+      activeRequest = controller;
       try {
-        const latest = await api<Session>(`/reference/rounds/${round.id}`, { token: round.accessToken });
+        const latest = await raceRequestTimeout(api<Session>(`/reference/rounds/${round.id}`, { token: round.accessToken, signal: controller.signal }), controller, 8_000);
         if (!cancelled && latest.machineReview) setSession(previous => previous?.round.id === round.id ? { ...previous, machineReview: latest.machineReview } : previous);
       } catch { /* Polling only refreshes a filed review; it never starts one. */ }
-      finally { polling = false; }
+      finally { if (activeRequest === controller) activeRequest = null; polling = false; }
       if (checks >= 12) {
         window.clearInterval(timer);
-        setSession(previous => previous?.round.id === round.id && previous.machineReview?.status === 'pending' ? { ...previous, machineReview: { ...previous.machineReview, status: 'unavailable', retryable: previous.machineReview.attempts < 3, errorCode: 'interrupted' } } : previous);
+        markUnavailable();
       }
     }, 5000);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    return () => { cancelled = true; window.clearInterval(timer); window.clearTimeout(deadline); activeRequest?.abort(); };
   }, [round?.id, session?.machineReview?.status]);
   useEffect(() => {
     let cancelled = false;
