@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import { buildCompletionBody, complete, modelConfig } from './model.mjs';
 import { emptyLevel, levelSchema, seedLevels, compilePrompt, playerLevel, validatePlayable } from './levels.mjs';
-import { addPassportRoutes, passportContext, passportScenarioForVersion } from './passport-reference.mjs';
+import { addPassportRoutes, passportContext, passportScenarioForVersion, publicPassportState } from './passport-reference.mjs';
 import { addOrchestrationRoutes } from './orchestration.mjs';
 import { addCollectionRoutes, createCollectionModelServices } from './collections.mjs';
 import { addMetricsRoutes, createMetricsService } from './metrics.mjs';
@@ -26,7 +26,7 @@ async function verifyPassword(password, stored) {
     const actual = Buffer.from(await scrypt(password, salt, 64));
     return timingSafeEqual(actual, Buffer.from(expected, 'hex'));
 }
-export function createWorkshop({ store, provider = modelConfig(), completion = complete, ownerKey = '', sharingKey = '', rootEntry = false, secureCookies = false, publicOrigin = '', researchWorlds = false, researchWorldId = '', metricsEnabled = false, metricsSessionCreationLimit = 120 } = {}) {
+export function createWorkshop({ store, provider = modelConfig(), completion = complete, ownerKey = '', sharingKey = '', rootEntry = false, secureCookies = false, publicOrigin = '', researchWorlds = false, researchWorldId = '', metricsEnabled = false, metricsSessionCreationLimit = 120, passportReviewEnabled = false } = {}) {
     if (!store)
         throw new Error('A persistent store is required.');
     const cookieOptions = { httpOnly: true, sameSite: 'strict', path: '/', secure: secureCookies, maxAge: 30 * 86400000 };
@@ -507,7 +507,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const assignment = await get('SELECT source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
         if (assignment?.source === 'participant') fail(403, 'Review participant attempts from their collection to keep collection context attached.');
         const desk = isPassportVersion(row.version_id) ? await get('SELECT state FROM passport_sessions WHERE round_id = ?', row.id) : null;
-        res.json({ ...publicRound(row), ...(desk ? { desk: JSON.parse(desk.state) } : {}), data: JSON.parse(row.data), config: JSON.parse(row.config), version: (await versionRow(row.version_id)).number, parentId: row.parent_id, review: await get('SELECT reviews.*, users.name AS reviewer FROM reviews JOIN users ON users.id = reviews.reviewer_id WHERE round_id = ?', row.id) || null });
+        res.json({ ...publicRound(row), ...(desk ? { desk: publicPassportState(JSON.parse(desk.state)) } : {}), data: JSON.parse(row.data), config: JSON.parse(row.config), version: (await versionRow(row.version_id)).number, parentId: row.parent_id, review: await get('SELECT reviews.*, users.name AS reviewer FROM reviews JOIN users ON users.id = reviews.reviewer_id WHERE round_id = ?', row.id) || null });
     });
     app.post('/api/attempts/:id/review', member, async (req, res) => {
         const row = await get('SELECT * FROM rounds WHERE id = ?', req.params.id);
@@ -560,8 +560,8 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     });
     app.get('/api/levels/:id/prompt', member, async (req, res) => res.json({ system: compilePrompt(JSON.parse((await levelRow(req.params.id)).draft)), config: safeConfig() }));
     addOrchestrationRoutes(app, { store, provider, completion: instrumentedCompletion });
-    addCollectionRoutes(app, { store, provider, member, owner, versionRow, createRound });
-    addPassportRoutes(app, { store, provider, completion: instrumentedCompletion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds, researchWorldId, collectionModels });
+    addCollectionRoutes(app, { store, provider, member, owner, versionRow, createRound, passportReviewEnabled });
+    addPassportRoutes(app, { store, provider, completion: instrumentedCompletion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds, researchWorldId, collectionModels, passportReviewEnabled });
     addMetricsRoutes(app, { store, enabled: metricsEnabled, secureCookies, authorizeRound: (req, roundId) => accessRound(req, roundId), admin, sessionCreationLimit: metricsSessionCreationLimit });
     app.use('/api', async (req, res) => res.status(404).json({ error: 'Endpoint not found.' }));
     app.use(async (error, req, res, next) => {

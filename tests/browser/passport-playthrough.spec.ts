@@ -1,25 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test('guided practice completes without changing an active reference round', async ({ page, browser }) => {
-  const owner = { name: 'Workshop owner', email: 'ui-owner@example.test', password: 'ui-verification-password' };
-  const setup = await page.request.post('/api/setup', { data: owner });
-  if (setup.status() === 409) await page.request.post('/api/login', { data: owner });
-  await page.request.put('/api/tutorial', { data: { result: 'skipped' } });
-  const mutations: string[] = [];
-  page.on('request', request => { if (request.method() !== 'GET' && /\/api\/reference\/(start|rounds\/.*\/(action|messages|finish))/.test(request.url())) mutations.push(`${request.method()} ${request.url()}`); });
-  await page.goto('/reference');
-  await page.getByRole('button', { name: 'Open the counter' }).click();
-  await expect(page.getByText('INTERVIEW IN PROGRESS', { exact: false })).toBeVisible();
-  const before = await (await page.request.get('/api/reference/active')).json();
-  mutations.length = 0;
-  const guide = page.getByRole('button', { name: 'Guided playthrough' });
-  await guide.click();
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole('heading', { name: 'Briefing' })).toBeVisible();
-  await page.evaluate(() => document.fonts.ready);
-  await page.screenshot({ path: 'verification/passport-playthrough-desktop.png', fullPage: true, animations: 'disabled' });
-  await expect(dialog.getByText(/Mara Ellis/)).toHaveCount(0);
+async function filePractice(dialog: import('@playwright/test').Locator, decision: 'HOLD' | 'CLEAR') {
   await dialog.getByRole('button', { name: 'Continue' }).click();
   await dialog.getByRole('button', { name: 'Open passport' }).click();
   await dialog.getByRole('button', { name: 'Continue' }).click();
@@ -41,9 +22,34 @@ test('guided practice completes without changing an active reference round', asy
   await dialog.getByRole('button', { name: 'Continue' }).click();
   await dialog.getByRole('checkbox', { name: /Keep as evidence/ }).check();
   await dialog.getByRole('button', { name: 'Continue' }).click();
-  await dialog.getByRole('button', { name: 'HOLD' }).click();
+  await dialog.getByRole('button', { name: decision, exact: true }).click();
   await dialog.getByLabel('Your finding').fill('Mara says the passport belongs to Ruth Ellis.');
   await dialog.getByRole('button', { name: 'File practice case' }).click();
+  await expect(dialog.getByRole('heading', { name: 'Genuine passport, wrong traveller.' })).toBeVisible();
+  await expect(dialog.getByText(decision === 'HOLD' ? 'You held the right passenger.' : 'You cleared the wrong passenger.')).toBeVisible();
+}
+
+test('guided practice completes without changing an active reference round', async ({ page, browser }) => {
+  const owner = { name: 'Workshop owner', email: 'ui-owner@example.test', password: 'ui-verification-password' };
+  const setup = await page.request.post('/api/setup', { data: owner });
+  if (setup.status() === 409) await page.request.post('/api/login', { data: owner });
+  await page.request.put('/api/tutorial', { data: { result: 'skipped' } });
+  const mutations: string[] = [];
+  page.on('request', request => { if (request.method() !== 'GET' && /\/api\/reference\/(start|rounds\/.*\/(action|messages|finish))/.test(request.url())) mutations.push(`${request.method()} ${request.url()}`); });
+  await page.goto('/reference');
+  await page.getByRole('button', { name: 'Open the counter' }).click();
+  await expect(page.getByText('INTERVIEW IN PROGRESS', { exact: false })).toBeVisible();
+  const before = await (await page.request.get('/api/reference/active')).json();
+  mutations.length = 0;
+  const guide = page.getByRole('button', { name: 'Guided playthrough' });
+  await guide.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Briefing' })).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({ path: 'verification/passport-playthrough-desktop.png', fullPage: true, animations: 'disabled' });
+  await expect(dialog.getByText(/Mara Ellis/)).toHaveCount(0);
+  await filePractice(dialog, 'HOLD');
   await expect(dialog.getByRole('button', { name: 'Back to real desk' })).toBeVisible();
   await dialog.getByRole('button', { name: 'Back to real desk' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -53,15 +59,17 @@ test('guided practice completes without changing an active reference round', asy
   expect(after.state.revision).toBe(before.state.revision);
   expect(after.round.messages).toEqual(before.round.messages);
   expect(mutations).toEqual([]);
-  await page.request.post(`/api/reference/rounds/${before.round.id}/finish`, {
-    headers: { 'x-round-token': before.round.accessToken },
-    data: { decision: 'HOLD', finding: 'Browser test cleanup.', evidence: [] },
-  });
   await guide.click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(guide).toBeFocused();
+  await guide.click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Restart practice' }).click();
+  await filePractice(page.getByRole('dialog'), 'CLEAR');
+  await expect(page.getByRole('dialog').getByText(/Your choice: CLEAR/)).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 
   const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, storageState: await page.context().storageState() });
   const mobile = await mobileContext.newPage();
@@ -71,5 +79,24 @@ test('guided practice completes without changing an active reference round', asy
   await mobile.evaluate(() => document.fonts.ready);
   await mobile.screenshot({ path: 'verification/passport-playthrough-mobile.png', fullPage: true, animations: 'disabled' });
   expect(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  await page.getByRole('button', { name: 'File finding' }).click();
+  const filing = page.getByRole('dialog', { name: 'File the case' });
+  await filing.getByRole('button', { name: 'CLEAR', exact: true }).click();
+  await filing.getByLabel('Your finding').fill('The passport is genuine.');
+  await filing.getByRole('button', { name: 'Stamp and file', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /Case result: Genuine passport, wrong traveller/ })).toBeVisible();
+  await expect(page.getByText('Your CLEAR decision does not match the case facts.', { exact: false })).toBeVisible();
+  const filed = await (await page.request.get(`/api/reference/rounds/${before.round.id}`, { headers: { 'x-round-token': before.round.accessToken } })).json();
+  expect(filed.caseResult.decisionCorrect).toBe(false);
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({ path: 'verification/passport-result-desktop.png', fullPage: true, animations: 'disabled' });
+  await page.reload();
+  await expect(page.getByRole('heading', { name: /Case result: Genuine passport, wrong traveller/ })).toBeVisible();
+  expect((await (await page.request.get(`/api/reference/rounds/${before.round.id}`, { headers: { 'x-round-token': before.round.accessToken } })).json()).caseResult.decisionCorrect).toBe(false);
+  await mobile.evaluate((receipt) => sessionStorage.setItem('passport-reference:member', JSON.stringify(receipt)), { id: before.round.id, token: before.round.accessToken });
+  await mobile.reload();
+  await expect(mobile.getByRole('heading', { name: /Case result: Genuine passport, wrong traveller/ })).toBeVisible();
+  await mobile.evaluate(() => document.fonts.ready);
+  await mobile.screenshot({ path: 'verification/passport-result-mobile.png', fullPage: true, animations: 'disabled' });
   await mobileContext.close();
 });

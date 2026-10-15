@@ -91,6 +91,7 @@ Apply PostgreSQL migrations with `npm run db:migrate` before deploying. Migratio
 | `PUBLIC_ORIGIN` | Request origin |
 | `COOKIE_SECURE` | `false`; set `true` behind HTTPS |
 | `WORKSHOP_METRICS` | `true` in hosted deployment; set `false` to disable |
+| `WORKSHOP_PASSPORT_REVIEW` | `true` locally and in hosted deployments; set `false` to disable |
 
 A key being present means configured, not provider access verified. Run a test to confirm access. Provider errors and rate limits appear in the chat. The Groq adapter requests low reasoning effort and excludes reasoning for GPT-OSS. Other compatible providers can be configured through the environment; validate their supported completion parameters before switching.
 
@@ -112,7 +113,7 @@ Implementation references: [Groq compatibility](https://console.groq.com/docs/op
 
 ## Interactive reference: One last passenger
 
-Open `/reference` after entering the workshop. This completed object-only scene is separate from the three team themes. The player can move documents with pointer or keyboard, inspect and enlarge them, open/turn passport pages, request an arrival card, compare signatures, use a UV lamp, present objects, interview a real target model, keep replies as evidence, and stamp HOLD or CLEAR. The five-minute deadline is enforced on the server. A stamp records a finding; manual review determines disclosure.
+Open `/reference` after entering the workshop. This completed object-only scene is separate from the three team themes. The player can move documents with pointer or keyboard, inspect and enlarge them, open/turn passport pages, request an arrival card, compare signatures, use a UV lamp, present objects, interview a real target model, keep replies as evidence, and stamp HOLD or CLEAR. The five-minute deadline is enforced on the server. A stamp records a finding; when automated review is enabled, a separate configured-provider request assesses actual target disclosures after filing. Its cited result is a machine assessment, not a human review, and provider failure does not undo filing. The endpoint is `POST /api/reference/rounds/:id/review`; stored results are returned in the round snapshot and completed reviews are idempotent. Set `WORKSHOP_PASSPORT_REVIEW=false` to disable it.
 
 The author’s Explore the design view contains six storyboard beats, object roles, current model context, saved action trail, success criteria, and a six-step build guide. Create my editable prompt draft makes a separate authored level; it does not duplicate the physical scene implementation. Share issues a seven-day name-only blind link without author controls. The owner can revoke links in that dialog. Existing round capabilities remain independently usable to finish a started case.
 

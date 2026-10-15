@@ -12,13 +12,27 @@ type Item = 'passport' | 'ticket' | 'card';
 type Position = { x: number; y: number };
 type DeskState = { revision: number; page: number; lamp: 'warm' | 'uv' | 'off'; cardRequested: boolean; presented: Item[]; selected: Item; compared: boolean; hintsUsed: number; positions: Record<Item, Position>; events: { id: string; action: string; observation: string; at: number }[]; decision: 'HOLD' | 'CLEAR' | null; evidence: string[] };
 type Documents = { passport: { name: string; birth: string; number: string; issued: string; expires: string; signature: string; stamp: string | null } | null; ticket: { name: string; flight: string; from: string; to: string; gate: string; seat: string; boards: string; date: string }; card: { name: string; purpose: string; stay: string; signature: string; address: string } | null };
-type Session = { round: Round; state: DeskState; documents: Documents };
-type Configuration = { canManageLinks?: boolean; level: PlayerLevel; connected: boolean; documents: Documents; accepting?: boolean; consentTextVersion?: string };
+type MachineReview = { status: 'pending' | 'unavailable' | 'complete'; attempts: number; retryable: boolean; startedAt?: number; errorCode?: string; verdict?: 'recovered' | 'partial' | 'not_recovered' | 'uncertain'; reason?: string; evidence?: { replyId: string; quote: string }[]; finding?: string; completedAt?: number };
+type Session = { round: Round; state: DeskState; documents: Documents; reviewEnabled?: boolean; machineReview?: MachineReview; caseResult?: { title: string; explanation: string; expectedDecision: 'HOLD' | 'CLEAR'; playerDecision: 'HOLD' | 'CLEAR'; decisionCorrect: boolean } };
+type Configuration = { canManageLinks?: boolean; level: PlayerLevel; connected: boolean; documents: Documents; accepting?: boolean; consentTextVersion?: string; reviewEnabled?: boolean };
 type Beat = { title: string; time: string; object: Item; purpose: string; action: string; context: string; response: string; branch: string };
 type Design = { level: Level; storyboard: Beat[]; contextContract: string };
 type Action = { action: string; object?: Item; value?: string; position?: Position };
 const labels: Record<Item, string> = { passport: 'Passport', ticket: 'Boarding pass', card: 'Arrival card' };
 const asset = (name: string) => `/reference-assets/${name}.webp`;
+
+function raceRequestTimeout<T>(request: Promise<T>, controller: AbortController, timeoutMs: number): Promise<T> {
+  let timer = 0;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = window.setTimeout(() => { controller.abort(); reject(new Error('Request timed out.')); }, timeoutMs);
+  });
+  return Promise.race([request, timeout]).finally(() => window.clearTimeout(timer));
+}
+
+async function timedApi<T>(path: string, options: { method?: string; body?: unknown; token?: string }, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  return raceRequestTimeout(api<T>(path, { ...options, signal: controller.signal }), controller, timeoutMs);
+}
 
 const buildSteps = [
   { title: 'Start with one truth', field: 'Protected truth + Success requirements', text: 'Write one natural sentence that the character is protecting. Read this example’s protected truth in the author-only Model context view. Define the exact disclosure a reviewer needs to see. A suspicious signature is a lead; a reply identifying the protected ownership is evidence.', check: 'Can another person identify a successful reply without guessing your intent?', beat: 5 },
@@ -44,6 +58,8 @@ export function PassportReference({ blindToken, researchWorld, researchPreview =
   const [now, setNow] = useState(Date.now()), [observation, setObservation] = useState('Open a document to begin your inspection.');
   const [finishOpen, setFinishOpen] = useState(false), [decision, setDecision] = useState<'HOLD' | 'CLEAR'>('HOLD');
   const [finding, setFinding] = useState(''), [evidence, setEvidence] = useState<string[]>([]), [share, setShare] = useState('');
+  const [reviewSubmittingRoundId, setReviewSubmittingRoundId] = useState(''), [reviewRequestError, setReviewRequestError] = useState<{ roundId: string; message: string } | null>(null);
+  const reviewStarted = useRef(new Set<string>()), reviewPending = useRef(new Set<string>());
   const [draftId, setDraftId] = useState('');
   const [buildStep, setBuildStep] = useState(0);
   const [referenceLinks, setReferenceLinks] = useState<{ id: string; createdAt: number; expires: number; revoked: number }[]>([]);
@@ -57,6 +73,9 @@ export function PassportReference({ blindToken, researchWorld, researchPreview =
   const savedKey = collectionToken ? `workshop-collection:${collectionToken}` : `passport-reference:${blindToken || (researchPreview ? 'research-preview' : researchWorld ? `research-${researchWorld}` : 'member')}`;
   const entryPath = collectionToken ? `/collect/${collectionToken}` : blindToken ? `/reference/play/${blindToken}` : researchPreview ? '/reference/research/preview' : researchWorld ? `/reference/research/${researchWorld}` : '/reference';
   const state = session?.state, round = session?.round;
+  const reviewEnabled = session?.reviewEnabled ?? config?.reviewEnabled ?? false;
+  const reviewSubmitting = Boolean(round && reviewSubmittingRoundId === round.id);
+  const activeReviewError = round && reviewRequestError?.roundId === round.id ? reviewRequestError.message : '';
   const remaining = round ? Math.ceil((round.deadline - (round.endedAt || now)) / 1000) : 300;
   useEffect(() => { if (round) setMetricsPhase('read_think', round.id, round.accessToken); }, [round?.id]);
   const ended = Boolean(round?.endedAt), expired = Boolean(round && remaining <= 0), locked = busy || ended || expired;
@@ -66,10 +85,30 @@ export function PassportReference({ blindToken, researchWorld, researchPreview =
       if (collectionToken) {
         try { const receipt = JSON.parse(sessionStorage.getItem(savedKey) || '{}'); sessionStorage.setItem(savedKey, JSON.stringify({ ...receipt, id: value.round.id, accessToken: value.round.accessToken, kind: 'passport' })); } catch {}
       } else if (blindToken || researchWorld || researchPreview) sessionStorage.setItem(savedKey, JSON.stringify({ id: value.round.id, token: value.round.accessToken }));
+      else if (!collectionPreview) sessionStorage.setItem(savedKey, JSON.stringify({ id: value.round.id, token: value.round.accessToken }));
       return value;
     });
     setLocalPositions({});
     setObservation(next.state.events.at(-1)?.observation || 'Open a document to begin your inspection.');
+  };
+  const requestMachineReview = async (target: Round, explicitRetry = false) => {
+    if (reviewPending.current.has(target.id) || (!explicitRetry && reviewStarted.current.has(target.id))) return;
+    reviewPending.current.add(target.id);
+    reviewStarted.current.add(target.id);
+    setReviewSubmittingRoundId(target.id); setReviewRequestError(null);
+    try {
+      const result = await timedApi<{ machineReview: MachineReview }>(`/reference/rounds/${target.id}/review`, { method: 'POST', token: target.accessToken }, 45_000);
+      setSession(previous => previous?.round.id === target.id ? { ...previous, machineReview: result.machineReview } : previous);
+    } catch {
+      try {
+        const latest = await timedApi<Session>(`/reference/rounds/${target.id}`, { token: target.accessToken }, 8_000);
+        if (latest.machineReview) {
+          setSession(previous => previous?.round.id === target.id ? { ...previous, machineReview: latest.machineReview } : previous);
+          return;
+        }
+      } catch { /* Preserve the filed session and offer a safe retry. */ }
+      setReviewRequestError({ roundId: target.id, message: 'The automated review could not be completed. Your filed finding is saved. You can retry when the review is available.' });
+    } finally { reviewPending.current.delete(target.id); setReviewSubmittingRoundId(current => current === target.id ? '' : current); }
   };
   useEffect(() => {
     if (!round) return;
@@ -84,6 +123,33 @@ export function PassportReference({ blindToken, researchWorld, researchPreview =
     if (!round || draftId !== round.id) return;
     sessionStorage.setItem(`passport-finding:${round.id}`, JSON.stringify({ finding, evidence, decision }));
   }, [draftId, round?.id, finding, evidence, decision]);
+  useEffect(() => {
+    if (!round || !ended || !reviewEnabled || session?.machineReview || reviewStarted.current.has(round.id)) return;
+    void requestMachineReview(round);
+  }, [round?.id, ended, reviewEnabled, session?.machineReview?.status]);
+  useEffect(() => {
+    if (!round || session?.machineReview?.status !== 'pending') return;
+    let cancelled = false, checks = 0, polling = false, activeRequest: AbortController | null = null;
+    const markUnavailable = () => setSession(previous => previous?.round.id === round.id && previous.machineReview?.status === 'pending' ? { ...previous, machineReview: { ...previous.machineReview, status: 'unavailable', retryable: previous.machineReview.attempts < 3, errorCode: 'interrupted' } } : previous);
+    const deadline = window.setTimeout(markUnavailable, 60_000);
+    const timer = window.setInterval(async () => {
+      if (polling) return;
+      polling = true;
+      checks++;
+      const controller = new AbortController();
+      activeRequest = controller;
+      try {
+        const latest = await raceRequestTimeout(api<Session>(`/reference/rounds/${round.id}`, { token: round.accessToken, signal: controller.signal }), controller, 8_000);
+        if (!cancelled && latest.machineReview) setSession(previous => previous?.round.id === round.id ? { ...previous, machineReview: latest.machineReview } : previous);
+      } catch { /* Polling only refreshes a filed review; it never starts one. */ }
+      finally { if (activeRequest === controller) activeRequest = null; polling = false; }
+      if (checks >= 12) {
+        window.clearInterval(timer);
+        markUnavailable();
+      }
+    }, 5000);
+    return () => { cancelled = true; window.clearInterval(timer); window.clearTimeout(deadline); activeRequest?.abort(); };
+  }, [round?.id, session?.machineReview?.status]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -119,7 +185,14 @@ export function PassportReference({ blindToken, researchWorld, researchPreview =
             try { const previous = await api<Session>(`/reference/rounds/${value.id}`, { token: value.token }); if (!cancelled) receive({ ...previous, round: { ...previous.round, accessToken: value.token } }); }
             catch { sessionStorage.removeItem(savedKey); }
           }
-        } else if (!collectionToken && !collectionPreview) { const previous = await api<Session | null>('/reference/active'); if (!cancelled && previous) receive(previous); }
+        } else if (!collectionToken && !collectionPreview) {
+          let restored = false;
+          try {
+            const saved = JSON.parse(sessionStorage.getItem(savedKey) || 'null') as { id?: string; token?: string } | null;
+            if (saved?.id) { const filed = await api<Session>(`/reference/rounds/${saved.id}`, saved.token ? { token: saved.token } : {}); if (!cancelled) { receive({ ...filed, round: { ...filed.round, accessToken: saved.token } }); restored = true; } }
+          } catch { if (!cancelled) sessionStorage.removeItem(savedKey); }
+          if (!cancelled && !restored) { const previous = await api<Session | null>('/reference/active'); if (!cancelled && previous) receive(previous); }
+        }
       } catch (e) { if (!cancelled) setError((e as Error).message); }
       finally { if (!cancelled) setLoaded(true); }
     })();
@@ -232,8 +305,8 @@ export function PassportReference({ blindToken, researchWorld, researchPreview =
         <div className="desk-observation" role="status"><span className="eyebrow">INSPECTION NOTE</span><p>{observation}</p></div>
         <div className="inspection-controls"><div className="object-select" role="group" aria-label="Selected document">{(['passport', 'ticket', ...(state!.cardRequested ? ['card'] : [])] as Item[]).map(item => <button key={item} className={selected === item ? 'active' : ''} onClick={() => setSelected(item)}>{labels[item]}</button>)}</div><div className="object-actions"><Button className="secondary" onClick={() => showObject(selected)}>Inspect</Button>{selected === 'passport' && <><Button className="secondary" disabled={locked} onClick={() => void action({ action: 'open' })}>{state!.page ? 'Close' : 'Open'}</Button><Button className="secondary" disabled={locked || !state!.page} onClick={() => void action({ action: 'turn' })}>Turn page</Button></>}<Button className="secondary" disabled={locked} onClick={() => void action({ action: 'present', object: selected })}>{state!.presented.includes(selected) ? 'Take back' : 'Present'}</Button><Button className="secondary" disabled={locked || !state!.cardRequested || !state!.page} onClick={() => void action({ action: 'compare' })}>Compare signatures</Button></div></div>
       </div>
-      <aside className="interview-panel"><div className="interview-heading"><span className="speaker-grille" aria-hidden="true" /><div><span className="eyebrow">BEHIND THE GLASS</span><h2>The passenger</h2></div><span className={`connection-dot ${config.connected ? 'connected' : ''}`} /></div><div className="presented-context"><span>In front of him</span><strong>{state!.presented.length ? state!.presented.map(item => labels[item]).join(' + ') : 'No document presented'}</strong></div><div ref={transcript} className="interview-transcript" aria-live="polite">{round!.messages.map(reply => <article key={reply.id} className={`interview-message ${reply.role}`}><div><span>{reply.role === 'user' ? 'YOU' : 'PASSENGER'}</span>{reply.latencyMs != null && <small>{(reply.latencyMs / 1000).toFixed(2)}s</small>}</div><p>{reply.content}</p>{reply.role === 'assistant' && !reply.opening && <button aria-label={evidence.includes(reply.id) ? 'Remove reply from evidence' : 'Keep reply as evidence'} className={evidence.includes(reply.id) ? 'kept-evidence' : ''} onClick={() => setEvidence(keys => keys.includes(reply.id) ? keys.filter(key => key !== reply.id) : [...keys, reply.id])}>{evidence.includes(reply.id) && <Check size={11} />}{evidence.includes(reply.id) ? 'Kept as evidence' : 'Keep as evidence'}</button>}</article>)}{busy && <p className="interview-wait">Processing…</p>}</div>
-        {ended ? <div className="filed-summary"><strong>Case filed.</strong><p>{round!.answer}</p>{!blindToken && !collectionToken && !researchWorld && !researchPreview && <a href={`/attempts/${round!.id}`}>Open the transcript in Tests</a>}<Button className="secondary" onClick={() => void start()}>Play again</Button></div> : <div className="interview-composer">{expired ? <p>Your five minutes are up. You can still file your finding.</p> : <><label className="sr-only" htmlFor="passenger-question">Question the passenger</label><textarea id="passenger-question" value={message} maxLength={4000} placeholder={state!.presented.length ? `Ask about the ${labels[state!.presented[0]].toLowerCase()}…` : 'Question his account…'} onChange={event => setMessage(event.target.value)} disabled={busy} onFocus={() => setMetricsPhase('compose', round!.id, round!.accessToken)} onBlur={() => setMetricsPhase('read_think', round!.id, round!.accessToken)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} /><button className="question-send" aria-label="Send question" disabled={locked || !message.trim()} onClick={() => void send()}><ArrowUp size={17} /></button></>}<div className="interview-footer"><button disabled={locked || state!.hintsUsed >= 2} onClick={() => void action({ action: 'hint' })}><Lightbulb size={12} />Hint {state!.hintsUsed ? `${state!.hintsUsed}/2` : ''}</button><button disabled={busy} onClick={() => { setFinishOpen(true); setMetricsPhase('compose', round!.id, round!.accessToken); }}>File finding<Stamp size={12} /></button></div><small>{!collectionToken && `${String(round!.model || "Target model").replace("openai/", "")} · `}{round!.messages.filter(reply => reply.role === 'user').length} questions</small></div>}
+      <aside className={`interview-panel ${ended ? 'has-filed-result' : ''}`}><div className="interview-heading"><span className="speaker-grille" aria-hidden="true" /><div><span className="eyebrow">BEHIND THE GLASS</span><h2>The passenger</h2></div><span className={`connection-dot ${config.connected ? 'connected' : ''}`} /></div><div className="presented-context"><span>In front of him</span><strong>{state!.presented.length ? state!.presented.map(item => labels[item]).join(' + ') : 'No document presented'}</strong></div><div ref={transcript} className="interview-transcript" aria-live="polite">{round!.messages.map(reply => <article key={reply.id} className={`interview-message ${reply.role}`}><div><span>{reply.role === 'user' ? 'YOU' : 'PASSENGER'}</span>{reply.latencyMs != null && <small>{(reply.latencyMs / 1000).toFixed(2)}s</small>}</div><p>{reply.content}</p>{reply.role === 'assistant' && !reply.opening && <button aria-label={evidence.includes(reply.id) ? 'Remove reply from evidence' : 'Keep reply as evidence'} className={evidence.includes(reply.id) ? 'kept-evidence' : ''} onClick={() => setEvidence(keys => keys.includes(reply.id) ? keys.filter(key => key !== reply.id) : [...keys, reply.id])}>{evidence.includes(reply.id) && <Check size={11} />}{evidence.includes(reply.id) ? 'Kept as evidence' : 'Keep as evidence'}</button>}</article>)}{busy && <p className="interview-wait">Processing…</p>}</div>
+        {ended ? <div className="filed-summary"><strong>Case filed.</strong>{reviewEnabled && <section className="machine-review" aria-labelledby="machine-review-title" aria-live="polite"><p className="eyebrow">AUTOMATED TRANSCRIPT REVIEW</p><h3 id="machine-review-title">{session!.machineReview?.status === 'complete' ? ({ recovered: 'Secret recovered', partial: 'Part of the secret recovered', not_recovered: 'Secret not recovered', uncertain: 'Review inconclusive' } as const)[session!.machineReview.verdict || 'uncertain'] : 'Was protected information disclosed?'}</h3>{(reviewSubmitting || session!.machineReview?.status === 'pending') && <p role="status">{reviewSubmitting ? 'Reviewing your interview…' : 'The review is still processing.'}</p>}{(activeReviewError || session!.machineReview?.status === 'unavailable') && <><p role="status">{activeReviewError || 'The automated review could not be completed. Your filed finding is saved.'}{session!.machineReview?.attempts ? ` Attempts: ${session!.machineReview.attempts} of 3.` : ''}</p>{(activeReviewError || session!.machineReview?.retryable) && <Button className="secondary" disabled={reviewSubmitting} onClick={() => void requestMachineReview(round!, true)}>Retry automated review</Button>}</>}{session!.machineReview?.status === 'complete' && <><p>{session!.machineReview.reason}</p><div className="machine-review-finding"><strong>Your submitted finding</strong><p>{session!.machineReview.finding || round!.answer}</p></div>{Boolean(session!.machineReview.evidence?.length) && <div className="machine-review-evidence"><strong>Supporting passenger replies</strong>{session!.machineReview.evidence!.map((citation, index) => { const source = round!.messages.find(reply => reply.id === citation.replyId && reply.role === 'assistant' && !reply.opening); return source ? <blockquote key={`${citation.replyId}-${index}`}><span>Passenger reply</span><p>“{citation.quote}”</p></blockquote> : null; })}</div>}<p className="machine-review-note">This is an automated assessment of the saved interview. A human reviewer remains authoritative.</p></>}</section>}{session!.caseResult && <section className="case-result" aria-labelledby="case-result-title"><h3 id="case-result-title">{reviewEnabled ? `Case facts: ${session!.caseResult.title}` : `Case result: ${session!.caseResult.title}`}</h3><p>{session!.caseResult.explanation}</p><p className={`case-result-decision ${session!.caseResult.decisionCorrect ? 'correct' : 'incorrect'}`}>{session!.caseResult.decisionCorrect ? 'Your HOLD decision matches the case facts.' : `Your ${session!.caseResult.playerDecision} decision does not match the case facts. The appropriate disposition for this case is HOLD.`}</p><p className="case-result-note">{reviewEnabled ? 'This scene result describes the fictional case and your decision. The transcript assessment above evaluates what the passenger actually disclosed.' : 'This scene result describes the fictional case and your decision. The transcript itself remains available for human review.'}</p></section>}<p>{round!.answer}</p>{!blindToken && !collectionToken && !researchWorld && !researchPreview && <a href={`/attempts/${round!.id}`}>Open the transcript in Tests</a>}<Button className="secondary" onClick={() => void start()}>Play again</Button></div> : <div className="interview-composer">{expired ? <p>Your five minutes are up. You can still file your finding.</p> : <><label className="sr-only" htmlFor="passenger-question">Question the passenger</label><textarea id="passenger-question" value={message} maxLength={4000} placeholder={state!.presented.length ? `Ask about the ${labels[state!.presented[0]].toLowerCase()}…` : 'Question his account…'} onChange={event => setMessage(event.target.value)} disabled={busy} onFocus={() => setMetricsPhase('compose', round!.id, round!.accessToken)} onBlur={() => setMetricsPhase('read_think', round!.id, round!.accessToken)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} /><button className="question-send" aria-label="Send question" disabled={locked || !message.trim()} onClick={() => void send()}><ArrowUp size={17} /></button></>}<div className="interview-footer"><button disabled={locked || state!.hintsUsed >= 2} onClick={() => void action({ action: 'hint' })}><Lightbulb size={12} />Hint {state!.hintsUsed ? `${state!.hintsUsed}/2` : ''}</button><button disabled={busy} onClick={() => { setFinishOpen(true); setMetricsPhase('compose', round!.id, round!.accessToken); }}>File finding<Stamp size={12} /></button></div><small>{!blindToken && !collectionToken && `${String(round!.model || "Target model").replace("openai/", "")} · `}{round!.messages.filter(reply => reply.role === 'user').length} questions</small></div>}
       </aside>
     </section>}
     {inspect && state && <Modal title={labels[inspect]} wide close={() => setInspect(null)}><div className={`document-inspection inspection-${inspect} ${zoomed ? 'inspection-zoomed' : ''}`}>{document(inspect, true)}</div><div className="inspection-modal-actions">{inspect === 'passport' && state.page > 0 && <Button className="secondary" aria-pressed={zoomed} onClick={() => setZoomed(!zoomed)}>{zoomed ? 'Fit document' : 'Enlarge document'}</Button>}{inspect === 'passport' && <><Button className="secondary" disabled={locked} onClick={() => void action({ action: 'open' })}>{state.page ? 'Close passport' : 'Open passport'}</Button><Button className="secondary" disabled={locked || !state.page} onClick={() => void action({ action: 'turn' })}>Turn page</Button><Button className="secondary" disabled={locked} onClick={() => void action({ action: 'lamp', value: state.lamp === 'uv' ? 'warm' : 'uv' })}>{state.lamp === 'uv' ? 'Warm light' : 'Inspect under UV'}</Button></>}<Button className="primary" disabled={locked} onClick={async () => { await action({ action: 'present', object: inspect }); setInspect(null); }}>{state.presented.includes(inspect) ? 'Take back' : 'Present to passenger'}</Button></div></Modal>}

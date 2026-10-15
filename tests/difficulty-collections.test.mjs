@@ -336,6 +336,8 @@ test('reference collection uses the interactive passport and sends verified obse
   assert.equal(reply.body.round.versionId, undefined);
   const finish = await request(`/reference/rounds/${round.id}/finish`, { method: 'POST', auth: null, token: round.accessToken, body: { decision: 'HOLD', finding: 'The signature discrepancy requires a second interview.', evidence: [reply.body.round.messages.at(-1).id] } });
   assert.equal(finish.status, 200, JSON.stringify(finish.body));
+  assert.equal(finish.body.caseResult, undefined, 'collection participants do not receive the canonical reference debrief');
+  assert.equal((await request(`/reference/rounds/${round.id}`, { auth: null, token: round.accessToken })).body.caseResult, undefined);
   const context = await request(`/reference/rounds/${round.id}/context`, { auth: null, token: round.accessToken });
   assert.equal(context.status, 401, 'participants cannot use author model-context inspection');
   const authorAttempts = await request(`/collections/${created.body.id}/attempts?limit=10`, { auth: memberCookie });
