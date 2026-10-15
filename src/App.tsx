@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { PanelsTopLeft, FlaskConical, Users, SlidersHorizontal, Sun, Moon, LogOut, ArrowUpRight, Plus, Search, ChevronRight, Copy, Check, RefreshCcw, CircleHelp, Network, BookOpen, Layers3, ChartNoAxesCombined } from 'lucide-react';
-import { api, date } from './api';
+import { api, date, setRecordingAcknowledged } from './api';
 import type { Bootstrap, Summary, User } from './types';
 import { Mark, Status, Button, Field, Empty } from './ui';
 import { Editor } from './Editor';
@@ -12,6 +12,8 @@ import { PassportReference } from './PassportReference';
 import { CollectionArea } from './Collections';
 import { CollectionParticipant } from './CollectionParticipant';
 import { Metrics } from './Metrics';
+import { RecordingNotice } from './RecordingNotice';
+import { RiddleDiary } from './RiddleDiary';
 import { navigateMetrics, syncMetricsIdentity } from './telemetry';
 
 let historyIndex = 0;
@@ -34,8 +36,10 @@ export function App() {
   const [dark, setDark] = useState(localStorage.getItem('workshop-theme') === 'dark');
   const [tourOpen, setTourOpen] = useState(false); const [tourUser, setTourUser] = useState('');
   const standaloneCollection = path.startsWith('/collect/');
-  const inWorkspace = !/^\/(play|enter|owner|join|collect)\//.test(path) && !path.startsWith('/reference/play/') && path !== '/reference/research/preview';
-  useEffect(() => { if (bootstrap?.user && inWorkspace && tourUser !== bootstrap.user.id) { setTourUser(bootstrap.user.id); if (!bootstrap.tutorialDone) setTourOpen(true); } }, [bootstrap, inWorkspace, tourUser]);
+  const inWorkspace = !/^\/(play|enter|owner|join|collect)\//.test(path) && !path.startsWith('/reference/play/') && !path.startsWith('/diary/play/') && path !== '/reference/research/preview';
+  const requiresStandaloneConsent = path.startsWith('/collect/') || path.startsWith('/play/') || path.startsWith('/reference/play/') || path.startsWith('/diary/play/');
+  const recordingPermitted = Boolean(bootstrap) && (bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true);
+  useEffect(() => { if (bootstrap?.user && recordingPermitted && path === '/' && tourUser !== bootstrap.user.id) { setTourUser(bootstrap.user.id); if (!bootstrap.tutorialDone) setTourOpen(true); } }, [bootstrap, recordingPermitted, path, tourUser]);
   useEffect(() => {
     if (typeof window.history.state?.__workshopIndex === 'number') historyIndex = window.history.state.__workshopIndex;
     else window.history.replaceState({ ...window.history.state, __workshopIndex: historyIndex }, '');
@@ -62,33 +66,35 @@ export function App() {
   }, []);
   const reload = () => api<Bootstrap>('/bootstrap').then(setBootstrap).catch(e => setError(e.message));
   useEffect(() => { if (!standaloneCollection) void reload(); }, [standaloneCollection]);
-  useEffect(() => { navigateMetrics(path); }, [path]);
-  useEffect(() => { if (bootstrap) syncMetricsIdentity(bootstrap.user?.id || null); else if (standaloneCollection) syncMetricsIdentity(null); }, [bootstrap?.user?.id, bootstrap?.needsSetup, standaloneCollection]);
+  useEffect(() => { const allowed = !requiresStandaloneConsent && Boolean(bootstrap) && (bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true); setRecordingAcknowledged(allowed); navigateMetrics(path); }, [path, bootstrap, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired, requiresStandaloneConsent]);
+  useEffect(() => { syncMetricsIdentity(bootstrap?.user?.id || null); }, [path, bootstrap?.user?.id, bootstrap?.needsSetup, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired]);
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('workshop-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4500); return () => clearTimeout(timer); }, [toast]);
   const notify = (message: string) => setToast(message);
   let content: ReactNode;
   if (path === '/reference/research/preview') content = <PassportReference researchPreview />;
   else if (path.startsWith('/reference/play/')) content = <PassportReference blindToken={path.split('/')[3]} />;
+  else if (path.startsWith('/diary/play/')) content = <RiddleDiary blindToken={path.split('/')[3]} />;
   else if (path.startsWith('/collect/')) content = <CollectionParticipant key={path.split('/')[2]} token={path.split('/')[2]} />;
   else if (path.startsWith('/play/')) content = <BlindPlay token={path.split('/')[2]} />;
   else if (!bootstrap) content = <div className="auth-shell"><Mark />{error ? <><p className="error">{error}</p><Button onClick={reload}>Retry</Button></> : <p className="muted">Opening workshop…</p>}</div>;
   else if (path.startsWith('/enter/') || path.startsWith('/owner/')) content = <LinkEntry token={path.split('/')[2]} owner={path.startsWith('/owner/')} onDone={() => { navigate('/'); void reload(); }} />;
-  else if (!bootstrap.user && bootstrap.rootEntry && !path.startsWith('/join/')) content = <RootEntry onDone={() => { navigate('/'); void reload(); }} />;
+  else if (!bootstrap.user && bootstrap.rootEntry && !path.startsWith('/join/')) content = <RootEntry onDone={() => { navigate(path === '/diary' ? '/diary' : '/'); void reload(); }} />;
   else if (!bootstrap.user && bootstrap.privateEntry && !path.startsWith('/join/')) content = <div className="auth-shell"><div className="auth-card"><Mark /><p className="eyebrow">LEVEL WORKSHOP</p><h1>A private workshop.</h1><p className="muted auth-description">Open the invitation link shared with you to enter the workshop.</p></div></div>;
-  else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate('/'); void reload(); }} />;
+  else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate(path === '/diary' ? '/diary' : '/'); void reload(); }} />;
+  else if (bootstrap.recordingNoticeRequired === true && (bootstrap.recordingAccepted !== true || bootstrap.recordingNoticeVersion !== 'recording-notice-v1')) content = <RecordingNotice onAccepted={() => { setRecordingAcknowledged(true); void reload(); }} />;
   else {
     const user = bootstrap.user;
     const memberModel = { connected: bootstrap.model.connected, model: bootstrap.model.model || 'Not configured', provider: bootstrap.model.provider || 'Not configured' };
-    const page = path.startsWith('/levels/') ? 'editor' : path.startsWith('/collections') ? 'collections' : path.startsWith('/attempts') ? 'attempts' : path.startsWith('/reference') ? 'reference' : path.startsWith('/orchestration') ? 'orchestration' : path.startsWith('/team') ? 'team' : path.startsWith('/settings') ? 'settings' : path.startsWith('/metrics') ? 'metrics' : 'levels';
+    const page = path === '/diary' || path.startsWith('/diary/') ? 'diary' : path.startsWith('/levels/') ? 'editor' : path.startsWith('/collections') ? 'collections' : path.startsWith('/attempts') ? 'attempts' : path.startsWith('/reference') ? 'reference' : path.startsWith('/orchestration') ? 'orchestration' : path.startsWith('/team') ? 'team' : path.startsWith('/settings') ? 'settings' : path.startsWith('/metrics') ? 'metrics' : 'levels';
     content = <div className="workspace">
       <aside className="sidebar">
         <div className="sidebar-top"><Mark /><span className="tiny">PRIVATE WORKSPACE</span></div>
         <nav aria-label="Main navigation">
-          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/reference', 'Reference', BookOpen, 'reference'], ['/collections', 'Collections', Layers3, 'collections'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team'], ...(user.role === 'admin' ? [['/metrics', 'Metrics', ChartNoAxesCombined, 'metrics']] : [])].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
+          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/diary', "Riddle's diary", BookOpen, 'diary'], ['/reference', 'Reference', BookOpen, 'reference'], ['/collections', 'Collections', Layers3, 'collections'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team'], ...(user.role === 'admin' ? [['/metrics', 'Metrics', ChartNoAxesCombined, 'metrics']] : [])].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
         </nav>
         <div className="sidebar-bottom">
-          <button className="nav-item" aria-label="Quick tour" onClick={() => setTourOpen(true)}><CircleHelp size={17} strokeWidth={1.5} />Quick tour</button>
+          <button className="nav-item" aria-label="Quick tour" onClick={() => { if (path !== '/') navigate('/'); setTourOpen(true); }}><CircleHelp size={17} strokeWidth={1.5} />Quick tour</button>
           <button className={`nav-item ${page === 'settings' ? 'active' : ''}`} onClick={() => navigate('/settings')}><SlidersHorizontal size={17} strokeWidth={1.5} />Connection<span className={`connection-dot ${bootstrap.model.connected ? 'connected' : ''}`} /></button>
           <div className="account-row"><span className="avatar">{user.name.slice(0, 1).toUpperCase()}</span><div><span>{user.name}</span><small>{user.role === 'admin' ? 'Workspace owner' : 'Level author'}</small></div></div>
           <div className="utility-row"><button className="icon-button" aria-label={dark ? 'Use light theme' : 'Use dark theme'} onClick={() => setDark(v => !v)}>{dark ? <Sun size={16} /> : <Moon size={16} />}</button><button className="icon-button" aria-label="Sign out" onClick={async () => { await api('/logout', { method: 'POST' }); await reload(); }}><LogOut size={16} /></button></div>
@@ -96,6 +102,7 @@ export function App() {
       </aside>
       <main className={`main ${page === 'editor' ? 'editor-main' : ''}`}>
         {page === 'editor' ? <Editor key={path} levelId={path.split('/')[2]} user={user} model={memberModel} notify={notify} />
+          : page === 'diary' ? <RiddleDiary canShare={user.role === 'admin'} onHome={() => navigate('/')} />
           : page === 'attempts' ? <Attempts selectedId={path.split('/')[2]} notify={notify} />
           : page === 'collections' ? <CollectionArea path={path} notify={notify} user={user} />
           : page === 'reference' ? <PassportReference key={path} researchWorld={path.startsWith('/reference/research/') && user.role === 'admin' ? path.split('/')[3] : undefined} />
@@ -107,7 +114,7 @@ export function App() {
       </main>
     </div>;
   }
-  return <>{content}{tourOpen && inWorkspace && bootstrap?.user && <Tutorial key={bootstrap.user.id} user={bootstrap.user} path={path} navigate={navigate} close={() => { setTourOpen(false); setBootstrap(b => b ? { ...b, tutorialDone: true } : b); }} />}{toast && <div role="status" className="toast"><Check size={15} />{toast}<button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast('')}>×</button></div>}</>;
+  return <>{content}{tourOpen && inWorkspace && bootstrap?.user && recordingPermitted && <Tutorial key={bootstrap.user.id} user={bootstrap.user} path={path} navigate={navigate} close={() => { setTourOpen(false); setBootstrap(b => b ? { ...b, tutorialDone: true } : b); }} />}{toast && <div role="status" className="toast"><Check size={15} />{toast}<button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast('')}>×</button></div>}</>;
 }
 
 function RootEntry({ onDone }: { onDone: () => void }) {

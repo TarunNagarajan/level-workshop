@@ -24,6 +24,14 @@ async function owner(request) {
   return result.cookie;
 }
 
+async function inviteMember(request, ownerCookie, name, email) {
+  const invitation = await request('/invites', { method: 'POST', cookie: ownerCookie, body: {} });
+  const token = invitation.body.path.split('/').at(-1);
+  const joined = await request(`/invite/${token}`, { method: 'POST', body: { name, email, password: 'member-password-12345' } });
+  assert.equal(joined.status, 200);
+  return joined.cookie;
+}
+
 const uuid = () => crypto.randomUUID();
 
 for (const adapter of ['sqlite','pglite']) test(`${adapter}: workshop completion hook records successful and failed round calls`, async () => {
@@ -43,10 +51,12 @@ for (const adapter of ['sqlite','pglite']) test(`${adapter}: workshop completion
     const started=await fixture.request(`/play/${rawLink}`,{method:'POST',body:{tester:'anonymous participant'}});
     assert.equal(started.status,201);
     const metricsSession=await fixture.request('/telemetry/session',{method:'POST'});
-    const scopedEvent=()=>({events:[{eventId:uuid(),tabId:uuid(),pageId:uuid(),kind:'heartbeat',view:'workshop',roundId:started.body.id,elapsedMs:1000,activeMs:500,visibleMs:1000}]});
+    const scopedEvent=(view='workshop',interaction)=>({events:[{eventId:uuid(),tabId:uuid(),pageId:uuid(),kind:interaction?'interaction':'heartbeat',view,roundId:started.body.id,elapsedMs:1000,activeMs:500,visibleMs:1000,...(interaction?{interaction}:{})}]});
     assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:metricsSession.cookie,body:{sessionId:metricsSession.body.sessionId,roundId:started.body.id,...scopedEvent()}})).status,403,'round-scoped telemetry requires a capability');
     assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:metricsSession.cookie,headers:{'x-round-token':'wrong'},body:{sessionId:metricsSession.body.sessionId,roundId:started.body.id,...scopedEvent()}})).status,403,'wrong capabilities are rejected');
     assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:metricsSession.cookie,headers:{'x-round-token':started.body.accessToken},body:{sessionId:metricsSession.body.sessionId,roundId:started.body.id,...scopedEvent()}})).status,200);
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:metricsSession.cookie,headers:{'x-round-token':started.body.accessToken},body:{sessionId:metricsSession.body.sessionId,roundId:started.body.id,...scopedEvent('diary','inspect')}})).status,200,'the diary route and inspect interaction categories are accepted for scoped telemetry');
+    assert.equal((await fixture.store.get("SELECT interaction FROM metrics_events WHERE round_id=? AND view_category='diary'",started.body.id)).interaction,'inspect');
     const scopedRow=await fixture.store.get('SELECT collection_id,profile_id,source,version_id FROM metrics_events WHERE round_id=?',started.body.id);
     assert.equal(scopedRow.source,'participant');
     assert.equal(scopedRow.version_id,detail.versions[0].id,'Postgres preserves camelCase DTO aliases during round inference');
@@ -87,12 +97,15 @@ for (const adapter of ['sqlite','pglite']) test(`${adapter}: workshop completion
     assert.equal(calls.body.items.length,3);
     await fixture.store.run("INSERT INTO metrics_model_calls (id,context_kind,round_id,started_at,requested_model,status,request_fingerprint) VALUES (?,?,?,?,?,?,?)",uuid(),'round',started.body.id,Date.now()-5*60*1000,'test/model','started',uuid());
     await fixture.store.run('INSERT INTO rounds (id,token,level_id,author_id,source,data,config,tester,messages,started_at) VALUES (?,?,?,?,?,?,?,?,?,?)',uuid(),uuid(),level.id,(await fixture.request('/bootstrap',{cookie:ownerCookie})).body.user.id,'reference-research',JSON.stringify({duration:600,privatePrompt:'must not be loaded'}),'{}','diagnostic fixture','[]',Date.now());
+    for (const source of ['diary-play','diary-blind']) await fixture.store.run('INSERT INTO rounds (id,token,level_id,author_id,source,data,config,tester,messages,started_at) VALUES (?,?,?,?,?,?,?,?,?,?)',uuid(),uuid(),level.id,(await fixture.request('/bootstrap',{cookie:ownerCookie})).body.user.id,source,JSON.stringify({duration:600}),'{}','diary participant','[]',Date.now());
     const summary=await fixture.request(`/metrics/summary?from=${Date.now()-60000}`,{cookie:ownerCookie});
-    assert.equal(summary.body.rounds.started,1);
+    assert.equal(summary.body.rounds.started,3,'diary play and blind sources are counted as participant rounds');
     assert.equal(summary.body.rounds.questions,2);
     assert.equal(summary.body.rounds.diagnostics.started,1);
     assert.equal(summary.body.rounds.diagnostics.questions,0);
     assert.equal(summary.body.rounds.bySource.find(item=>item.source==='reference-research').started,1);
+    assert.equal(summary.body.rounds.bySource.find(item=>item.source==='diary-play').started,1);
+    assert.equal(summary.body.rounds.bySource.find(item=>item.source==='diary-blind').started,1);
     const collectionInput={levelId:level.id,versionId:detail.versions[0].id,profiles:[{id:'same-profile',label:'Same label',notes:'test notes',moduleIds:['secret-boundary'],additionalInstructions:''}]};
     const collectionA=await fixture.request('/collections',{method:'POST',cookie:ownerCookie,body:collectionInput});
     const collectionB=await fixture.request('/collections',{method:'POST',cookie:ownerCookie,body:collectionInput});
@@ -117,6 +130,29 @@ for (const adapter of ['sqlite','pglite']) test(`${adapter}: workshop completion
     assert.equal(profileA.latency.p95Ms,40);
     assert.equal(profiles.find(item=>item.collectionId===collectionB.body.id).latency.p95Ms,100);
     assert.equal((await fixture.store.get("SELECT status FROM metrics_model_calls WHERE status='interrupted' AND round_id=?",started.body.id))?.status,'interrupted','stale started provider calls are reconciled, not shown as failures');
+  } finally { await fixture.close(); }
+});
+
+for (const adapter of ['sqlite','pglite']) test(`${adapter}: resumed authenticated round telemetry keeps owner isolation and anonymous capabilities`, async () => {
+  const fixture=await start(adapter);
+  try {
+    const ownerCookie=await owner(fixture.request);
+    const level=(await fixture.request('/levels',{cookie:ownerCookie})).body[0];
+    const detail=(await fixture.request(`/levels/${level.id}`,{cookie:ownerCookie})).body;
+    const memberCookie=await inviteMember(fixture.request,ownerCookie,'Metrics member',`metrics-member-${adapter}@example.test`);
+    const memberRound=await fixture.request(`/levels/${level.id}/rounds`,{method:'POST',cookie:memberCookie,body:{versionId:detail.versions[0].id}});
+    assert.equal(memberRound.status,201);
+    const event=()=>({events:[{eventId:uuid(),tabId:uuid(),pageId:uuid(),kind:'heartbeat',view:'workshop',roundId:memberRound.body.id,elapsedMs:1000,activeMs:500,visibleMs:1000}]});
+    const memberMetrics=await fixture.request('/telemetry/session',{method:'POST',cookie:memberCookie});
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:`${memberCookie}; ${memberMetrics.cookie}`,body:{sessionId:memberMetrics.body.sessionId,...event()}})).status,200,'authenticated author can record their own round without a recoverable round token');
+
+    const otherCookie=await inviteMember(fixture.request,ownerCookie,'Other member',`metrics-other-${adapter}@example.test`);
+    const otherMetrics=await fixture.request('/telemetry/session',{method:'POST',cookie:otherCookie});
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:`${otherCookie}; ${otherMetrics.cookie}`,body:{sessionId:otherMetrics.body.sessionId,...event()}})).status,403,'a different member cannot record this round');
+
+    const anonymousMetrics=await fixture.request('/telemetry/session',{method:'POST'});
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:anonymousMetrics.cookie,body:{sessionId:anonymousMetrics.body.sessionId,...event()}})).status,403,'anonymous sessions still require the round capability');
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:anonymousMetrics.cookie,headers:{'x-round-token':memberRound.body.accessToken},body:{sessionId:anonymousMetrics.body.sessionId,...event()}})).status,200,'valid anonymous round capability still authorizes scoped telemetry');
   } finally { await fixture.close(); }
 });
 

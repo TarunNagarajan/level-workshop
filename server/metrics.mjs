@@ -5,7 +5,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const now = () => Date.now();
 const roundMs = value => Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
 const wordCount = text => (String(text || '').match(/[\p{L}\p{N}]+/gu) || []).length;
-const safeSource = source => ({ blind: 'participant', 'reference-blind': 'participant', 'reference-research': 'diagnostic', 'reference-research-preview': 'preview', 'collection-participant': 'participant', 'collection-preview': 'preview', reference: 'diagnostic' })[source] || source || null;
+const safeSource = source => ({ blind: 'participant', 'reference-blind': 'participant', 'reference-research': 'diagnostic', 'reference-research-preview': 'preview', 'collection-participant': 'participant', 'diary-play': 'participant', 'diary-blind': 'participant', 'diary-diagnostic': 'diagnostic', 'collection-preview': 'preview', reference: 'diagnostic' })[source] || source || null;
 const ERROR_MAP = {
   rate_limited: 'rate_limited', timeout: 'timeout', provider_unavailable: 'unavailable',
   provider_auth: 'auth_or_config', provider_rejected: 'auth_or_config', empty_response: 'empty_response',
@@ -71,12 +71,12 @@ export function createMetricsService({ store, enabled = false }) {
 
 function safeInt(value) { return Number.isSafeInteger(value) && value >= 0 ? value : null; }
 
-const views = new Set(['workshop','collect','passport','orchestration','editor','tests','settings','other']);
+const views = new Set(['workshop','collect','passport','orchestration','editor','tests','settings','diary','other']);
 const kinds = new Set(['page_enter','page_exit','heartbeat','visibility','phase','request','interaction']);
 const phases = new Set(['read_think','compose','waiting','idle','hidden']);
 const requestCategories = new Set(['navigation','round_action','authoring','review','other']);
 const requestOutcomes = new Set(['success','error','retry']);
-const interactions = new Set(['hint','submit','finish']);
+const interactions = new Set(['hint','submit','finish','inspect']);
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const durationFields = ['elapsedMs','activeMs','visibleMs','idleMs','readThinkMs','composeMs','waitingMs','sinceReplyMs'];
 const eventFields = new Set(['eventId','tabId','pageId','kind','view','roundId','phase',...durationFields,'requestCategory','requestOutcome','requestWallMs','retryCount','interaction']);
@@ -131,12 +131,13 @@ function applyCursorWindow(query, window, cursor) {
   return window;
 }
 
-export function addMetricsRoutes(app, { store, enabled = false, secureCookies = false, authorizeRound = async () => null, admin, sessionCreationLimit = 120 }) {
+export function addMetricsRoutes(app, { store, enabled = false, secureCookies = false, authorizeRound = async () => null, admin, sessionCreationLimit = 120, recordingNoticeRequired = false, recordingAccepted = async () => true }) {
   const { get, all, run, batch } = store;
   const cookieName = 'workshop_metrics';
   const cookieOptions = { httpOnly: true, sameSite: 'strict', path: '/api/telemetry', secure: secureCookies };
   const sessionCreationLimits = new Map();
   app.post('/api/telemetry/session', async (req, res) => {
+    if (recordingNoticeRequired && req.user && !await recordingAccepted(req.user.id)) return res.status(428).json({ error: 'Acknowledge the recording notice before telemetry starts.' });
     if (!enabled) return res.json({ enabled: false, heartbeatSeconds: 0, idleAfterMs: 0 });
     const raw = req.cookies?.[cookieName];
     const userId = req.user?.id || null, time = now();
@@ -167,6 +168,7 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
     res.json({ enabled: true, heartbeatSeconds: 18, idleAfterMs: 30000, sessionId: currentSessionId });
   });
   app.post('/api/telemetry/events', async (req, res) => {
+    if (recordingNoticeRequired && req.user && !await recordingAccepted(req.user.id)) return res.status(428).json({ error: 'Acknowledge the recording notice before telemetry starts.' });
     if (!enabled) return res.json({ accepted: 0, duplicates: 0 });
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(key => !['events','roundId','sessionId'].includes(key))) return res.status(400).json({ error: 'Event batch contains an unsupported field.' });
     if (!uuid(req.body.sessionId)) return res.status(400).json({ error: 'Metrics session ID is required.' });
@@ -184,9 +186,9 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
     let inferred = {};
     if (roundIds.size) {
       const roundId = [...roundIds][0];
-      if (!req.get('x-round-token')) return res.status(403).json({ error: 'Round capability is required.' });
+      if (!req.user && !req.get('x-round-token')) return res.status(403).json({ error: 'Round capability is required.' });
       const round = await authorizeRound(req, roundId);
-      if (!round) return res.status(403).json({ error: 'Round capability is invalid.' });
+      if (!round) return res.status(403).json({ error: req.user ? 'Round access is not authorized.' : 'Round capability is invalid.' });
       inferred = await get('SELECT a.collection_id AS "collectionId",a.profile_id AS "profileId",COALESCE(a.source,r.source) AS source,r.version_id AS "versionId" FROM rounds r LEFT JOIN difficulty_collection_assignments a ON a.round_id=r.id WHERE r.id=?', roundId) || {};
       inferred.source = safeSource(inferred.source);
     }
@@ -296,7 +298,7 @@ async function roundSummaryPages(store, window) {
     if(!rows.length)break;
     for(const row of rows){
       const source=row.metric_source||row.source||'unknown';
-      const participant=['participant','blind','reference-blind','collection-participant'].includes(source);
+      const participant=['participant','blind','reference-blind','collection-participant','diary-play','diary-blind'].includes(source);
       const bucket=participant?summary:summary.diagnostics;
       bucket.started++;
       bucket.questions+=Number(row.question_count)||0;

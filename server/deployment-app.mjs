@@ -28,6 +28,7 @@ export function createDeploymentApp({ includeSpaFallback = false, apiNotFound = 
       metricsEnabled: process.env.WORKSHOP_METRICS !== 'false',
       passportReviewEnabled: process.env.WORKSHOP_PASSPORT_REVIEW !== 'false',
       metricsSessionCreationLimit: 120,
+      recordingNoticeRequired: true,
     });
     workshop.app.set('trust proxy', 1);
     app.use(workshop.app);

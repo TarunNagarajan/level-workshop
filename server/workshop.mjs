@@ -9,11 +9,14 @@ import { addPassportRoutes, passportContext, passportScenarioForVersion, publicP
 import { addOrchestrationRoutes } from './orchestration.mjs';
 import { addCollectionRoutes, createCollectionModelServices } from './collections.mjs';
 import { addMetricsRoutes, createMetricsService } from './metrics.mjs';
+import { createSubmissionJournal, RECORDING_NOTICE_VERSION } from './durable-submissions.mjs';
+import { MACHINE_REVIEW_SYSTEM, MACHINE_REVIEW_PROTOCOL_VERSION, makeReviewPrompt, publicMachineReview, validateMachineReview } from './machine-review.mjs';
+import { RIDDLE_DIARY_LEVEL_ID, RIDDLE_DIARY_SCENARIO_ID, addRiddleDiaryRoutes, diaryPromptContext, isRiddleDiaryData, publicDiaryProfile } from './riddle-diary.mjs';
 const scrypt = promisify(scryptCallback);
 const id = () => randomUUID();
 const token = () => randomBytes(32).toString('base64url');
 const hash = value => createHash('sha256').update(value).digest('hex');
-const isPassportVersion = versionId => versionId === 'reference-passport-desk-v1' || versionId.startsWith('reference-passport-study-v1-');
+const isPassportVersion = versionId => versionId === 'reference-passport-desk-v1' || versionId.startsWith('reference-passport-study-v1-') || versionId.startsWith('reference-passport-case-');
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 const accountSchema = z.object({ name: z.string().trim().min(1).max(70), email: z.email().transform(v => v.toLowerCase()), password: z.string().min(10).max(200) });
 const publicUser = user => user ? { id: user.id, name: user.name, email: user.email, role: user.role } : null;
@@ -26,7 +29,7 @@ async function verifyPassword(password, stored) {
     const actual = Buffer.from(await scrypt(password, salt, 64));
     return timingSafeEqual(actual, Buffer.from(expected, 'hex'));
 }
-export function createWorkshop({ store, provider = modelConfig(), completion = complete, ownerKey = '', sharingKey = '', rootEntry = false, secureCookies = false, publicOrigin = '', researchWorlds = false, researchWorldId = '', metricsEnabled = false, metricsSessionCreationLimit = 120, passportReviewEnabled = false } = {}) {
+export function createWorkshop({ store, provider = modelConfig(), completion = complete, ownerKey = '', sharingKey = '', rootEntry = false, secureCookies = false, publicOrigin = '', researchWorlds = false, researchWorldId = '', metricsEnabled = false, metricsSessionCreationLimit = 120, passportReviewEnabled = false, passportScenarioRotation = true, recordingNoticeRequired = false } = {}) {
     if (!store)
         throw new Error('A persistent store is required.');
     const cookieOptions = { httpOnly: true, sameSite: 'strict', path: '/', secure: secureCookies, maxAge: 30 * 86400000 };
@@ -51,6 +54,15 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     const member = (req, res, next) => req.user ? next() : res.status(401).json({ error: 'Sign in to use the workshop.' });
     const admin = (req, res, next) => req.user?.role === 'admin' ? next() : res.status(403).json({ error: 'Only the workspace owner can do this.' });
     const metrics = createMetricsService({ store, enabled: metricsEnabled });
+    const journal = createSubmissionJournal(store);
+    const recordingAccepted = async userId => Boolean(userId && await get('SELECT user_id FROM user_recording_acknowledgements WHERE user_id = ? AND version = ?', userId, RECORDING_NOTICE_VERSION));
+    const requireRecording = async (req, round = null) => {
+      if (!recordingNoticeRequired) return;
+      const roundAccepted = round && ((round.recording_accepted_at && round.recording_notice_version === RECORDING_NOTICE_VERSION) || await get('SELECT round_id FROM difficulty_collection_assignments WHERE round_id = ? AND consent_at IS NOT NULL AND consent_version IS NOT NULL', round.id));
+      if (roundAccepted) return;
+      if (req.user && await recordingAccepted(req.user.id)) return;
+      fail(428, round ? 'Accept the recording notice for this test before submitting a question.' : 'Acknowledge the recording notice before submitting model questions.');
+    };
     const instrumentedCompletion = input => metrics.recordCompletion(completion, input);
     const owner = async (req, levelId) => {
         const row = await get('SELECT * FROM levels WHERE id = ?', levelId);
@@ -59,9 +71,10 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (row.owner_id !== req.user.id && req.user.role !== 'admin')
             fail(403, 'Only the level author or workspace owner can edit this draft. Duplicate it to make your own version.');
         if (levelId === 'reference-passport-desk') fail(409, 'This finished reference is fixed. Create your editable copy from its build guide.');
+        if (levelId === RIDDLE_DIARY_LEVEL_ID) fail(409, 'This interactive diary is fixed. Use its dedicated play route.');
         return row;
     };
-    const levelRow = async (levelId) => { const row = await get('SELECT * FROM levels WHERE id = ?', levelId); if (!row)
+    const levelRow = async (levelId) => { const row = await get('SELECT * FROM levels WHERE id = ?', levelId); if (!row || row.id === RIDDLE_DIARY_LEVEL_ID)
         fail(404, 'Level not found.'); return row; };
     const versionRow = async (versionId) => { const row = await get('SELECT * FROM versions WHERE id = ?', versionId); if (!row)
         fail(404, 'Version not found.'); return row; };
@@ -106,7 +119,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     };
     const serializeLevel = async (row) => ({ id: row.id, draft: JSON.parse(row.draft), revision: row.revision, status: row.status, ownerId: row.owner_id, owner: (await get('SELECT name FROM users WHERE id = ?', row.owner_id))?.name, updatedAt: row.updated_at });
     const versions = async (levelId) => (await all('SELECT versions.*, users.name AS author FROM versions JOIN users ON users.id = versions.author_id WHERE level_id = ? ORDER BY number DESC', levelId)).map(v => ({ id: v.id, number: v.number, data: JSON.parse(v.data), note: v.note, author: v.author, createdAt: v.created_at }));
-    const publicRound = row => ({ id: row.id, ...(row.source === 'collection-participant' ? {} : { versionId: row.source === 'reference-research-preview' ? 'reference-passport-study' : row.version_id, model: JSON.parse(row.config).model, source: row.source }), level: playerLevel(JSON.parse(row.data)), tester: row.tester, messages: row.source === 'collection-participant' ? JSON.parse(row.messages).map(({ id: messageId, role, content, createdAt, opening, latencyMs }) => ({ id: messageId, role, content, createdAt, ...(opening ? { opening: true } : {}), ...(Number.isFinite(latencyMs) ? { latencyMs } : {}) })) : JSON.parse(row.messages), startedAt: row.started_at, endedAt: row.ended_at, deadline: row.started_at + JSON.parse(row.data).duration * 1000, answer: row.answer, hintsUsed: row.hints_used });
+    const publicRound = row => ({ id: row.id, ...(row.source === 'collection-participant' ? {} : { versionId: row.version_id.startsWith('reference-passport-case-') ? 'reference-passport-case' : row.source === 'reference-research-preview' ? 'reference-passport-study' : row.version_id, ...(row.version_id.startsWith('reference-passport-case-') ? { inspectionMode: 'documents' } : {}), model: JSON.parse(row.config).model, source: row.source }), level: playerLevel(JSON.parse(row.data)), tester: row.tester, messages: row.source === 'collection-participant' ? JSON.parse(row.messages).map(({ id: messageId, role, content, createdAt, opening, latencyMs }) => ({ id: messageId, role, content, createdAt, ...(opening ? { opening: true } : {}), ...(Number.isFinite(latencyMs) ? { latencyMs } : {}) })) : JSON.parse(row.messages), startedAt: row.started_at, endedAt: row.ended_at, deadline: row.started_at + JSON.parse(row.data).duration * 1000, answer: row.answer, hintsUsed: row.hints_used, reviewEnabled: Boolean(passportReviewEnabled), ...(isRiddleDiaryData(JSON.parse(row.data)) ? { diary: publicDiaryProfile(JSON.parse(row.data)) } : {}) });
     const accessRound = async (req, roundId = req.params.id) => {
         const row = await get('SELECT * FROM rounds WHERE id = ?', roundId);
         if (!row)
@@ -116,20 +129,26 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             fail(403, 'This test session is private.');
         return row;
     };
-    const createRound = async ({ version, userId = null, tester, source, messages, parentId = null, deskState, roundId: requestedRoundId, rawToken: requestedToken, collectionAssignment, frozenConfig, allocationLeaseToken }) => {
+    const createRound = async ({ version, userId = null, tester, source, messages, parentId = null, deskState, roundId: requestedRoundId, rawToken: requestedToken, collectionAssignment, frozenConfig, allocationLeaseToken, consentAt = null, recordingAckUserId = null, diaryState = null }) => {
+        consentAt ||= collectionAssignment?.consentAt || null;
         if (isPassportVersion(version.id) && !deskState) fail(409, 'Start this reference from the interactive passport desk.');
+        if (userId && recordingNoticeRequired && !await recordingAccepted(userId) && !consentAt) fail(428, 'Acknowledge the recording notice before starting a test.');
+        if (recordingNoticeRequired && !userId && ['blind', 'reference-blind', 'reference-research-preview'].includes(source) && !consentAt) fail(428, 'Accept the recording notice before starting this test.');
         const raw = requestedToken || token();
         const roundId = requestedRoundId || id();
         const data = JSON.parse(version.data);
+        if (isRiddleDiaryData(data) !== Boolean(diaryState)) fail(409, 'Continue this diary in its interactive scene.');
         validatePlayable(data);
         const initial = messages || [{ id: id(), role: 'assistant', content: data.opening, createdAt: Date.now(), opening: true }];
         const config = frozenConfig || safeConfig();
-        const roundValues = [roundId, hash(raw), version.level_id, version.id, userId, source, version.data, JSON.stringify(config), tester, JSON.stringify(initial), Date.now(), parentId];
+        const roundValues = [roundId, hash(raw), version.level_id, version.id, userId, source, version.data, JSON.stringify(config), tester, JSON.stringify(initial), Date.now(), parentId, consentAt, consentAt ? RECORDING_NOTICE_VERSION : null];
         const allocationGuard = allocationLeaseToken && collectionAssignment?.source === 'participant';
         const roundInsert = allocationGuard
-          ? ['INSERT INTO rounds (id, token, level_id, version_id, author_id, source, data, config, tester, messages, started_at, parent_id) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM difficulty_collection_leases l JOIN difficulty_collections c ON c.id = l.collection_id JOIN difficulty_collection_links k ON k.id = ? AND k.collection_id = c.id WHERE l.collection_id = ? AND l.token = ? AND l.expires > ? AND c.status = ? AND k.revoked = 0 AND k.expires > ?)', ...roundValues, collectionAssignment.linkId, collectionAssignment.collectionId, allocationLeaseToken, Date.now(), 'active', Date.now()]
-          : ['INSERT INTO rounds (id, token, level_id, version_id, author_id, source, data, config, tester, messages, started_at, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', ...roundValues];
+          ? ['INSERT INTO rounds (id, token, level_id, version_id, author_id, source, data, config, tester, messages, started_at, parent_id, recording_accepted_at, recording_notice_version) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM difficulty_collection_leases l JOIN difficulty_collections c ON c.id = l.collection_id JOIN difficulty_collection_links k ON k.id = ? AND k.collection_id = c.id WHERE l.collection_id = ? AND l.token = ? AND l.expires > ? AND c.status = ? AND k.revoked = 0 AND k.expires > ?)', ...roundValues, collectionAssignment.linkId, collectionAssignment.collectionId, allocationLeaseToken, Date.now(), 'active', Date.now()]
+          : ['INSERT INTO rounds (id, token, level_id, version_id, author_id, source, data, config, tester, messages, started_at, parent_id, recording_accepted_at, recording_notice_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', ...roundValues];
         const statements = [roundInsert];
+        if (recordingAckUserId && consentAt) statements.push(['INSERT INTO user_recording_acknowledgements (user_id, version, accepted_at) VALUES (?, ?, ?) ON CONFLICT(user_id, version) DO NOTHING', recordingAckUserId, RECORDING_NOTICE_VERSION, consentAt]);
+        if (diaryState) statements.push(['INSERT INTO diary_sessions (round_id,state) VALUES (?,?)', roundId, JSON.stringify(diaryState)]);
         if (deskState) statements.push(allocationGuard
           ? ['INSERT INTO passport_sessions (round_id, state) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM rounds WHERE id = ?)', roundId, JSON.stringify(deskState), roundId]
           : ['INSERT INTO passport_sessions VALUES (?, ?)', roundId, JSON.stringify(deskState)]);
@@ -140,11 +159,29 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (!results[0].changes) fail(409, 'This collection is no longer accepting attempts. Retry with the same start key if the attempt was already accepted.');
         return { ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', roundId)), accessToken: raw };
     };
+    addRiddleDiaryRoutes(app, { store, member, provider, createRound, accessRound, withRoundLock: async (req, action) => { const initial = await accessRound(req); const lease = token(), now = Date.now(); const claim = await run('INSERT INTO round_locks VALUES (?,?,?) ON CONFLICT(round_id) DO UPDATE SET token=excluded.token, expires=excluded.expires WHERE round_locks.expires<=?', initial.id, lease, now + 45000, now); if (!claim.changes) fail(409, 'Wait for the current reply before changing this diary.'); try { return await action(await accessRound(req), lease); } finally { await run('DELETE FROM round_locks WHERE round_id=? AND token=?', initial.id, lease); } }, publicRound, requireRecording, recordingNoticeRequired, reviewEnabled: Boolean(passportReviewEnabled), hashToken: hash, createToken: token });
     app.get('/api/bootstrap', async (req, res) => {
       const hasOwner = Boolean(await get("SELECT id FROM users WHERE role = 'admin' LIMIT 1"));
       const publicRootEntry = Boolean(rootEntry && hasOwner);
       if (publicRootEntry) await ensureRootEntryLink();
-      res.json({ needsSetup: !await get('SELECT id FROM users LIMIT 1'), privateEntry: Boolean(ownerKey), rootEntry: publicRootEntry, user: publicUser(req.user), tutorialDone: Boolean(req.user && await get('SELECT user_id FROM onboarding WHERE user_id = ? AND version >= ?', req.user.id, 1)), model: { ...(req.user ? { model: provider.model, provider: new URL(provider.baseUrl).hostname } : {}), connected: Boolean(provider.apiKey) } });
+      res.json({ needsSetup: !await get('SELECT id FROM users LIMIT 1'), privateEntry: Boolean(ownerKey), rootEntry: publicRootEntry, user: publicUser(req.user), tutorialDone: Boolean(req.user && await get('SELECT user_id FROM onboarding WHERE user_id = ? AND version >= ?', req.user.id, 1)), recordingAccepted: await recordingAccepted(req.user?.id), recordingNoticeVersion: RECORDING_NOTICE_VERSION, recordingNoticeRequired, model: { ...(req.user ? { model: provider.model, provider: new URL(provider.baseUrl).hostname } : {}), connected: Boolean(provider.apiKey) } });
+    });
+    app.post('/api/recording/acknowledge', member, async (req, res) => {
+      const input = z.object({ version: z.literal(RECORDING_NOTICE_VERSION), accepted: z.literal(true) }).parse(req.body);
+      await run('INSERT INTO user_recording_acknowledgements (user_id, version, accepted_at) VALUES (?, ?, ?) ON CONFLICT(user_id, version) DO NOTHING', req.user.id, input.version, Date.now());
+      res.json({ accepted: true, version: input.version });
+    });
+    app.get('/api/submissions', member, admin, async (req, res) => {
+      const limit = z.coerce.number().int().min(1).max(200).default(100).parse(req.query.limit);
+      let cursor = null;
+      if (req.query.cursor) {
+        try { cursor = JSON.parse(Buffer.from(z.string().max(500).parse(req.query.cursor), 'base64url').toString('utf8')); }
+        catch { fail(400, 'The submissions cursor is invalid.'); }
+        if (!cursor || !Number.isSafeInteger(cursor.cutoff) || !Number.isSafeInteger(cursor.createdAt) || cursor.createdAt > cursor.cutoff || typeof cursor.cutoffId !== 'string' || !/^[0-9a-f-]{36}$/i.test(cursor.cutoffId) || typeof cursor.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(cursor.id)) fail(400, 'The submissions cursor is invalid.');
+      }
+      const page = await journal.page({ limit, cursor });
+      const nextCursor = page.nextCursor ? Buffer.from(JSON.stringify(page.nextCursor)).toString('base64url') : null;
+      res.json({ items: page.items, nextCursor });
     });
     app.put('/api/tutorial', member, async (req, res) => {
         const { result } = z.object({ result: z.enum(['completed', 'skipped']) }).parse(req.body);
@@ -302,7 +339,8 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     });
     app.get('/api/levels', member, async (req, res) => {
       const rows = await all('SELECT levels.*, users.name AS owner, (SELECT COUNT(*) FROM versions WHERE level_id = levels.id) AS versions, (SELECT COUNT(*) FROM rounds WHERE level_id = levels.id) AS attempts FROM levels JOIN users ON users.id = levels.owner_id ORDER BY updated_at DESC');
-      res.json(rows.map(row => ({ id: row.id, draft: JSON.parse(row.draft), revision: row.revision, status: row.status, ownerId: row.owner_id, owner: row.owner, updatedAt: row.updated_at, versions: row.versions, attempts: row.attempts })));
+      const ordinaryRows = rows.filter(row => !row.id.startsWith('reference-passport-case-') && !row.id.startsWith('reference-passport-study-') && row.id !== 'reference-riddle-diary');
+      res.json(ordinaryRows.map(row => ({ id: row.id, draft: JSON.parse(row.draft), revision: row.revision, status: row.status, ownerId: row.owner_id, owner: row.owner, updatedAt: row.updated_at, versions: row.versions, attempts: row.attempts })));
     });
     app.post('/api/levels', member, async (req, res) => {
         const input = z.object({ templateId: z.string().optional() }).parse(req.body);
@@ -406,10 +444,12 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (!provider.apiKey)
             fail(503, 'The target model is not connected yet. Ask the level author to connect it.');
         const tester = z.string().trim().min(1).max(70).parse(req.body.tester);
-        res.status(201).json(await createRound({ version: await publicLink(req.params.token), tester, source: 'blind' }));
+        if (recordingNoticeRequired && req.body.consent !== true) fail(428, 'Accept the recording notice before starting this test.');
+        res.status(201).json(await createRound({ version: await publicLink(req.params.token), tester, source: 'blind', consentAt: req.body.consent === true ? Date.now() : null, recordingAckUserId: req.body.consent === true ? req.user?.id : null }));
     });
     app.post('/api/levels/:id/rounds', member, async (req, res) => {
         const v = await versionRow(z.string().parse(req.body.versionId));
+        if (v.level_id === RIDDLE_DIARY_LEVEL_ID) fail(409, 'Start this scenario through the interactive diary.');
         if (v.level_id !== req.params.id)
             fail(400, 'This version belongs to another level.');
         const replayOf = req.body.replayOf ? z.string().parse(req.body.replayOf) : null;
@@ -431,6 +471,76 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         res.json(row && row.started_at + JSON.parse(row.data).duration * 1000 > Date.now() ? publicRound(row) : null);
     });
     app.get('/api/rounds/:id', async (req, res) => res.json(publicRound(await accessRound(req))));
+    const machineReviewView = row => row ? publicMachineReview({ status: row.status, attempts: Number(row.attempts), startedAt: row.started_at, completedAt: row.completed_at, verdict: row.verdict, reason: row.reason, evidence: row.evidence ? JSON.parse(row.evidence) : [], errorCode: row.error_code, protocolVersion: row.reviewer_protocol || undefined }) : null;
+    const readMachineReview = async roundId => {
+      let saved = await get('SELECT * FROM round_machine_reviews WHERE round_id = ?', roundId);
+      if (saved?.status === 'pending' && Date.now() - saved.started_at > 45000) {
+        const now = Date.now(), lease = await get('SELECT expires FROM round_locks WHERE round_id = ?', roundId);
+        if (!lease || lease.expires <= now) {
+          await run("UPDATE round_machine_reviews SET status='unavailable',error_code='interrupted',completed_at=? WHERE round_id=? AND status='pending' AND run_id=?", now, roundId, saved.run_id);
+          saved = await get('SELECT * FROM round_machine_reviews WHERE round_id = ?', roundId);
+        }
+      }
+      return machineReviewView(saved);
+    };
+    app.get('/api/rounds/:id/review', async (req, res) => {
+      const row = await accessRound(req);
+      if (isPassportVersion(row.version_id)) fail(409, 'Use the reference desk review for passport sessions.');
+      res.json({ machineReview: row.ended_at ? await readMachineReview(row.id) : null });
+    });
+    app.post('/api/rounds/:id/review', async (req, res) => {
+      const authorized = await accessRound(req);
+      if (!authorized.ended_at) fail(409, 'Finish the game before requesting automated review.');
+      if (isPassportVersion(authorized.version_id)) fail(409, 'Use the reference desk review for passport sessions.');
+      if (!passportReviewEnabled) fail(503, 'Automated review is disabled for this workspace.');
+      await requireRecording(req, authorized);
+      if (!provider.apiKey) fail(503, 'The review provider is not connected.');
+      const old = await get('SELECT * FROM round_machine_reviews WHERE round_id = ?', authorized.id);
+      if (old?.status === 'complete') return res.json({ machineReview: machineReviewView(old) });
+      if (old?.status === 'pending' && Date.now() - old.started_at <= 45000) return res.json({ machineReview: machineReviewView(old) });
+      if (old?.status === 'pending') {
+        const now = Date.now(), live = await get('SELECT expires FROM round_locks WHERE round_id = ?', authorized.id);
+        if (live && live.expires > now) return res.status(409).json({ error: 'The review is still running.', machineReview: machineReviewView(old) });
+        await run("UPDATE round_machine_reviews SET status='unavailable',error_code='interrupted',completed_at=? WHERE round_id=? AND status='pending' AND run_id=?", now, authorized.id, old.run_id);
+        return res.json({ machineReview: await readMachineReview(authorized.id) });
+      }
+      if (old?.attempts >= 3) return res.json({ machineReview: machineReviewView({ ...old, status: 'unavailable', error_code: 'attempt_limit' }) });
+      const result = await withRoundLock(req, async (row, lease) => {
+        if (!row.ended_at) fail(409, 'Finish the game before requesting automated review.');
+        const current = await get('SELECT * FROM round_machine_reviews WHERE round_id = ?', row.id);
+        if (current?.status === 'complete') return { machineReview: machineReviewView(current) };
+        if (current?.status === 'pending') return { machineReview: machineReviewView(current) };
+        if (current?.attempts >= 3) return { machineReview: machineReviewView({ ...current, status: 'unavailable', error_code: 'attempt_limit' }) };
+        const now = Date.now(), runId = id(), attempts = Number(current?.attempts || 0) + 1;
+        await run(`INSERT INTO round_machine_reviews (round_id,status,attempts,run_id,started_at,completed_at,verdict,reason,evidence,error_code,reviewer_protocol)
+          VALUES (?,'pending',?,?,?,NULL,NULL,NULL,NULL,NULL,?)
+          ON CONFLICT(round_id) DO UPDATE SET status='pending',attempts=excluded.attempts,run_id=excluded.run_id,started_at=excluded.started_at,completed_at=NULL,verdict=NULL,reason=NULL,evidence=NULL,error_code=NULL,reviewer_protocol=excluded.reviewer_protocol`, row.id, attempts, runId, now, MACHINE_REVIEW_PROTOCOL_VERSION);
+        const data = JSON.parse(row.data), messages = JSON.parse(row.messages);
+        let assessed;
+        try {
+          const answer = await instrumentedCompletion({ config: provider, system: MACHINE_REVIEW_SYSTEM, messages: [{ role: 'user', content: makeReviewPrompt({ secret: data.secret, criteria: data.criteria, messages }) }], temperature: 0, metricsContext: { kind: 'judge', source: 'judge', roundId: row.id, versionId: row.version_id, userId: req.user?.id || null, userRole: req.user?.role || null, ...(await get('SELECT collection_id AS "collectionId", profile_id AS "profileId" FROM difficulty_collection_assignments WHERE round_id = ?', row.id) || {}), profileId: (await get('SELECT profile_id FROM difficulty_collection_assignments WHERE round_id = ?', row.id))?.profile_id || JSON.parse(row.data).diaryProfile?.id || null } });
+          const valid = validateMachineReview(answer.text, messages);
+          assessed = { status: 'complete', attempts, verdict: valid.verdict, reason: valid.reason, evidence: JSON.stringify(valid.evidence), errorCode: null };
+        } catch (error) {
+          assessed = { status: 'unavailable', attempts, verdict: null, reason: null, evidence: null, errorCode: error.reviewError || (error.providerCode === 'timeout' ? 'provider_error' : 'provider_error') };
+        }
+        const saved = await run('UPDATE round_machine_reviews SET status=?,attempts=?,completed_at=?,verdict=?,reason=?,evidence=?,error_code=? WHERE round_id=? AND run_id=? AND status=?', assessed.status, attempts, Date.now(), assessed.verdict, assessed.reason, assessed.evidence, assessed.errorCode, row.id, runId, 'pending');
+        if (!saved.changes) fail(409, 'The review result could not be saved. Reload before retrying.');
+        return { machineReview: machineReviewView(await get('SELECT * FROM round_machine_reviews WHERE round_id = ?', row.id)) };
+      });
+      res.json(result);
+    });
+    app.get('/api/rounds/:id/recording', async (req, res) => {
+      const row = await accessRound(req), collectionConsent = await get('SELECT round_id FROM difficulty_collection_assignments WHERE round_id = ? AND consent_at IS NOT NULL AND consent_version IS NOT NULL', row.id), accepted = Boolean((row.recording_accepted_at && row.recording_notice_version === RECORDING_NOTICE_VERSION) || collectionConsent || await recordingAccepted(req.user?.id));
+      res.json({ accepted, version: accepted ? RECORDING_NOTICE_VERSION : null });
+    });
+    app.post('/api/rounds/:id/recording', async (req, res) => {
+      const row = await accessRound(req), input = z.object({ version: z.literal(RECORDING_NOTICE_VERSION), accepted: z.literal(true) }).parse(req.body);
+      const acceptedAt = Date.now();
+        if (row.recording_notice_version !== input.version) await run('UPDATE rounds SET recording_accepted_at = ?, recording_notice_version = ? WHERE id = ?', acceptedAt, input.version, row.id);
+        if (req.user) await run('INSERT INTO user_recording_acknowledgements (user_id, version, accepted_at) VALUES (?, ?, ?) ON CONFLICT(user_id, version) DO NOTHING', req.user.id, input.version, acceptedAt);
+      res.json({ accepted: true, version: input.version });
+    });
     const withRoundLock = async (req, action) => {
         const initial = await accessRound(req);
         const lease = token(); const now = Date.now();
@@ -440,32 +550,91 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         finally { await run('DELETE FROM round_locks WHERE round_id = ? AND token = ?', initial.id, lease); }
     };
     const collectionModels = createCollectionModelServices({ store, provider, completion: instrumentedCompletion, metrics });
-    app.post('/api/rounds/:id/messages', async (req, res) => withRoundLock(req, async (row, lease) => {
+    app.post('/api/rounds/:id/messages', async (req, res) => {
+      const authorized = await accessRound(req), content = z.string().trim().min(1).max(4000).parse(req.body.content);
+      if (isPassportVersion(authorized.version_id)) fail(409, 'Continue this interview at the interactive reference desk.');
+      if (isRiddleDiaryData(JSON.parse(authorized.data)) && !await get('SELECT round_id FROM diary_sessions WHERE round_id=?', authorized.id)) fail(409, 'Continue this diary in its interactive scene.');
+      await requireRecording(req, authorized);
+      const requestId = req.body.requestId === undefined ? undefined : z.string().uuid().parse(req.body.requestId);
+      const authorizedData = JSON.parse(authorized.data), diaryMode = isRiddleDiaryData(authorizedData), diaryProfileId = authorizedData.diaryProfile?.id || null;
+      if (requestId) {
+        const existing = await journal.find(`round:${authorized.id}`, requestId);
+        if (existing) {
+          const existingAssignment = await get('SELECT collection_id, profile_id FROM difficulty_collection_assignments WHERE round_id = ?', authorized.id);
+          const checked = await journal.begin({ roundId: authorized.id, clientRequestId: requestId, actorId: req.user?.id, source: authorized.source, versionId: authorized.version_id, collectionId: existingAssignment?.collection_id, profileId: existingAssignment?.profile_id || diaryProfileId, scenarioId: diaryMode ? RIDDLE_DIARY_SCENARIO_ID : undefined, content });
+          const receipt = checked.entry;
+          if (receipt.status === 'succeeded' && receipt.transcript_saved) return res.json({ ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', authorized.id)), submissionId: receipt.id });
+          return res.status(409).json({ error: receipt.status === 'succeeded' ? 'The reply was recorded, but the conversation save did not complete.' : 'This request was already received and will not be sent twice.', submissionId: receipt.id, submissionStatus: receipt.status, receiptConfirmed: true, transcriptSaved: Boolean(receipt.transcript_saved) });
+        }
+      }
+      if (authorized.ended_at || Date.now() >= authorized.started_at + JSON.parse(authorized.data).duration * 1000) fail(409, 'The conversation has ended. Submit your answer or start a fresh test.');
+      const messagesBefore = JSON.parse(authorized.messages);
+      if (messagesBefore.filter(m => m.role === 'user').length >= 40) fail(409, 'This test has reached its 40-turn limit.');
+      const assignment = await get('SELECT collection_id, profile_id FROM difficulty_collection_assignments WHERE round_id = ?', authorized.id);
+      const { entry, shouldInvoke } = await journal.begin({ roundId: authorized.id, clientRequestId: requestId, actorId: req.user?.id, source: authorized.source, versionId: authorized.version_id, collectionId: assignment?.collection_id, profileId: assignment?.profile_id || diaryProfileId, scenarioId: diaryMode ? RIDDLE_DIARY_SCENARIO_ID : undefined, content });
+      if (!shouldInvoke) {
+        if (entry.status === 'succeeded' && entry.transcript_saved) return res.json({ ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', authorized.id)), submissionId: entry.id });
+        return res.status(409).json({ error: entry.status === 'succeeded' ? 'The reply was recorded, but the conversation save did not complete.' : 'This request was already received and will not be sent twice.', submissionId: entry.id, submissionStatus: entry.status, receiptConfirmed: true, transcriptSaved: Boolean(entry.transcript_saved) });
+      }
+      try { await withRoundLock(req, async (row, lease) => {
         if (isPassportVersion(row.version_id)) fail(409, 'Continue this interview at the interactive reference desk.');
-        const content = z.string().trim().min(1).max(4000).parse(req.body.content);
+        if (isRiddleDiaryData(JSON.parse(row.data)) && !await get('SELECT round_id FROM diary_sessions WHERE round_id=?', row.id)) fail(409, 'Continue this diary in its interactive scene.');
         if (row.ended_at || Date.now() >= row.started_at + JSON.parse(row.data).duration * 1000)
             fail(409, 'The conversation has ended. Submit your answer or start a fresh test.');
         const messages = JSON.parse(row.messages);
         if (messages.filter(m => m.role === 'user').length >= 40)
             fail(409, 'This test has reached its 40-turn limit.');
+        if (!(await journal.claim(entry.id)).changes) fail(409, 'This request was already received and will not be sent twice.');
         const config = JSON.parse(row.config);
         const collectionSystem = await collectionModels.systemForRound(row);
         if (!collectionSystem && config.baseUrl !== provider.baseUrl)
             fail(409, 'The provider changed since this test started. Start a fresh test.');
             const playerMessage = { id: id(), role: 'user', content, createdAt: Date.now() };
             const data = JSON.parse(row.data);
-            const system = collectionSystem || compilePrompt(data);
-            const { result, callId } = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user });
-            const next = [...messages, playerMessage, { id: id(), role: 'assistant', content: result.text, createdAt: Date.now(), latencyMs: result.latencyMs, usage: result.usage, model: result.model }];
+            let verifiedContext = '';
+            let presentedObjects = null;
+            if (isRiddleDiaryData(data)) {
+              const diaryStateRow = await get('SELECT state FROM diary_sessions WHERE round_id=?', row.id);
+              if (!diaryStateRow) fail(409, 'Continue this diary in its interactive scene.');
+              const diaryState = JSON.parse(diaryStateRow.state);
+              verifiedContext = diaryPromptContext(diaryState);
+              presentedObjects = diaryState.presentedObjects;
+              playerMessage.deskContext = verifiedContext;
+              playerMessage.presented = [...presentedObjects];
+              await journal.updateContext(entry.id, verifiedContext, presentedObjects);
+            }
+            const system = `${collectionSystem || compilePrompt(data)}${verifiedContext ? `\n\n${verifiedContext}` : ''}`;
+            let requested;
+            try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user, profileId: diaryProfileId }); }
+            catch (error) { await journal.fail(entry.id, error); error.submissionId = entry.id; throw error; }
+            const { result, callId } = requested;
+            const replyId = id();
+            await journal.succeed(entry.id, { reply: result.text, replyId });
+            const next = [...messages, playerMessage, { id: replyId, role: 'assistant', content: result.text, createdAt: Date.now(), latencyMs: result.latencyMs, usage: result.usage, model: result.model }];
             const saved = await collectionModels.finish({ row, lease, messages: next, callId, result });
-            if (!saved) fail(409, 'This reply took too long to save. Retry your message.');
-            res.json(publicRound(await get('SELECT * FROM rounds WHERE id = ?', row.id)));
-    }));
+            if (!saved) { const error = Object.assign(new Error('This reply was received and saved, but the conversation could not be updated.'), { status: 409, submissionId: entry.id }); throw error; }
+            await journal.markTranscriptSaved(entry.id);
+            res.json({ ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', row.id)), submissionId: entry.id });
+      }); } catch (error) {
+        const current = await get('SELECT status FROM durable_submissions WHERE id = ?', entry.id);
+        if (current?.status === 'accepted') { await journal.reject(entry.id); current.status = 'rejected'; }
+        else if (current?.status === 'running') { await journal.fail(entry.id, error); current.status = 'failed'; }
+        error.submissionId ||= entry.id;
+        error.submissionStatus ||= current?.status;
+        error.receiptConfirmed = true;
+        if (current?.status === 'failed') error.message = 'Your prompt was recorded, but the model could not return a reply.';
+        else if (current?.status === 'succeeded') { error.status = 409; error.message = 'The model reply was recorded, but the conversation could not be updated.'; error.transcriptSaved = false; }
+        throw error;
+      }
+    });
     app.post('/api/rounds/:id/hint', async (req, res) => withRoundLock(req, async row => {
         if (isPassportVersion(row.version_id)) fail(409, 'Use the hints at the interactive reference desk.');
         const data = JSON.parse(row.data);
+        if (isRiddleDiaryData(data)) fail(409, 'Use the diary objects to uncover further clues.');
         if (row.ended_at || Date.now() >= row.started_at + data.duration * 1000)
             fail(409, 'This conversation has ended.');
+        if (isRiddleDiaryData(data)) fail(409, 'Use the diary objects to uncover further clues.');
+        await requireRecording(req, row);
         if (row.hints_used >= data.hints.length)
             fail(400, 'There are no more hints.');
         const messages = [...JSON.parse(row.messages), { id: id(), role: 'hint', content: data.hints[row.hints_used], createdAt: Date.now() }];
@@ -474,15 +643,18 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     }));
     app.post('/api/rounds/:id/submit', async (req, res) => withRoundLock(req, async row => {
         if (isPassportVersion(row.version_id)) fail(409, 'Stamp and file this case at the interactive reference desk.');
+        if (isRiddleDiaryData(JSON.parse(row.data))) fail(409, 'File your evidence from the interactive diary.');
         if (row.ended_at)
             fail(409, 'This answer has already been submitted.');
         const answer = z.string().trim().min(1).max(4000).parse(req.body.answer);
+        await requireRecording(req, row);
         await run('UPDATE rounds SET answer = ?, ended_at = ? WHERE id = ?', answer, Date.now(), row.id);
         res.json(publicRound(await get('SELECT * FROM rounds WHERE id = ?', row.id)));
     }));
     app.post('/api/rounds/:id/branch', member, async (req, res) => {
         const row = await accessRound(req);
         if (isPassportVersion(row.version_id)) fail(409, 'Replay this reference at the interactive desk.');
+        if (isRiddleDiaryData(JSON.parse(row.data))) fail(409, 'Start a fresh diary scene to change prompt profiles.');
         const messages = JSON.parse(row.messages);
         const messageId = z.string().parse(req.body.messageId);
         const index = messages.findIndex(m => m.id === messageId && m.role === 'assistant');
@@ -504,6 +676,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const row = await get('SELECT * FROM rounds WHERE id = ?', req.params.id);
         if (!row)
             fail(404, 'Test not found.');
+        if (isRiddleDiaryData(JSON.parse(row.data))) fail(403, 'The diary system prompt is not available in player routes.');
         const assignment = await get('SELECT source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
         if (assignment?.source === 'participant') fail(403, 'Review participant attempts from their collection to keep collection context attached.');
         const desk = isPassportVersion(row.version_id) ? await get('SELECT state FROM passport_sessions WHERE round_id = ?', row.id) : null;
@@ -529,6 +702,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const row = await get('SELECT * FROM rounds WHERE id = ?', req.params.id);
         if (!row)
             fail(404, 'Test not found.');
+        if (isRiddleDiaryData(JSON.parse(row.data))) fail(403, 'The diary system prompt is not available in player routes.');
         const assignment = await get('SELECT source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
         if (assignment?.source === 'participant') fail(403, 'Participant attempts do not expose their protection prompt.');
         const messages = JSON.parse(row.messages).filter(m => ['user', 'assistant'].includes(m.role));
@@ -559,10 +733,10 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         res.json({ system: (await collectionModels.systemForRound(row) || compilePrompt(JSON.parse(row.data))) + (lastQuestion?.deskContext ? `\n\nVERIFIED DESK OBSERVATIONS\n${lastQuestion.deskContext}` : ''), config: JSON.parse(row.config), messages });
     });
     app.get('/api/levels/:id/prompt', member, async (req, res) => res.json({ system: compilePrompt(JSON.parse((await levelRow(req.params.id)).draft)), config: safeConfig() }));
-    addOrchestrationRoutes(app, { store, provider, completion: instrumentedCompletion });
+    addOrchestrationRoutes(app, { store, provider, completion: instrumentedCompletion, journal, requireRecording });
     addCollectionRoutes(app, { store, provider, member, owner, versionRow, createRound, passportReviewEnabled });
-    addPassportRoutes(app, { store, provider, completion: instrumentedCompletion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds, researchWorldId, collectionModels, passportReviewEnabled });
-    addMetricsRoutes(app, { store, enabled: metricsEnabled, secureCookies, authorizeRound: (req, roundId) => accessRound(req, roundId), admin, sessionCreationLimit: metricsSessionCreationLimit });
+    addPassportRoutes(app, { store, provider, completion: instrumentedCompletion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds, researchWorldId, collectionModels, passportReviewEnabled, passportScenarioRotation, journal, requireRecording, recordingNoticeRequired });
+    addMetricsRoutes(app, { store, enabled: metricsEnabled, secureCookies, authorizeRound: (req, roundId) => accessRound(req, roundId), admin, sessionCreationLimit: metricsSessionCreationLimit, recordingNoticeRequired, recordingAccepted });
     app.use('/api', async (req, res) => res.status(404).json({ error: 'Endpoint not found.' }));
     app.use(async (error, req, res, next) => {
         if (error instanceof z.ZodError)
@@ -570,7 +744,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const status = error.status || 500;
         if (status === 500)
             console.error('Request failed:', error.message);
-        res.status(status).json({ error: status === 500 ? 'The request could not be completed.' : error.message });
+        res.status(status).json({ error: status === 500 ? 'The request could not be completed.' : error.message, ...(error.submissionId ? { submissionId: error.submissionId, submissionStatus: error.submissionStatus, receiptConfirmed: Boolean(error.receiptConfirmed), ...(error.transcriptSaved === undefined ? {} : { transcriptSaved: error.transcriptSaved }) } : {}) });
     });
     return { app, store };
 }

@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowUpRight, ChevronRight, Copy, Plus, Save, Send, Share2 } from 'lucide-react';
-import { api, date } from './api';
+import { api, ApiError, date } from './api';
 import { Button, Empty, Field, Modal } from './ui';
 import { navigate } from './App';
 import type { Bootstrap, User } from './types';
@@ -68,6 +68,14 @@ export function OrchestrationLab({ user, model, configId, runId, notify }: { use
   const [text, setText] = useState<Record<Lane, string>>({ A: '', B: '', C: '' });
   const [compareId, setCompareId] = useState(''); const [compared, setCompared] = useState<Run | null>(null);
   const [inspectLane, setInspectLane] = useState<Lane | null>(null);
+  type PendingSubmission = { runId: string; id: string; content: string };
+  const [pendingSubmissions, setPendingSubmissions] = useState<Partial<Record<Lane, PendingSubmission>>>({});
+  const pendingSubmissionsRef = useRef<Partial<Record<Lane, PendingSubmission>>>({});
+  const currentRunId = useRef(runId || ''), currentConfigId = useRef(configId || ''), mounted = useRef(true);
+  currentRunId.current = runId || ''; currentConfigId.current = configId || '';
+  const setPending = (lane: Lane, pending: PendingSubmission | null) => { const next = { ...pendingSubmissionsRef.current }; if (pending) next[lane] = pending; else delete next[lane]; pendingSubmissionsRef.current = next; setPendingSubmissions(next); };
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => { pendingSubmissionsRef.current = {}; setPendingSubmissions({}); }, [runId, configId]);
   const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   const editable = Boolean(config && (config.ownerId === user.id || user.role === 'admin'));
   const dirty = Boolean(config && draft && JSON.stringify(draft) !== JSON.stringify(config.draft));
@@ -111,7 +119,7 @@ export function OrchestrationLab({ user, model, configId, runId, notify }: { use
     window.addEventListener('beforeunload', unload);
     return () => { window.removeEventListener('workshop:navigate', protect); window.removeEventListener('beforeunload', unload); };
   }, [dirty]);
-  const act = async (action: () => Promise<void>) => { setBusy(true); setError(''); try { await action(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } };
+  const act = async (action: () => Promise<void>, isCurrent: () => boolean = () => true) => { setBusy(true); setError(''); try { await action(); } catch (e) { if (isCurrent()) setError((e as Error).message); } finally { if (isCurrent()) setBusy(false); } };
   const refreshRuns = async (id: string) => setRuns(await api<RunSummary[]>(`/orchestration/configs/${id}/runs`));
   const save = async () => {
     if (!config || !draft) throw new Error('Open a configuration first.');
@@ -151,12 +159,37 @@ export function OrchestrationLab({ user, model, configId, runId, notify }: { use
     setWorldPair(current => current ? { ...current, factValue: observed.factValue, observed: true } : current);
     setPairAudit(null); notify('The seal inspection was recorded.');
   });
-  const send = (lane: Lane) => act(async () => {
-    if (!run || !text[lane].trim()) return;
-    const value = await api<Run>(`/orchestration/runs/${run.id}/messages`, { method: 'POST', body: { lane, content: text[lane] } });
-    setRun(value); setText(current => ({ ...current, [lane]: '' })); setPairAudit(null); await refreshRuns(run.configId);
-    if (worldPair) setScorePreview(await api<ScorePreview>(`/orchestration/runs/${run.id}/score-preview`));
-  });
+  const send = (lane: Lane, recover = false) => {
+    const targetRun = run;
+    if (!targetRun) return;
+    const isCurrent = () => mounted.current && currentRunId.current === targetRun.id && currentConfigId.current === targetRun.configId;
+    return act(async () => {
+    if (!isCurrent()) return;
+    const existing = pendingSubmissionsRef.current[lane];
+    if (recover && (!existing || existing.runId !== targetRun.id)) return;
+    if (!recover && (!text[lane].trim() || existing?.runId === targetRun.id)) return;
+    const content = recover ? existing!.content : text[lane];
+    const pending = existing?.runId === targetRun.id ? existing : { runId: targetRun.id, id: crypto.randomUUID(), content };
+    if (!existing || existing.runId !== targetRun.id) setPending(lane, pending);
+    let value: Run;
+    try { value = await api<Run>(`/orchestration/runs/${targetRun.id}/messages`, { method: 'POST', body: { lane, content, requestId: pending.id } }); if (!isCurrent()) return; }
+    catch (e) {
+      if (!isCurrent()) return;
+      if (e instanceof ApiError && e.submissionId) {
+        const terminal = ['failed', 'rejected', 'interrupted'].includes(e.submissionStatus || '');
+        if (terminal) setPending(lane, null);
+        throw new Error(`${e.message} The server confirmed this prompt was saved (status: ${e.submissionStatus || 'unknown'}).${terminal ? ' You can send a new attempt.' : ' Check the previous submission to retrieve its result.'}`);
+      }
+      if (e instanceof ApiError) { if (e.status < 500 && e.status !== 429) setPending(lane, null); throw new Error(e.status >= 500 ? `${e.message} The receipt is unknown; check the previous submission before sending another prompt.` : e.message); }
+      throw new Error('The server receipt is unknown because the connection ended. Check the previous submission before sending another prompt.');
+    }
+    if (!isCurrent()) return;
+    setRun(value); setText(current => isCurrent() && current[lane] === content ? { ...current, [lane]: '' } : current); setPairAudit(null); setPending(lane, null);
+    await refreshRuns(targetRun.configId);
+    if (!isCurrent()) return;
+    if (worldPair) { const score = await api<ScorePreview>(`/orchestration/runs/${targetRun.id}/score-preview`); if (isCurrent()) setScorePreview(score); }
+  }, isCurrent);
+  };
   const share = (message: Message, target: Lane) => act(async () => {
     if (!run) return;
     setRun(await api<Run>(`/orchestration/runs/${run.id}/board`, { method: 'POST', body: { messageId: message.id, targets: [target] } }));
@@ -196,7 +229,7 @@ export function OrchestrationLab({ user, model, configId, runId, notify }: { use
         {pairAudit?.recipientUptake?.some(item => item.tested) && <div className="orchestration-request-diff"><span className="eyebrow">ACTUAL RECIPIENT TEST</span>{pairAudit.recipientUptake.map((item, index) => <p key={index}>World {index + 1}: {item.tested ? `${item.rawReply} · ${item.wholeLabelCorrect ? 'correct label' : 'wrong label'} · ${item.bodyMatchesAuditedAfter ? 'audited request used' : 'request changed'} · ${item.scoreEligible ? 'score eligible' : 'diagnostic only'}` : 'not tested yet'}</p>)}</div>}
         <div className="orchestration-conversations">{run.snapshot.slots.map(slot => <div className="orchestration-conversation" key={slot.id}><div className="orchestration-conversation-top"><span className="orchestration-letter">{slot.id}</span><div><strong>{slot.name}</strong><small>{run.messages.filter(message => message.lane === slot.id && message.role === 'user').length} questions</small></div><button className="text-button" onClick={() => setInspectLane(slot.id)}>Inspect context</button></div>
           <div className="orchestration-transcript">{run.messages.filter(message => message.lane === slot.id).map(message => <div className={`orchestration-message ${message.role}`} key={message.id}><span className="eyebrow">{message.role === 'user' ? 'YOU' : slot.name.toUpperCase()}</span><p>{message.content}</p>{message.role === 'assistant' && run.snapshot.contract && <p className={`orchestration-verdict ${message.publication?.status || 'rejected'}`}>{message.publication?.status || 'rejected'} · {message.publication?.reason || 'No publication verdict was saved.'}{message.publication?.status === 'published' && message.publication.exactFormat === false && ' Output capitalization or spacing differs from the declared label.'}</p>}{message.role === 'assistant' && (!run.snapshot.contract || run.snapshot.contract.edges.some(edge => edge.sourceLane === slot.id)) && <div className="orchestration-share"><Share2 size={12} />Share with {(run.snapshot.contract ? run.snapshot.contract.edges.filter(edge => edge.sourceLane === slot.id).map(edge => edge.targetLane) : lanes.filter(target => target !== slot.id)).map(target => <button key={target} disabled={busy || Boolean(run.snapshot.contract && (message.publication?.status !== 'published' || !contractShareAllowed(run.snapshot.contract, slot.id, target, message.content))) || run.board.some(item => item.messageId === message.id && item.targets.includes(target))} onClick={() => share(message, target)}>{target}</button>)}</div>}</div>)}{!run.messages.some(message => message.lane === slot.id) && <p className="muted">No questions yet.</p>}</div>
-          <div className="orchestration-composer"><textarea aria-label={`Question for ${slot.id}`} rows={2} value={text[slot.id]} onChange={e => setText(current => ({ ...current, [slot.id]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(slot.id); } }} placeholder={`Ask ${slot.name}...`} /><button aria-label={`Send to ${slot.id}`} disabled={busy || !text[slot.id].trim()} onClick={() => send(slot.id)}><Send size={15} /></button></div></div>)}</div>
+          {!busy && pendingSubmissions[slot.id]?.runId === run.id && <div className="pending-submission" role="status"><p>The previous submission’s receipt is unknown. This draft remains separate.</p><button className="text-button" disabled={busy} onClick={() => send(slot.id, true)}>Check previous submission</button></div>}<div className="orchestration-composer"><textarea aria-label={`Question for ${slot.id}`} rows={2} value={text[slot.id]} onChange={e => setText(current => ({ ...current, [slot.id]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(slot.id); } }} placeholder={`Ask ${slot.name}...`} /><button aria-label={`Send to ${slot.id}`} disabled={busy || !text[slot.id].trim() || pendingSubmissions[slot.id]?.runId === run.id} onClick={() => send(slot.id)}><Send size={15} /></button></div></div>)}</div>
         <div className="orchestration-board"><div><span className="eyebrow">COMMON BOARD</span><p>Only replies you share appear here. Each specialist receives the entries addressed to them on their next question.</p></div><div>{run.board.map(item => <div className="orchestration-board-item" key={item.id}><strong>{item.from} → {item.targets.join(', ')}</strong><span>{item.content}</span></div>)}{!run.board.length && <span className="muted">Share a specialist reply to start the board.</span>}</div></div>
         <div className="orchestration-compare"><div><span className="eyebrow">COMPARE RUNS</span><p>Select another run to inspect how prompts and replies differed.</p></div><select aria-label="Compare with run" value={compareId} onChange={e => setCompareId(e.target.value)}><option value="">Choose a run</option>{runs.filter(item => item.id !== run.id).map(item => <option key={item.id} value={item.id}>{date(item.createdAt)} · {item.testInput.slice(0, 55)}</option>)}</select></div>
         {compared && <div className="orchestration-comparison">{[run, compared].map(item => <div key={item.id}><span className="eyebrow">{item.id === run.id ? 'CURRENT RUN' : 'COMPARISON'}</span><p>{item.testInput}</p><small>{item.model} · {item.messages.filter(message => message.role === 'user').length} questions · {item.board.length} shared findings</small>{item.snapshot.slots.map(slot => <details key={slot.id}><summary>{slot.name} · prompt and latest reply</summary><p>{slot.systemPrompt}</p><p><strong>Latest reply:</strong> {item.messages.filter(message => message.lane === slot.id && message.role === 'assistant').at(-1)?.content || 'No reply yet.'}</p></details>)}</div>)}</div>}

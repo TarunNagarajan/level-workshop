@@ -153,7 +153,38 @@ export function Metrics() {
         {activeSamples.length === 0 && <Empty>{loading ? 'Loading samples…' : 'No samples are recorded in this date window.'}</Empty>}
       </section>
     </>}
+    <SubmissionsJournal />
   </div>;
+}
+
+type Submission = { id: string; requestId: string; roundId: string | null; runId: string | null; lane: string | null; actorId: string | null; source: string | null; scenarioId?: string | null; collectionId?: string | null; profileId?: string | null; content: string; createdAt: number; startedAt: number | null; completedAt: number | null; status: 'accepted' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'rejected'; errorCode: string | null; reply?: string | null; replyId?: string | null; deskContext?: string | null; presented?: string[] | null };
+type SubmissionPage = { items: Submission[]; nextCursor: string | null };
+function SubmissionsJournal() {
+  const [items, setItems] = useState<Submission[]>([]); const [cursor, setCursor] = useState<string | null>(null); const [busy, setBusy] = useState(true); const [more, setMore] = useState(false); const [error, setError] = useState('');
+  const [exporting, setExporting] = useState(false); const [progress, setProgress] = useState({ pages: 0, rows: 0 }); const controller = useRef<AbortController | null>(null);
+  const load = async (next?: string) => {
+    setError(''); if (next) setMore(true); else setBusy(true);
+    try { const params = new URLSearchParams({ limit: '100' }); if (next) params.set('cursor', next); const page = await api<SubmissionPage>(`/submissions?${params}`); setItems(previous => next ? [...previous, ...page.items] : page.items); setCursor(page.nextCursor); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); setMore(false); }
+  };
+  useEffect(() => { void load(); return () => controller.current?.abort(); }, []);
+  const exportAll = async () => {
+    if (controller.current) return;
+    const active = new AbortController(); controller.current = active; setExporting(true); setProgress({ pages: 0, rows: 0 }); setError('');
+    const rows: Submission[] = []; let next: string | undefined; let pages = 0;
+    try {
+      do { const params = new URLSearchParams({ limit: '200' }); if (next) params.set('cursor', next); const page = await api<SubmissionPage>(`/submissions?${params}`, { signal: active.signal }); rows.push(...page.items); pages++; next = page.nextCursor || undefined; setProgress({ pages, rows: rows.length }); }
+      while (next && !active.signal.aborted);
+      if (!active.signal.aborted && controller.current === active) download(`owner-submissions-${new Date().toISOString().slice(0, 10)}.json`, { schema: 'owner-submissions', schemaVersion: 1, exportedAt: Date.now(), items: rows });
+    } catch (e) { if (!active.signal.aborted) setError((e as Error).message); }
+    finally { if (controller.current === active) { controller.current = null; setExporting(false); } }
+  };
+  return <section className="metrics-section submissions-journal"><div className="metrics-section-heading"><div><h2>Submitted work</h2><p className="muted">Submissions received since the journal was enabled, including failed requests. Earlier successful conversations remain in Tests.</p></div><div className="metrics-export-actions">{exporting ? <><span className="muted small">{progress.pages} pages · {progress.rows.toLocaleString()} submissions</span><Button className="secondary" onClick={() => controller.current?.abort()}><X size={14} />Cancel export</Button></> : <Button className="secondary" onClick={() => void exportAll()}><Download size={14} />Export all submissions</Button>}</div></div>
+    {error && <p className="error" role="alert">{error}</p>}
+    <div className="submission-list">{items.map(item => <article className="submission-row" key={item.id}><div className="submission-row-top"><strong>{item.source || 'Submission'}{item.lane ? ` · ${item.lane}` : ''}</strong><span className={`metrics-state ${item.status}`}>{item.status}</span></div><div className="submission-facts"><span>{date(item.createdAt)}</span><span>{item.startedAt == null ? 'Not started' : `Started ${date(item.startedAt)}`}</span><span>{item.completedAt == null ? 'No completion time' : `Completed ${date(item.completedAt)}`}</span>{item.roundId && <span>Round {item.roundId.slice(0, 8)}</span>}{item.runId && <span>Run {item.runId.slice(0, 8)}</span>}{item.scenarioId && <span>{item.scenarioId}</span>}{item.collectionId && <span>Collection {item.collectionId.slice(0, 8)}</span>}{item.profileId && <span>Profile {item.profileId}</span>}{item.errorCode && <span>Error {item.errorCode}</span>}</div><p className="submission-content">{item.content}</p>{item.reply && <details className="metrics-sample-details"><summary>Model reply</summary><p className="submission-content">{item.reply}</p></details>}{(item.deskContext || item.presented?.length) && <details className="metrics-sample-details"><summary>Scene context</summary>{item.deskContext && <p className="submission-content">{item.deskContext}</p>}{Boolean(item.presented?.length) && <p className="submission-content">Presented: {item.presented!.join(', ')}</p>}</details>}</article>)}{!items.length && <Empty>{busy ? 'Loading submissions…' : 'No submitted prompts have been recorded.'}</Empty>}</div>
+    {cursor && <Button className="secondary metrics-more" loading={more} onClick={() => void load(cursor)}>Load more submissions</Button>}
+  </section>;
 }
 
 function MetricCard({ label, value, detail, icon }: { label: string; value: string; detail: string; icon: ReactNode }) { return <article className="metrics-card"><div><span className="eyebrow">{label}</span><i>{icon}</i></div><strong>{value}</strong><small>{detail}</small></article>; }

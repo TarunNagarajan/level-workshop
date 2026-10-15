@@ -1,6 +1,41 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { createFixture } from './database-fixture.mjs';
+
+test('orchestration receipt recovery bypasses the new-turn limit without invoking the model twice', async () => {
+  let calls = 0;
+  const { app, store } = await createFixture({
+    provider: { model: 'fixture-model', baseUrl: 'https://example.test/v1', apiKey: 'fixture-key' },
+    completion: async () => { calls++; return { text: 'The final reply.', model: 'fixture-model', latencyMs: 6, usage: 3 }; },
+  });
+  const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const request = async (path, { method = 'GET', body, cookie } = {}) => {
+    const response = await fetch(origin + '/api' + path, { method, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: response.status, body: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] };
+  };
+  try {
+    const owner = await request('/setup', { method: 'POST', body: { name: 'Owner', email: 'receipt-limit@example.test', password: 'long-test-password' } });
+    const config = await request('/orchestration/configs', { method: 'POST', body: {}, cookie: owner.cookie });
+    const run = await request(`/orchestration/configs/${config.body.id}/runs`, { method: 'POST', body: { testInput: 'Test the final allowed turn.' }, cookie: owner.cookie });
+    const priorTurns = Array.from({ length: 19 }, (_, index) => ({ id: randomUUID(), lane: 'A', role: 'user', content: `Prior question ${index + 1}`, createdAt: Date.now() }));
+    await store.run('UPDATE orchestration_runs SET messages=? WHERE id=?', JSON.stringify(priorTurns), run.body.id);
+    const submission = { lane: 'A', content: 'The twentieth and final question.', requestId: randomUUID() };
+    const first = await request(`/orchestration/runs/${run.body.id}/messages`, { method: 'POST', body: submission, cookie: owner.cookie });
+    assert.equal(first.status, 200);
+    assert.equal(calls, 1);
+    const journalEntry = await store.get('SELECT id,status,transcript_saved FROM durable_submissions WHERE orchestration_run_id=? AND client_request_id=?', run.body.id, submission.requestId);
+    assert.equal(journalEntry.status, 'succeeded');
+    assert.equal(journalEntry.transcript_saved, 1);
+
+    const recovered = await request(`/orchestration/runs/${run.body.id}/messages`, { method: 'POST', body: submission, cookie: owner.cookie });
+    assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
+    assert.equal(recovered.body.submissionId, journalEntry.id);
+    assert.equal(calls, 1, 'receipt recovery must not invoke the model a second time');
+    assert.equal((await store.all('SELECT id FROM durable_submissions WHERE orchestration_run_id=? AND client_request_id=?', run.body.id, submission.requestId)).length, 1);
+  } finally { await new Promise(resolve => server.close(resolve)); await store.db.close(); }
+});
 
 test('orchestration lab keeps prompt versions, tests and deliberate handoffs separate', async () => {
   const calls = [];

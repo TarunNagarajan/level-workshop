@@ -43,11 +43,11 @@ test('passport desk supports physical inspection, questioning, evidence, design 
   await dialog.getByRole('button', { name: 'Present to passenger' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.getByRole('button', { name: 'Request arrival card' }).click();
-  await expect(page.getByRole('button', { name: 'Compare signatures', exact: true })).toBeEnabled();
-  await page.getByRole('button', { name: 'Compare signatures', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Compare documents', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Compare documents', exact: true }).click();
   await expect(page.getByRole('dialog').getByText('N. Vale', { exact: true })).toBeVisible();
   await capture(page, 'passport-comparison.png');
-  await page.getByRole('button', { name: 'Question him about the signatures' }).click();
+  await page.getByRole('button', { name: 'Question about the documents' }).click();
   await page.getByLabel('Question the passenger', { exact: true }).fill('Whose passport is it?');
   await page.getByRole('button', { name: 'Send question' }).click();
   await expect(page.getByText('The passport belongs to my brother Elias. I am Noah.', { exact: true })).toBeVisible();
@@ -85,7 +85,8 @@ test('passport desk supports physical inspection, questioning, evidence, design 
   const mobile = await mobileContext.newPage(); mobile.on('pageerror', error => errors.push(error.message));
   await mobile.goto(link);
   await expect(mobile.getByRole('button', { name: 'Explore the design' })).toHaveCount(0);
-  await mobile.getByLabel('Your name').fill('Reference peer');
+  await mobile.getByRole('textbox', { name: /^Your name\b/ }).fill('Reference peer');
+  await mobile.getByLabel(/Your submitted prompts, model replies, actions, findings and timing data/).check();
   await mobile.getByRole('button', { name: 'Open the counter' }).click();
   await mobile.getByRole('button', { name: 'Inspect passport', exact: true }).click();
   await expect(mobile.getByRole('dialog').getByText('RV 481 726', { exact: true })).toBeVisible();

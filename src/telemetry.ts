@@ -1,7 +1,7 @@
-type View = 'workshop' | 'collect' | 'passport' | 'orchestration' | 'editor' | 'tests' | 'settings' | 'other';
+type View = 'workshop' | 'collect' | 'passport' | 'orchestration' | 'editor' | 'tests' | 'settings' | 'diary' | 'other';
 type Phase = 'read_think' | 'compose' | 'waiting' | 'idle' | 'hidden';
 type RequestCategory = 'navigation' | 'round_action' | 'authoring' | 'review' | 'other';
-type Interaction = 'hint' | 'submit' | 'finish';
+type Interaction = 'hint' | 'submit' | 'finish' | 'inspect';
 type EventKind = 'page_enter' | 'page_exit' | 'heartbeat' | 'visibility' | 'phase' | 'request' | 'interaction';
 type MetricEvent = {
   eventId: string; tabId: string; pageId: string; kind: EventKind; view: View;
@@ -11,6 +11,7 @@ type MetricEvent = {
   interaction?: Interaction;
 };
 type Queued = { event: MetricEvent; token?: string; sessionId: string };
+type PendingSessionEvent = { event: MetricEvent; token?: string; sessionGeneration: number; identityGeneration: number; identity: string | null };
 type RequestTicket = { category: RequestCategory; roundId?: string; token?: string; start: number; pageId: string; view: View; previousPhase?: Phase };
 function uuid(): string | null {
   try {
@@ -38,9 +39,12 @@ let heartbeatMs = 15000;
 let sessionFlight: Promise<void> | null = null;
 let sessionController: AbortController | null = null;
 let sessionGeneration = 0;
+let pendingSessionGeneration: number | null = null;
 let identity: string | null | undefined;
 let listenersInstalled = false;
 let started = false;
+let recordingConsent = false;
+let pendingRoute: string | null = null;
 let intervalAt = 0;
 let phaseAt = 0;
 let lastActivity = 0;
@@ -50,6 +54,7 @@ let currentPhase: Phase = 'read_think';
 let visible = typeof document === 'undefined' || document.visibilityState !== 'hidden';
 let timer: number | null = null;
 let queue: Queued[] = [];
+let pendingSessionQueue: PendingSessionEvent[] = [];
 let flushFlight: Promise<void> | null = null;
 let flushController: AbortController | null = null;
 let identityChange: string | null | undefined;
@@ -67,6 +72,7 @@ function stableTabId() {
 }
 
 function classify(path: string): View {
+  if (path.startsWith('/diary')) return 'diary';
   if (path.startsWith('/collect/')) return 'collect';
   if (path.startsWith('/reference/play/') || path.startsWith('/reference')) return 'passport';
   if (path.startsWith('/orchestration')) return 'orchestration';
@@ -78,21 +84,32 @@ function classify(path: string): View {
 }
 
 function enqueue(event: Omit<MetricEvent, 'eventId' | 'tabId' | 'pageId' | 'view'> & { pageId?: string; view?: View }, scope?: { id: string; token?: string }) {
-  if (!started || !enabled || !sessionId) return;
+  if (!started || !recordingConsent) return;
   const eventId = uuid();
   if (!eventId) { enabled = false; sessionId = null; if (timer !== null) { window.clearInterval(timer); timer = null; } return; }
-  const item: Queued = { sessionId, event: { eventId, tabId, pageId: event.pageId || pageId, view: event.view || view, ...event, ...(scope?.id ? { roundId: scope.id } : {}) }, ...(scope?.token ? { token: scope.token } : {}) };
+  const measured: MetricEvent = { eventId, tabId, pageId: event.pageId || pageId, view: event.view || view, ...event, ...(scope?.id ? { roundId: scope.id } : {}) };
+  if (!enabled || !sessionId) {
+    // Consent may be granted while the server is still opening the session.
+    // Keep only anonymous event metadata during that request; never block the
+    // player or retain unsubmitted text, and discard on identity/consent change.
+    if (pendingSessionGeneration === sessionGeneration && sessionFlight && sessionController && identity !== undefined && identityChange === undefined) {
+      pendingSessionQueue.push({ event: measured, ...(scope?.token ? { token: scope.token } : {}), sessionGeneration, identityGeneration, identity });
+      if (pendingSessionQueue.length > MAX_QUEUED_EVENTS) pendingSessionQueue.splice(0, pendingSessionQueue.length - MAX_QUEUED_EVENTS);
+    }
+    return;
+  }
+  const item: Queued = { sessionId, event: measured, ...(scope?.token ? { token: scope.token } : {}) };
   queue.push(item);
   if (queue.length > MAX_QUEUED_EVENTS) queue.splice(0, queue.length - MAX_QUEUED_EVENTS);
   if (queue.length >= 8) void flush(false);
 }
 
 function setScope(id?: string, token?: string) {
-  if (id && token && currentRound?.id !== id) {
+  if (id && currentRound?.id !== id) {
     if (currentRound) { flushInterval('heartbeat'); void flush(false); }
     lastReplyAt = null;
     currentRound = { id, token };
-  } else if (id && token) currentRound = { id, token };
+  } else if (id) currentRound = { id, token: token || currentRound?.token };
   return currentRound || undefined;
 }
 
@@ -156,15 +173,16 @@ async function flush(keepalive: boolean) {
     for (const items of groups.values()) {
       if (batchGeneration !== identityGeneration || controller.signal.aborted) return;
       const first = items[0];
+      const roundToken = items.find(item => item.token)?.token;
       const send = () => fetch('/api/telemetry/events', {
         method: 'POST', credentials: 'same-origin', keepalive,
         signal: controller.signal,
-        headers: { 'Content-Type': 'application/json', ...(first.event.roundId && first.token ? { 'x-round-token': first.token } : {}) },
+        headers: { 'Content-Type': 'application/json', ...(first.event.roundId && roundToken ? { 'x-round-token': roundToken } : {}) },
         body: JSON.stringify({ sessionId: first.sessionId, events: items.map(item => item.event) }),
       });
       let response = await send();
       if (response.status === 401 && batchIdentity === identity && batchGeneration === identityGeneration && identityChange === undefined) {
-        enabled = false; sessionId = null; void openSession(); return;
+        enabled = false; sessionId = null; pendingSessionGeneration = null; void openSession(); return;
       }
       if (!response.ok && response.status !== 401 && response.status !== 429) continue;
     }
@@ -175,31 +193,45 @@ async function flush(keepalive: boolean) {
 }
 
 async function openSession() {
-  if (!started || !pageId || !tabId) return;
+  if (!started || !pageId || !tabId || identity === undefined || !recordingConsent || identityChange !== undefined) return;
   if (sessionFlight) return sessionFlight;
   const sessionIdentity = identity;
   const generation = sessionGeneration;
   const controller = new AbortController(); sessionController = controller;
   let flight: Promise<void> | null = null;
   flight = (async () => {
+    let established = false;
     try {
       const response = await fetch('/api/telemetry/session', { method: 'POST', credentials: 'same-origin', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: '{}' });
       if (!response.ok) return;
       const data = await response.json() as { enabled?: boolean; sessionId?: string; heartbeatSeconds?: number; idleAfterMs?: number };
-      if (identity !== sessionIdentity || identityChange !== undefined) return;
+      if (generation !== sessionGeneration || identity !== sessionIdentity || identityChange !== undefined || !recordingConsent) return;
       enabled = Boolean(data.enabled && data.sessionId);
       sessionId = enabled ? data.sessionId! : null;
+      established = true;
+      if (pendingSessionGeneration === generation) pendingSessionGeneration = null;
       heartbeatMs = Math.max(5000, Math.min(30000, (data.heartbeatSeconds || 15) * 1000));
       idleAfterMs = Math.max(10000, Math.min(120000, data.idleAfterMs || 30000));
       if (enabled) {
+        const buffered = pendingSessionQueue.filter(item => item.sessionGeneration === generation && item.identityGeneration === identityGeneration && item.identity === sessionIdentity);
+        pendingSessionQueue = [];
+        queue.push(...buffered.map(item => ({ sessionId: sessionId!, event: item.event, ...(item.token ? { token: item.token } : {}) })));
+        if (queue.length > MAX_QUEUED_EVENTS) queue.splice(0, queue.length - MAX_QUEUED_EVENTS);
         if (timer !== null) window.clearInterval(timer);
         timer = window.setInterval(() => { if (visible && now() - lastActivity >= idleAfterMs) setPhase('idle', currentRound || undefined); flushInterval('heartbeat'); void flush(false); }, heartbeatMs);
         enqueue({ kind: 'page_enter' });
         void flush(false);
-      } else if (timer !== null) { window.clearInterval(timer); timer = null; }
+      } else {
+        pendingSessionQueue = pendingSessionQueue.filter(item => item.sessionGeneration !== generation);
+        if (timer !== null) { window.clearInterval(timer); timer = null; }
+      }
     } catch { /* optional telemetry must not affect the workshop */ }
     finally {
       if (generation === sessionGeneration) {
+        if (!established) {
+          pendingSessionQueue = pendingSessionQueue.filter(item => item.sessionGeneration !== generation);
+          if (pendingSessionGeneration === generation) pendingSessionGeneration = null;
+        }
         if (sessionFlight === flight) { sessionFlight = null; if (sessionController === controller) sessionController = null; }
         if (identity !== sessionIdentity && identityChange === undefined) void openSession();
       }
@@ -233,6 +265,7 @@ function installListeners() {
 }
 
 export function navigateMetrics(path: string) {
+  if (!recordingConsent) { pendingRoute = path; return; }
   const nextView = classify(path);
   if (!started) {
     const nextTab = stableTabId(); const nextPage = uuid();
@@ -252,7 +285,7 @@ export function navigateMetrics(path: string) {
 
 export function syncMetricsIdentity(userId: string | null) {
   if (identity === userId || identityChange === userId) return;
-  if (identity === undefined) { identity = userId; void openSession(); return; }
+  if (identity === undefined) { identity = userId; if (recordingConsent) { pendingSessionGeneration = sessionGeneration; void openSession(); } return; }
   const generation = ++identityGeneration;
   identityChange = userId;
   enabled = false;
@@ -260,11 +293,33 @@ export function syncMetricsIdentity(userId: string | null) {
   flushController?.abort();
   sessionController?.abort();
   queue = [];
+  pendingSessionQueue = [];
   currentRound = null; lastReplyAt = null; sessionId = null;
   phaseTime.read_think = 0; phaseTime.compose = 0; phaseTime.waiting = 0;
+  currentPhase = visible ? 'read_think' : 'hidden';
   intervalAt = now(); phaseAt = intervalAt; lastActivity = intervalAt;
   identity = userId; identityChange = undefined; sessionGeneration += 1; sessionFlight = null;
-  if (generation === identityGeneration) void openSession();
+  pendingSessionGeneration = recordingConsent ? sessionGeneration : null;
+  if (generation === identityGeneration && recordingConsent) void openSession();
+}
+
+export function setMetricsConsent(accepted: boolean) {
+  if (recordingConsent === accepted) return;
+  recordingConsent = accepted;
+  if (!accepted) {
+    enabled = false; if (timer !== null) { window.clearInterval(timer); timer = null; }
+    flushController?.abort(); sessionController?.abort(); queue = []; pendingSessionQueue = []; sessionId = null;
+    sessionGeneration += 1; pendingSessionGeneration = null; sessionFlight = null;
+    phaseTime.read_think = 0; phaseTime.compose = 0; phaseTime.waiting = 0;
+    intervalAt = now(); phaseAt = intervalAt; lastActivity = intervalAt;
+    return;
+  }
+  pendingSessionGeneration = sessionGeneration;
+  // Consent can arrive before bootstrap has resolved the account. Keep the
+  // route pending, then open a session only after syncMetricsIdentity supplies
+  // either the member ID or an explicit anonymous identity (null).
+  if (identity !== undefined && identityChange === undefined) void openSession();
+  if (pendingRoute !== null) { const route = pendingRoute; pendingRoute = null; navigateMetrics(route); }
 }
 
 function roundFrom(path: string): string | undefined {
@@ -289,9 +344,11 @@ export function beginMeasuredRequest(path: string, method: string, token?: strin
   const requestCategory = category(path, method);
   if (!requestCategory) return null;
   const ticket: RequestTicket = { category: requestCategory, start: now(), pageId, view };
-  const id = token ? roundFrom(path) : undefined;
-  if (id && token) {
-    ticket.roundId = id; ticket.token = token; ticket.previousPhase = currentPhase;
+  const id = roundFrom(path);
+  if (id) {
+    ticket.roundId = id;
+    if (token) ticket.token = token;
+    ticket.previousPhase = currentPhase;
     setScope(id, token);
   }
   if (ticket.category === 'round_action') {
@@ -316,18 +373,18 @@ export function finishMeasuredRequest(ticket: RequestTicket | null, outcome: 'su
 }
 
 export function setMetricsPhase(phase: 'read_think' | 'compose', roundId?: string, token?: string) {
-  const scope = roundId && token ? setScope(roundId, token) : undefined;
+  const scope = roundId ? setScope(roundId, token) : undefined;
   setPhase(phase, scope);
 }
 
 export function recordMetricsReply(roundId: string, token?: string) {
   lastReplyAt = now();
-  const scope = token ? setScope(roundId, token) : undefined;
+  const scope = setScope(roundId, token);
   setPhase('read_think', scope);
 }
 
 export function recordMetricsInteraction(interaction: Interaction, roundId?: string, token?: string) {
-  const current = roundId && token ? setScope(roundId, token) : undefined;
+  const current = roundId ? setScope(roundId, token) : undefined;
   const sinceReplyMs = lastReplyAt === null ? undefined : Math.max(0, Math.min(86400000, Math.round(now() - lastReplyAt)));
   enqueue({ kind: 'interaction', interaction, ...(sinceReplyMs === undefined ? {} : { sinceReplyMs }) }, current);
   if (interaction !== 'hint') lastReplyAt = null;

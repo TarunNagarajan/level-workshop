@@ -16,6 +16,10 @@ export function openStore(path) {
     CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY, level_id TEXT REFERENCES levels(id), number INTEGER NOT NULL, data TEXT NOT NULL, note TEXT NOT NULL, author_id TEXT REFERENCES users(id), created_at INTEGER NOT NULL, UNIQUE(level_id, number));
     CREATE TABLE IF NOT EXISTS links (id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, version_id TEXT REFERENCES versions(id), created_at INTEGER NOT NULL, expires INTEGER NOT NULL, revoked INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS rounds (id TEXT PRIMARY KEY, token TEXT NOT NULL, level_id TEXT REFERENCES levels(id), version_id TEXT REFERENCES versions(id), author_id TEXT REFERENCES users(id), source TEXT NOT NULL, data TEXT NOT NULL, config TEXT NOT NULL, tester TEXT NOT NULL, messages TEXT NOT NULL, hints_used INTEGER DEFAULT 0, started_at INTEGER NOT NULL, ended_at INTEGER, answer TEXT, parent_id TEXT, UNIQUE(token));
+    CREATE TABLE IF NOT EXISTS user_recording_acknowledgements (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, version TEXT NOT NULL, accepted_at INTEGER NOT NULL, PRIMARY KEY(user_id, version));
+    CREATE TABLE IF NOT EXISTS durable_submissions (id TEXT PRIMARY KEY, client_request_id TEXT NOT NULL, scope_key TEXT NOT NULL, round_id TEXT REFERENCES rounds(id) ON DELETE RESTRICT, orchestration_run_id TEXT REFERENCES orchestration_runs(id) ON DELETE RESTRICT, lane TEXT, actor_id TEXT REFERENCES users(id) ON DELETE SET NULL, source TEXT, version_id TEXT, collection_id TEXT, profile_id TEXT, scenario_id TEXT, content TEXT NOT NULL, desk_context TEXT, presented TEXT, created_at INTEGER NOT NULL, started_at INTEGER, completed_at INTEGER, status TEXT NOT NULL CHECK(status IN ('accepted','running','succeeded','failed','interrupted','rejected')), error_code TEXT, reply TEXT, reply_id TEXT, transcript_saved INTEGER NOT NULL DEFAULT 0, CHECK((round_id IS NOT NULL AND orchestration_run_id IS NULL) OR (round_id IS NULL AND orchestration_run_id IS NOT NULL)), UNIQUE(scope_key, client_request_id));
+    CREATE INDEX IF NOT EXISTS durable_submissions_page ON durable_submissions(created_at DESC, id DESC);
+    CREATE TABLE IF NOT EXISTS round_machine_reviews (round_id TEXT PRIMARY KEY REFERENCES rounds(id) ON DELETE RESTRICT, status TEXT NOT NULL, attempts INTEGER NOT NULL, run_id TEXT, started_at INTEGER, completed_at INTEGER, verdict TEXT, reason TEXT, evidence TEXT, error_code TEXT, reviewer_protocol TEXT);
     CREATE TABLE IF NOT EXISTS reviews (round_id TEXT PRIMARY KEY REFERENCES rounds(id), outcome TEXT NOT NULL, note TEXT NOT NULL, evidence TEXT NOT NULL, reviewer_id TEXT REFERENCES users(id), updated_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS comments (id TEXT PRIMARY KEY, level_id TEXT REFERENCES levels(id), user_id TEXT REFERENCES users(id), text TEXT NOT NULL, created_at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS rounds_level ON rounds(level_id, started_at);
@@ -26,6 +30,9 @@ export function openStore(path) {
     CREATE TABLE IF NOT EXISTS round_locks (round_id TEXT PRIMARY KEY REFERENCES rounds(id), token TEXT NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS onboarding (user_id TEXT PRIMARY KEY REFERENCES users(id), version INTEGER NOT NULL, result TEXT NOT NULL, completed_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS passport_sessions (round_id TEXT PRIMARY KEY REFERENCES rounds(id), state TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS passport_scenario_counter (id INTEGER PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0);
+    INSERT INTO passport_scenario_counter (id, value) VALUES (1, 0) ON CONFLICT(id) DO NOTHING;
+    CREATE TABLE IF NOT EXISTS diary_sessions (round_id TEXT PRIMARY KEY REFERENCES rounds(id) ON DELETE RESTRICT, state TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS orchestration_configs (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), draft TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS orchestration_versions (id TEXT PRIMARY KEY, config_id TEXT NOT NULL REFERENCES orchestration_configs(id), number INTEGER NOT NULL, data TEXT NOT NULL, note TEXT NOT NULL, author_id TEXT NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL, UNIQUE(config_id, number));
     CREATE TABLE IF NOT EXISTS orchestration_runs (id TEXT PRIMARY KEY, config_id TEXT NOT NULL REFERENCES orchestration_configs(id), author_id TEXT NOT NULL REFERENCES users(id), snapshot TEXT NOT NULL, test_input TEXT NOT NULL, model TEXT NOT NULL, messages TEXT NOT NULL, board TEXT NOT NULL, event_seq INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
@@ -60,12 +67,16 @@ export function openStore(path) {
     CREATE INDEX IF NOT EXISTS metrics_model_calls_collection_profile ON metrics_model_calls(collection_id, profile_id, started_at);
     CREATE INDEX IF NOT EXISTS metrics_model_calls_run_started ON metrics_model_calls(orchestration_run_id, started_at);
   `);
+  if (!db.prepare('PRAGMA table_info(round_machine_reviews)').all().some(column => column.name === 'reviewer_protocol'))
+    db.exec('ALTER TABLE round_machine_reviews ADD COLUMN reviewer_protocol TEXT');
   if (!db.prepare('PRAGMA table_info(orchestration_runs)').all().some(column => column.name === 'event_seq')) {
     db.exec('ALTER TABLE orchestration_runs ADD COLUMN event_seq INTEGER NOT NULL DEFAULT 0');
   }
   if (!db.prepare('PRAGMA table_info(orchestration_world_pairs)').all().some(column => column.name === 'observation_mode')) {
     db.exec("ALTER TABLE orchestration_world_pairs ADD COLUMN observation_mode TEXT NOT NULL DEFAULT 'prompt'");
   }
+  if (!db.prepare('PRAGMA table_info(rounds)').all().some(column => column.name === 'recording_accepted_at')) db.exec('ALTER TABLE rounds ADD COLUMN recording_accepted_at INTEGER');
+  if (!db.prepare('PRAGMA table_info(rounds)').all().some(column => column.name === 'recording_notice_version')) db.exec('ALTER TABLE rounds ADD COLUMN recording_notice_version TEXT');
   return {
     dialect: 'sqlite',
     db,

@@ -11,7 +11,8 @@ test('blind player can request the card before opening the passport without rece
   expect(initial.documents.passport).toBeNull();
   expect(initial.documents.card).toBeNull();
   await page.goto(link.path);
-  await page.getByLabel('Your name').fill('Reverse order player');
+  await page.getByRole('textbox', { name: /^Your name\b/ }).fill('Reverse order player');
+  await page.getByLabel(/Your submitted prompts, model replies, actions, findings and timing data/).check();
   await page.getByRole('button', { name: 'Open the counter' }).click();
   await page.getByRole('button', { name: 'Request arrival card' }).click();
   await expect(page.getByText('N. Vale', { exact: true })).toBeVisible();

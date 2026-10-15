@@ -10,7 +10,7 @@ test('first visit tour navigates the real interface, persists completion and can
   const context = await page.context().browser()!.newContext(); const colleague = await context.newPage();
   colleague.on('pageerror', error => errors.push(error.message));
   await colleague.goto('http://127.0.0.1:4318' + path);
-  await colleague.getByLabel('Your name').fill('First-time author');
+  await colleague.getByRole('textbox', { name: /^Your name\b/ }).fill('First-time author');
   await colleague.getByRole('button', { name: 'Enter workshop' }).click();
   await expect(colleague.getByRole('heading', { name: 'Find your way around.' })).toBeVisible();
   await colleague.screenshot({ animations: 'disabled', path: 'verification/tutorial-intro.png' });

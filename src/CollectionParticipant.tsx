@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, Check, ChevronRight } from 'lucide-react';
-import { api } from './api';
+import { api, setRecordingAcknowledged } from './api';
 import type { PlayerLevel, Round } from './types';
 import { Button, Field, Mark } from './ui';
 import { PlayPanel } from './Play';
@@ -31,6 +31,7 @@ export function CollectionParticipant({ token }: { token: string }) {
           try {
             const resumed = await api<Admission>(`/collect/${token}`, { method: 'POST', body: { tester: receipt.tester, consent: true, startKey: receipt.startKey } });
             if (!active) return;
+            setRecordingAcknowledged(true);
             saveReceipt(storageKey, { ...receipt, id: resumed.round.id, accessToken: resumed.round.accessToken, kind: resumed.kind });
             setRound(resumed.round); setEntry({ level: resumed.round.level, connected: true, kind: 'conversation', consentTextVersion: 'collection-recording-v1', accepting: true, isPassport: false });
             return;
@@ -46,6 +47,7 @@ export function CollectionParticipant({ token }: { token: string }) {
           try {
             const resumed = await api<Admission>(`/collect/${token}`, { method: 'POST', body: { tester: receipt.tester, consent: true, startKey: receipt.startKey } });
             if (!active) return;
+            setRecordingAcknowledged(true);
             saveReceipt(storageKey, { ...receipt, id: resumed.round.id, accessToken: resumed.round.accessToken, kind: resumed.kind });
             setRound(resumed.round); setEntry(current => current?.kind === 'conversation' ? { ...current, level: resumed.round.level, kind: 'conversation', isPassport: false } : current);
             return;
@@ -66,6 +68,7 @@ export function CollectionParticipant({ token }: { token: string }) {
       if (!consented && !prior?.id) throw new Error('Agree to the recording notice before starting.');
       saveReceipt(storageKey, receipt);
       const result = await api<Admission>(`/collect/${token}`, { method: 'POST', body: { tester: receipt.tester, consent: true, startKey: receipt.startKey } });
+      setRecordingAcknowledged(true);
       saveReceipt(storageKey, { ...receipt, id: result.round.id, accessToken: result.round.accessToken, kind: result.kind });
       setRound(result.round); setEntry(current => current?.kind === 'conversation' ? { ...current, level: result.round.level, kind: 'conversation', isPassport: false } : current);
     } catch (e) { setError((e as Error).message); }
@@ -79,14 +82,14 @@ export function CollectionParticipant({ token }: { token: string }) {
     {!entry ? <div className="auth-shell"><div className="auth-card"><p className="error" role="alert">{error || 'This collection link could not be opened.'}</p><Button className="secondary" onClick={() => location.reload()}>Retry</Button></div></div> : <>
       {!round ? <section className="collection-entry-card"><p className="eyebrow">{entry.level.theme}</p><h1>{entry.level.title}</h1><p className="collection-entry-briefing">{entry.level.briefing}</p><div className="collection-entry-meta"><span>{Math.round(entry.level.duration / 60)} minute session</span><span>Reviewed by a person</span></div>
         <Field label="Your name" hint="Shown to the collection reviewers"><input value={name} maxLength={70} autoComplete="name" required onChange={event => setName(event.target.value)} /></Field>
-        <label className="collection-consent"><input type="checkbox" checked={consented} onChange={event => setConsented(event.target.checked)} /><span>My name, typed questions, replies, actions and submitted finding will be recorded for human review. Transcript text may appear in collection exports; my name is omitted from standard exports. The organizer may choose a full export that includes author-only scenario and prompt context.</span></label>
+        <label className="collection-consent"><input type="checkbox" checked={consented} onChange={event => setConsented(event.target.checked)} /><span>Your submitted prompts, model replies, actions, findings and timing data are saved for project analysis and may be exported by the organizer. Failed requests are recorded too. Do not enter passwords or personal information. Text you have not submitted is not collected. Your name and submitted transcript are included in collection review; standard exports omit your name.</span></label>
         {!entry.accepting && !retryingAdmission && <p className="error" role="status">This collection is not accepting new attempts. Ask the organizer for an active link.</p>}
         {error && <p className="error" role="alert">{error}</p>}
         <Button className="primary full" disabled={(!entry.accepting || !entry.connected) && !retryingAdmission || !name.trim() || (!consented && !retryingAdmission)} loading={busy} onClick={() => void start()}>Start playthrough<ArrowUpRight size={15} /></Button>
         {!entry.connected && <p className="muted collection-entry-state">The target is temporarily unavailable. Ask the organizer when the collection is ready.</p>}
       </section> : <><div className="collection-participant-heading"><p className="eyebrow">{round.level.theme}</p><h1>{round.level.title}</h1><p className="muted">This playthrough is being recorded for human review.</p></div><PlayPanel level={round.level} round={round} setRound={next => { setRound(next); const saved = readReceipt(storageKey); if (saved) saveReceipt(storageKey, { ...saved, id: next.id, accessToken: saved.accessToken, kind: 'conversation' }); }} connected={entry.connected} standalone hideModelLabel busy={busy} start={start} restart={start} />{error && <p className="error" role="alert">{error}</p>}</>}
     </>}
-    <footer className="collection-consent-footer"><Check size={13} />Recorded for collection review. Standard exports omit your name.</footer>
+    <footer className="collection-consent-footer"><Check size={13} />Submitted activity and timing are recorded for collection review, including failed requests.</footer>
   </div>;
 }
 

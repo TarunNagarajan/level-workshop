@@ -63,7 +63,7 @@ function CollectionList({ notify }: { notify: (message: string) => void }) {
 function CollectionNew({ notify, user }: { notify: (message: string) => void; user: User }) {
   const params = new URLSearchParams(window.location.search), initialLevel = params.get('levelId') || '', initialVersion = params.get('versionId') || '', fromId = params.get('from') || '';
   const [levels, setLevels] = useState<LevelSummary[]>([]), [catalogue, setCatalogue] = useState<Catalogue | null>(null), [versions, setVersions] = useState<Version[]>([]);
-  const [levelId, setLevelId] = useState(initialLevel), [versionId, setVersionId] = useState(initialVersion), [profiles, setProfiles] = useState<Profile[]>([]);
+  const [levelId, setLevelId] = useState(fromId ? '' : initialLevel), [versionId, setVersionId] = useState(fromId ? '' : initialVersion), [profiles, setProfiles] = useState<Profile[]>([]);
   const [freezeOpen, setFreezeOpen] = useState(false), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const preferredVersion = useRef(initialVersion);
   useEffect(() => {
@@ -72,7 +72,6 @@ function CollectionNew({ notify, user }: { notify: (message: string) => void; us
       if (!active) return; const accessible = items.filter(item => user.role === 'admin' || item.ownerId === user.id); const reference: LevelSummary = { id: referenceLevelId, draft: { title: 'One last passenger', theme: 'Interactive reference' } as Level, revision: 1, status: 'published', owner: 'Reference', ownerId: '', updatedAt: 0, versions: 1, attempts: 0 }; const choices = [reference, ...accessible.filter(item => item.id !== referenceLevelId)]; setLevels(choices); setCatalogue(modules); setProfiles(profileInput(modules.profiles).map(profile => ({ ...profile, editorKey: crypto.randomUUID() })));
       const source = choices.some(item => item.id === initialLevel) ? initialLevel : choices.find(item => item.id !== referenceLevelId)?.id || referenceLevelId;
       preferredVersion.current = source === initialLevel ? initialVersion : '';
-      setLevelId(source);
       if (fromId) {
         const original = await api<CollectionRecord>(`/collections/${fromId}`); if (!active) return;
         setProfiles(profileInput(original.snapshot.profiles).map(profile => ({ ...profile, editorKey: crypto.randomUUID() })));
@@ -82,7 +81,7 @@ function CollectionNew({ notify, user }: { notify: (message: string) => void; us
         preferredVersion.current = usableSource ? original.snapshot.scenario.versionId : referenceVersionId;
         setLevelId(selectedSource); setVersionId(preferredVersion.current);
         if (!usableSource) setError('The source version belongs to another author. Its profiles were copied; choose a scenario you can use or the interactive reference.');
-      }
+      } else setLevelId(source);
     }).catch(e => { if (active) setError((e as Error).message); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);

@@ -70,6 +70,9 @@ test('passport objects persist, reconstruct observed context and file actual evi
     assert.equal(finished.status, 200); assert.equal(finished.body.state.decision, 'HOLD'); assert.deepEqual(finished.body.state.evidence, [reply.id]);
     assert.equal(finished.body.round.endedAt > 0, true); assert.equal(finished.body.round.answer.includes('brother'), true);
     assert.deepEqual(finished.body.caseResult, { title: 'Genuine passport, wrong traveller.', explanation: 'Noah used his older brother Elias’s genuine passport because his own had expired. Elias lent it to him for their sister’s wedding. The document is authentic, but Noah is not the traveller named in it. This was deliberate identity misuse, not an innocent signature mistake or a forged passport.', expectedDecision: 'HOLD', playerDecision: 'HOLD', decisionCorrect: true });
+    assert.equal((await request(`/rounds/${current.round.id}/review`, { cookie })).status, 409, 'passport reviews remain on their canonical reference route');
+    assert.equal((await request(`/rounds/${current.round.id}/review`, { method: 'POST', cookie })).status, 409, 'generic review cannot trigger a second judge call');
+    assert.equal(await store.get('SELECT * FROM round_machine_reviews WHERE round_id = ?', current.round.id), undefined);
     assert.deepEqual((await request(path, { cookie })).body.caseResult, finished.body.caseResult, 'the capability-protected snapshot preserves the filed debrief');
     assert.equal((await request(path)).status, 403, 'the filed debrief is not public without the owner session or round capability');
     assert.equal(await store.get('SELECT * FROM reviews WHERE round_id = ?', current.round.id), undefined);

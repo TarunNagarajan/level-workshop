@@ -482,7 +482,13 @@ test('a completed provider call is interrupted when transcript persistence fails
     const accepted = await call(`/collect/${raw}`, { method: 'POST', body: { tester: 'participant', consent: true, startKey: randomUUID() } });
     failSave = true;
     const response = await call(`/rounds/${accepted.body.round.id}/messages`, { method: 'POST', token: accepted.body.round.accessToken, body: { content: 'Please answer once.' } });
-    assert.equal(response.status, 500);
+    assert.equal(response.status, 409);
+    assert.equal(response.body.submissionStatus, 'succeeded');
+    assert.equal(response.body.transcriptSaved, false);
+    const journal = await fixture.store.get('SELECT content,reply,transcript_saved FROM durable_submissions WHERE id = ?', response.body.submissionId);
+    assert.equal(journal.content, 'Please answer once.');
+    assert.equal(journal.reply, 'The provider completed, but persistence will fail.');
+    assert.equal(journal.transcript_saved, 0);
     const round = await call(`/rounds/${accepted.body.round.id}`, { token: accepted.body.round.accessToken });
     assert.equal(round.body.messages.some(message => message.role === 'user'), false, 'failed persistence leaves no partial transcript');
     const assignment = await fixture.store.get('SELECT question_count FROM difficulty_collection_assignments WHERE round_id = ?', accepted.body.round.id);

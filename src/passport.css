@@ -9,6 +9,11 @@
 .reference-shell .secondary { background: #f9f7ef; color: #313b30; border-color: #d6d9cd; }
 .collection-consent { display: flex; align-items: flex-start; gap: 10px; margin: 2px 0 18px; color: var(--muted); font-size: 11px; line-height: 1.7; }
 .collection-consent input { width: 16px; height: 16px; flex: none; margin: 2px 0 0; accent-color: var(--accent); }
+.recording-consent-panel { margin: 20px auto; max-width: 720px; padding: 22px; border: 1px solid #cdd2c0; background: #f7f7f1; }
+.recording-consent-panel h2 { margin: 0 0 10px; font: 24px Georgia, serif; }
+.recording-consent-panel p { color: var(--muted); font-size: 13px; line-height: 1.7; }
+.recording-consent-panel label { display: flex; gap: 10px; align-items: flex-start; margin: 16px 0; font-size: 13px; }
+.recording-consent-panel input { flex: none; margin-top: 2px; accent-color: var(--accent); }
 .reference-error { display: flex; justify-content: space-between; gap: 12px; padding: 12px 16px; font-size: 12px; background: #f7e6df; color: #883c2d; border: 1px solid #e0baab; margin-bottom: 16px; }
 .reference-loading { padding: 50px; font-size: 13px; }
 .reference-intro { display: grid; grid-template-columns: 1.15fr 1fr; min-height: 620px; border: 1px solid #d7d7c8; background: #fbf9f2; border-radius: 5px; overflow: hidden; }
@@ -24,6 +29,7 @@
 .intro-meta { display: flex; gap: 17px; flex-wrap: wrap; font-size: 10px; margin: 27px 0; color: #6d7766; }
 .intro-meta span { display: flex; align-items: center; gap: 6px; }
 .counter-layout { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 16px; align-items: start; }
+.scene-briefing { grid-column: 1 / -1; margin: 0; padding: 12px 15px; color: #485044; background: #f7f7f1; border-left: 3px solid #88906d; font-size: 13px; line-height: 1.65; }
 .physical-counter { border: 1px solid #c9cfc0; border-radius: 4px; overflow: hidden; background: #f9f7ef; }
 .counter-status { padding: 13px 17px; display: flex; justify-content: space-between; align-items: center; background: #354232; color: #ecebdd; font: 9px 'IBM Plex Mono', monospace; letter-spacing: .5px; }
 .counter-status > span { display: flex; gap: 8px; align-items: center; }

@@ -8,5 +8,10 @@ export async function signInOwner(request: APIRequestContext) {
     ? await request.post('/api/setup', { data: owner })
     : await request.post('/api/login', { data: { email: owner.email, password: owner.password } });
   if (!response.ok()) throw new Error(`Test owner sign-in failed: ${response.status()} ${await response.text()}`);
+  const state = await (await request.get('/api/bootstrap')).json();
+  if (state.recordingNoticeRequired === true && !state.recordingAccepted) {
+    const notice = await request.post('/api/recording/acknowledge', { data: { version: 'recording-notice-v1', accepted: true } });
+    if (!notice.ok()) throw new Error(`Test owner recording acknowledgment failed: ${notice.status()} ${await notice.text()}`);
+  }
   return (await request.get('/api/bootstrap')).json();
 }

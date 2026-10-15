@@ -8,7 +8,7 @@ test('owner dashboard reads real fixture metrics while editor and anonymous acce
   page.on('pageerror', error => runtimeErrors.push(error.message));
   const needsSetup = (await (await page.request.get('/api/bootstrap')).json()).needsSetup;
   await page.goto('/');
-  if (needsSetup) await page.getByLabel('Your name').fill('Metrics owner');
+  if (needsSetup) await page.getByRole('textbox', { name: /^Your name\b/ }).fill('Metrics owner');
   await page.getByLabel('Email').fill('metrics-owner@example.test');
   await page.getByLabel('Password').fill('metrics-verification-password');
   await page.getByRole('button', { name: needsSetup ? 'Create account' : 'Sign in', exact: true }).click();
@@ -41,6 +41,15 @@ test('owner dashboard reads real fixture metrics while editor and anonymous acce
   const participant = await participantContext.newPage();
   const telemetryBodies: string[] = [];
   const telemetryResponses: Array<{ status: number; requestBody: string }> = [];
+  let releaseTelemetrySession!: () => void;
+  let markTelemetrySessionStarted!: () => void;
+  const telemetrySessionGate = new Promise<void>(resolve => { releaseTelemetrySession = resolve; });
+  const telemetrySessionStarted = new Promise<void>(resolve => { markTelemetrySessionStarted = resolve; });
+  await participant.route('**/api/telemetry/session', async route => {
+    markTelemetrySessionStarted();
+    await telemetrySessionGate;
+    await route.continue();
+  });
   participant.on('request', request => {
     if (request.method() !== 'POST' || !request.url().includes('/api/telemetry/events')) return;
     telemetryBodies.push(request.postData() || '');
@@ -50,15 +59,27 @@ test('owner dashboard reads real fixture metrics while editor and anonymous acce
     telemetryResponses.push({ status: response.status(), requestBody: response.request().postData() || '' });
   });
   await participant.goto(linkPath);
-  await participant.getByLabel('Your name').fill('Metrics sample participant');
-  await participant.getByLabel(/My name, typed questions, replies/).check();
+  await participant.getByRole('textbox', { name: /^Your name\b/ }).fill('Metrics sample participant');
+  await participant.getByLabel(/Your submitted prompts, model replies, actions, findings and timing data/).check();
   await participant.getByRole('button', { name: 'Start playthrough' }).click();
   await expect(participant.getByLabel('Message to target')).toBeVisible();
+  await telemetrySessionStarted;
   const privateText = 'This private test phrase must stay in the workshop request only.';
   await participant.getByLabel('Message to target').fill(privateText);
   await participant.getByLabel('Message to target').blur();
   await participant.getByRole('button', { name: 'Send message' }).click();
   await expect(participant.locator('.conversation')).toContainText(/I expected the matter to be resolved|matter to be resolved/);
+  // Events generated while consent is already granted but the session is
+  // unresolved must be retained, then sent after this response establishes it.
+  const openedSessionResponse = participant.waitForResponse(response => response.url().includes('/api/telemetry/session') && response.request().method() === 'POST');
+  const measuredActionBatch = participant.waitForResponse(response => {
+    const body = response.request().postData() || '';
+    return response.url().includes('/api/telemetry/events') && body.includes('compose') && body.includes('round_action') && response.ok();
+  });
+  releaseTelemetrySession();
+  await openedSessionResponse;
+  await measuredActionBatch;
+  await participant.unroute('**/api/telemetry/session');
   await participant.goto('/'); // flushes the scoped interval before leaving the round
   await expect.poll(async () => {
     const summary = await (await page.request.get('/api/metrics/summary')).json();
@@ -135,7 +156,7 @@ test('owner dashboard reads real fixture metrics while editor and anonymous acce
   const editorPage = await editorContext.newPage();
   editorPage.on('pageerror', error => runtimeErrors.push(error.message));
   await editorPage.goto(invitation);
-  await editorPage.getByLabel('Your name').fill('Metrics editor');
+  await editorPage.getByRole('textbox', { name: /^Your name\b/ }).fill('Metrics editor');
   await editorPage.getByRole('button', { name: 'Enter workshop' }).click();
   if (await editorPage.getByRole('button', { name: 'Skip tour' }).isVisible()) await editorPage.getByRole('button', { name: 'Skip tour' }).click();
   await expect(editorPage.getByRole('button', { name: 'Metrics', exact: true })).toHaveCount(0);

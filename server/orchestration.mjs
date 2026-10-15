@@ -30,7 +30,7 @@ export const emptyOrchestration = {
   slots: ['A', 'B', 'C'].map(letter => ({ id: letter, name: `Specialist ${letter}`, systemPrompt: `You are Specialist ${letter}. Work from the information you receive. Explain uncertainty and respond to the tester's question.`, temperature: 0.3 })),
 };
 
-export function addOrchestrationRoutes(app, { store, provider, completion }) {
+export function addOrchestrationRoutes(app, { store, provider, completion, journal, requireRecording = async () => {} }) {
   const { get, all, run } = store;
   const member = (req, res, next) => req.user ? next() : res.status(401).json({ error: 'Sign in to use the workshop.' });
   const configRow = async configId => { const row = await get('SELECT * FROM orchestration_configs WHERE id = ?', configId); if (!row) fail(404, 'Configuration not found.'); return row; };
@@ -223,9 +223,27 @@ export function addOrchestrationRoutes(app, { store, provider, completion }) {
   });
   app.post('/api/orchestration/runs/:id/messages', member, async (req, res) => {
     const row = await runRow(req.params.id); canChangeRun(req, row);
-    const { lane, content } = z.object({ lane: slotId, content: z.string().trim().min(1).max(2000) }).parse(req.body);
+    const { lane, content, requestId } = z.object({ lane: slotId, content: z.string().trim().min(1).max(2000), requestId: z.string().uuid().optional() }).parse(req.body);
+    await requireRecording(req);
+    const journalInput = { orchestrationRunId: row.id, lane, clientRequestId: requestId, actorId: req.user.id, source: 'orchestration', content };
+    const returnReceipt = async entry => {
+      if (entry.status === 'succeeded' && entry.transcript_saved) return res.json({ ...runView(await runRow(row.id)), submissionId: entry.id });
+      return res.status(409).json({ error: entry.status === 'succeeded' ? 'The reply was recorded, but the run transcript save did not complete.' : 'This request was already received and will not be sent twice.', submissionId: entry.id, submissionStatus: entry.status, receiptConfirmed: true, ...(entry.status === 'succeeded' ? { transcriptSaved: false } : {}) });
+    };
+    if (requestId) {
+      const existing = await journal.find(`run:${row.id}`, requestId);
+      if (existing) {
+        const checked = await journal.begin(journalInput);
+        return returnReceipt(checked.entry);
+      }
+    }
     if (!provider.apiKey || provider.model !== row.model) fail(409, 'The configured test model changed. Start a new run.');
-    await withLease(row, async lease => {
+    const firstMessages = JSON.parse(row.messages), firstSnapshot = JSON.parse(row.snapshot), firstBoard = JSON.parse(row.board);
+    if (firstMessages.filter(message => message.lane === lane && message.role === 'user').length >= 20) fail(409, 'This slot has reached its 20-question test limit.');
+    if (resolveSavedHandoff({ contract: firstSnapshot.contract, lane, messages: firstMessages, board: firstBoard })?.status === 'invalid') fail(409, 'The saved source handoff is invalid. This turn was not sent to the model.');
+    const { entry, shouldInvoke } = await journal.begin(journalInput);
+    if (!shouldInvoke) return returnReceipt(entry);
+    try { await withLease(row, async lease => {
       const current = await runRow(row.id); const snapshot = JSON.parse(current.snapshot);
       const messages = JSON.parse(current.messages); const board = JSON.parse(current.board);
       if (messages.filter(message => message.lane === lane && message.role === 'user').length >= 20) fail(409, 'This slot has reached its 20-question test limit.');
@@ -236,7 +254,10 @@ export function addOrchestrationRoutes(app, { store, provider, completion }) {
       const sourceObservation = binding?.observation_mode === 'sealed-card' && lane === binding.source_lane
         ? { factValue: observation ? binding.fact_value : null } : undefined;
       const context = compileOrchestrationContext({ snapshot, testInput: current.test_input, messages, board, lane, content, model: provider.model, sourceObservation });
-      const result = await completion({ config: provider, ...context, metricsContext: { kind: 'orchestration', runId: row.id, lane, userId: req.user.id, userRole: req.user.role } });
+      if (!(await journal.claim(entry.id)).changes) fail(409, 'This request was already received and will not be sent twice.');
+      let result;
+      try { result = await completion({ config: provider, ...context, metricsContext: { kind: 'orchestration', runId: row.id, lane, userId: req.user.id, userRole: req.user.role } }); }
+      catch (error) { await journal.fail(entry.id, error); error.submissionId = entry.id; throw error; }
       let publication = binding?.observation_mode === 'sealed-card' && lane === binding.source_lane && !observation
         ? normalized(result.text) === normalized(sealedCardWait)
           ? { status: 'waiting', reason: 'The dispatch seal has not been opened.', value: sealedCardWait, exactFormat: result.text === sealedCardWait }
@@ -254,11 +275,23 @@ export function addOrchestrationRoutes(app, { store, provider, completion }) {
         }
       }
       const now = Date.now();
-      const next = [...messages, { id: id(), lane, role: 'user', content, createdAt: now }, { id: id(), lane, role: 'assistant', content: result.text, publication, model: result.model, latencyMs: result.latencyMs, usage: result.usage, context, createdAt: Date.now() }];
+      const replyId = id();
+      await journal.succeed(entry.id, { reply: result.text, replyId });
+      const next = [...messages, { id: id(), lane, role: 'user', content, createdAt: now }, { id: replyId, lane, role: 'assistant', content: result.text, publication, model: result.model, latencyMs: result.latencyMs, usage: result.usage, context, createdAt: Date.now() }];
       await saveRunEvent({ row: current, lease, messages: next, board, kind: 'turn', sourceMessageId: next.at(-1).id });
+      await journal.markTranscriptSaved(entry.id);
       if (result.metricsCallId) { try { await run("UPDATE metrics_model_calls SET transcript_saved=1 WHERE id=? AND status='succeeded'", result.metricsCallId); } catch { /* best effort */ } }
-      res.json(runView(await runRow(row.id)));
-    });
+      res.json({ ...runView(await runRow(row.id)), submissionId: entry.id });
+    }); } catch (error) {
+      const current = await get('SELECT status FROM durable_submissions WHERE id = ?', entry.id);
+      if (current?.status === 'accepted') await journal.reject(entry.id);
+      else if (current?.status === 'running') await journal.fail(entry.id, error);
+      error.submissionId ||= entry.id;
+      error.submissionStatus ||= current?.status;
+      error.receiptConfirmed = true;
+      if (current?.status === 'failed') error.message = 'Your prompt was recorded, but the model could not return a reply.';
+      throw error;
+    }
   });
   app.post('/api/orchestration/runs/:id/board', member, async (req, res) => {
     const row = await runRow(req.params.id); canChangeRun(req, row);

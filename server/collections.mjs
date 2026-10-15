@@ -4,8 +4,11 @@ import { playerLevel, validatePlayable } from './levels.mjs';
 import { MODULE_CATALOGUE_VERSION, defaultProfiles, normalizeProfiles, protectionModules, compileProfilePrompt } from './difficulty.mjs';
 import { initialPassportState, passportLevel, passportScenario, playerDocuments, publicPassportState, publicMachineReview } from './passport-reference.mjs';
 import { buildCompletionBody } from './model.mjs';
+import { isRiddleDiaryData } from './riddle-diary.mjs';
 
 export const CONSENT_TEXT_VERSION = 'collection-recording-v1';
+const passportScenarioFromData = data => data?._passportScenario?.schema === 'passport-case-v1' ? data._passportScenario : passportScenario;
+const isPassportCaseData = (data, versionId) => versionId === 'reference-passport-desk-v1' || (versionId?.startsWith('reference-passport-case-') && data?._passportScenario?.schema === 'passport-case-v1');
 export const attemptedStrategyOptions = [
   ['direct_disclosure', 'Direct disclosure request'], ['partial_disclosure', 'Partial disclosure'], ['system_prompt_leakage', 'System prompt leakage request'],
   ['role_persona_manipulation', 'Role or persona manipulation'], ['authority_spoofing', 'Authority spoofing'], ['task_debug_pretext', 'Task or debugging pretext'],
@@ -89,13 +92,13 @@ export function createCollectionModelServices({ store, provider, completion, met
       const assignment = await get('SELECT profile_snapshot FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
       return assignment ? JSON.parse(assignment.profile_snapshot).compiledPrompt : null;
     },
-    async request({ row, system, messages, temperature, actor = null }) {
+    async request({ row, system, messages, temperature, actor = null, profileId = null }) {
       const assignment = await get('SELECT collection_id, profile_id, source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
       const config = JSON.parse(row.config);
       const round = await get('SELECT source, author_id FROM rounds WHERE id = ?', row.id);
       const rawSource = assignment?.source || round?.source;
       const source = ({ 'collection-participant':'participant','collection-preview':'preview','reference-research-preview':'preview','reference-research':'participant','reference-blind':'participant','blind':'participant' })[rawSource] || rawSource || null;
-      const metricsContext = { kind: 'round', roundId: row.id, userId: actor?.id || null, userRole: actor?.role || null, source, versionId: row.version_id, collectionId: assignment?.collection_id || null, profileId: assignment?.profile_id || null };
+      const metricsContext = { kind: 'round', roundId: row.id, userId: actor?.id || null, userRole: actor?.role || null, source, versionId: row.version_id, collectionId: assignment?.collection_id || null, profileId: assignment?.profile_id || profileId || null };
       if (!assignment) return { result: await completion({ config: { ...config, apiKey: provider.apiKey }, system, messages, temperature, metricsContext }), callId: null };
       const callId = id(), startedAt = Date.now();
       const context = { baseUrl: safeBaseUrl(config.baseUrl), body: buildCompletionBody({ config, system, messages, temperature }) };
@@ -169,6 +172,7 @@ export function addCollectionRoutes(app, { store, provider, member, owner, versi
     const version = await versionRow(versionId);
     if (version.level_id !== levelId) fail(400, 'Choose a saved version of this scenario.');
     const scenario = JSON.parse(version.data);
+    if (isRiddleDiaryData(scenario)) fail(409, 'The interactive diary cannot be placed in a frozen collection.');
     validatePlayable(scenario);
     return { version, scenario };
   };
@@ -238,10 +242,11 @@ export function addCollectionRoutes(app, { store, provider, member, owner, versi
     if (!link) fail(404, 'This collection link is invalid.');
     const collection = await collectionRow(link.collection_id);
     const snapshot = JSON.parse(collection.snapshot), level = playerLevel(snapshot.scenario.data);
-    const isPassport = snapshot.scenario.versionId === 'reference-passport-desk-v1';
+    const scene = passportScenarioFromData(snapshot.scenario.data);
+    const isPassport = isPassportCaseData(snapshot.scenario.data, snapshot.scenario.versionId);
     const modelReady = Boolean(provider.apiKey && snapshot.provider.baseUrl === safeBaseUrl(provider.baseUrl) && snapshot.provider.model === provider.model);
     const accepting = !link.revoked && link.expires > Date.now() && collection.status === 'active';
-    res.json({ level, connected: modelReady, kind: isPassport ? 'passport' : 'conversation', consentTextVersion: CONSENT_TEXT_VERSION, accepting, isPassport, ...(isPassport ? { documents: playerDocuments(initialPassportState(), passportScenario) } : {}) });
+    res.json({ level, connected: modelReady, kind: isPassport ? 'passport' : 'conversation', consentTextVersion: CONSENT_TEXT_VERSION, accepting, isPassport, ...(isPassport ? { documents: playerDocuments(initialPassportState(), scene) } : {}) });
   });
   app.post('/api/collect/:token', async (req, res) => {
     const raw = rawTokenSchema.parse(req.params.token), input = startSchema.parse(req.body), storedLink = await get('SELECT * FROM difficulty_collection_links WHERE token_hash = ?', hash(raw));
@@ -275,8 +280,9 @@ export function addCollectionRoutes(app, { store, provider, member, owner, versi
       const version = { id: snapshot.scenario.versionId, level_id: snapshot.scenario.levelId, number: snapshot.scenario.version, data: JSON.stringify(scenario) };
       const round = await createRound({
         version, roundId, rawToken: capability, allocationLeaseToken: lease, frozenConfig: { model: snapshot.provider.model, baseUrl: snapshot.provider.baseUrl, reasoningEffort: snapshot.provider.reasoningEffort }, userId: null, tester: input.tester, source: 'collection-participant',
-        deskState: snapshot.scenario.versionId === 'reference-passport-desk-v1' ? initialPassportState() : undefined,
+        deskState: isPassportCaseData(scenario, snapshot.scenario.versionId) ? initialPassportState() : undefined,
         collectionAssignment: { id: id(), collectionId: collection.id, profileId: selected.id, profileSnapshot: selected, source: 'participant', linkId: link.id, startKeyHash: keyHash, consentAt: assignedAt, consentVersion: CONSENT_TEXT_VERSION, assignedAt },
+        recordingAckUserId: req.user?.id,
       });
       const latest = await get('SELECT difficulty_collection_assignments.*, rounds.* FROM difficulty_collection_assignments JOIN rounds ON rounds.id = difficulty_collection_assignments.round_id WHERE round_id = ?', round.id);
       return res.status(201).json(await participantResponse(latest, round.accessToken));
@@ -286,13 +292,14 @@ export function addCollectionRoutes(app, { store, provider, member, owner, versi
   });
   const participantResponse = async (row, accessToken) => {
     const collection = await collectionRow(row.collection_id), snapshot = JSON.parse(collection.snapshot);
-    const isPassport = row.version_id === 'reference-passport-desk-v1';
+    const scenarioData = JSON.parse(row.data), scene = passportScenarioFromData(scenarioData);
+    const isPassport = isPassportCaseData(scenarioData, row.version_id);
     const round = { ...pseudonymousRound(row), accessToken };
     if (!isPassport) return { kind: 'conversation', round };
     const desk = await get('SELECT state FROM passport_sessions WHERE round_id = ?', row.round_id);
     const stored = JSON.parse(desk.state), state = publicPassportState(stored);
     const machineReview = publicMachineReview(stored.machineReview);
-    return { kind: 'passport', round, state, documents: playerDocuments(state, passportScenario), reviewEnabled: Boolean(passportReviewEnabled), ...(machineReview ? { machineReview } : {}) };
+    return { kind: 'passport', round, state, documents: playerDocuments(state, scene), reviewEnabled: Boolean(passportReviewEnabled), ...(machineReview ? { machineReview } : {}) };
   };
 
   app.get('/api/collections/:id/attempts', member, async (req, res) => {
@@ -404,10 +411,11 @@ export function addCollectionRoutes(app, { store, provider, member, owner, versi
     const profile = snapshot.profiles.find(item => item.id === profileId); if (!profile) fail(404, 'Choose a profile in this collection.');
     const version = { id: snapshot.scenario.versionId, level_id: snapshot.scenario.levelId, number: snapshot.scenario.version, data: JSON.stringify(snapshot.scenario.data) };
     const frozenConfig = { model: snapshot.provider.model, baseUrl: snapshot.provider.baseUrl, reasoningEffort: snapshot.provider.reasoningEffort };
-    const deskState = version.id === 'reference-passport-desk-v1' ? initialPassportState() : undefined;
+    const isPassport = isPassportCaseData(snapshot.scenario.data, version.id), scene = passportScenarioFromData(snapshot.scenario.data);
+    const deskState = isPassport ? initialPassportState() : undefined;
     const result = await createRound({ version, frozenConfig, userId: req.user.id, tester: req.user.name, source: 'collection-preview', deskState, collectionAssignment: { id: id(), collectionId: collection.id, profileId, profileSnapshot: profile, source: 'preview', linkId: null, startKeyHash: null, consentAt: null, consentVersion: null, assignedAt: Date.now() } });
     res.status(201).json(deskState
-      ? { kind: 'passport', round: result, state: publicPassportState(deskState), documents: playerDocuments(deskState, passportScenario), reviewEnabled: Boolean(passportReviewEnabled), preview: true, profileId, profileLabel: profile.label }
+      ? { kind: 'passport', round: result, state: publicPassportState(deskState), documents: playerDocuments(deskState, scene), reviewEnabled: Boolean(passportReviewEnabled), preview: true, profileId, profileLabel: profile.label }
       : { kind: 'conversation', round: result, preview: true, profileId, profileLabel: profile.label });
   });
 

@@ -16,14 +16,14 @@ function serialTest(name, run) {
 }
 
 const source = fileURLToPath(new URL('../src/telemetry.ts', import.meta.url));
-async function harness({ holdEvents = false, rejectFirstBatch = false, cryptoMode = 'full' } = {}) {
+async function harness({ holdEvents = false, holdSession = false, sessionStatus = 200, rejectFirstBatch = false, cryptoMode = 'full' } = {}) {
   const result = await build({ entryPoints: [source], bundle: true, format: 'esm', platform: 'browser', write: false });
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}#${randomUUID()}`;
   let clock = 1000;
   const windows = new Map(); const documents = new Map(); const intervals = new Map();
   let intervalId = 0;
   const requests = [];
-  let releaseEvents;
+  let releaseEvents; const releaseSessions = [];
   let sessions = 0; let eventBatches = 0;
   const descriptors = Object.fromEntries(['window', 'document', 'sessionStorage', 'performance', 'crypto', 'fetch'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const cryptoValue = cryptoMode === 'none' ? undefined : cryptoMode === 'fallback'
@@ -41,13 +41,19 @@ async function harness({ holdEvents = false, rejectFirstBatch = false, cryptoMod
   globalThis.fetch = async (url, options = {}) => {
     const entry = { url: String(url), options, body: options.body ? JSON.parse(options.body) : null, headers: options.headers || {} };
     requests.push(entry);
-    if (String(url).includes('/telemetry/session')) { sessions += 1; return response({ enabled: true, sessionId: sessions === 1 ? 'b48e8de6-c0ad-4b2d-87f5-5cb0c69bb330' : 'a78f7502-fdb1-4fa3-8757-cc062fed7d38', heartbeatSeconds: 15, idleAfterMs: 30000 }); }
+    if (String(url).includes('/telemetry/session')) {
+      sessions += 1;
+      const value = { enabled: true, sessionId: sessions === 1 ? 'b48e8de6-c0ad-4b2d-87f5-5cb0c69bb330' : 'a78f7502-fdb1-4fa3-8757-cc062fed7d38', heartbeatSeconds: 15, idleAfterMs: 30000 };
+      if (holdSession) return new Promise(resolve => releaseSessions.push(() => resolve(response(value, sessionStatus))));
+      return response(value, sessionStatus);
+    }
     eventBatches += 1;
     if (holdEvents) return new Promise(resolve => { releaseEvents = () => resolve(response({ accepted: true })); });
     if (rejectFirstBatch && eventBatches === 1) return response({ error: 'session changed' }, 401);
     return response({ accepted: true });
   };
   const api = await import(moduleUrl);
+  api.setMetricsConsent(true);
   const advance = value => { clock = value; };
   const tick = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
   const flushAll = async () => {
@@ -55,7 +61,7 @@ async function harness({ holdEvents = false, rejectFirstBatch = false, cryptoMod
     windows.get('pagehide')?.(); await tick();
   };
   const restore = () => { for (const [key, descriptor] of Object.entries(descriptors)) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } };
-  return { api, requests, windows, documents, intervals, advance, tick, flushAll, restore, releaseEvents: () => releaseEvents?.(), start: path => { api.navigateMetrics(path); api.syncMetricsIdentity(null); }, setVisible: value => { globalThis.document.visibilityState = value; documents.get('visibilitychange')?.(); } };
+  return { api, requests, windows, documents, intervals, advance, tick, flushAll, restore, releaseEvents: () => releaseEvents?.(), releaseSession: index => releaseSessions[index]?.(), sessionRequests: () => releaseSessions.length, start: path => { api.navigateMetrics(path); api.syncMetricsIdentity(null); }, setVisible: value => { globalThis.document.visibilityState = value; documents.get('visibilitychange')?.(); } };
 }
 class MapStorage extends Map { getItem(key) { return this.get(key) ?? null; } setItem(key, value) { this.set(key, value); } }
 const response = (value, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => value });
@@ -199,6 +205,70 @@ serialTest('authenticated identity change drops unsent events from the previous 
     assert.ok(previousVisitBatches.every(request => request.body.events.every(event => event.kind === 'page_enter')));
     const newVisitBatches = eventRequests.filter(request => request.body.sessionId === 'a78f7502-fdb1-4fa3-8757-cc062fed7d38');
     assert.ok(newVisitBatches.every(request => request.body.events.every(event => event.kind !== 'interaction')));
+  } finally { h.restore(); }
+});
+
+serialTest('consented events wait for the initial session and bind only after it succeeds', async () => {
+  const h = await harness({ holdSession: true });
+  try {
+    h.start('/collect/private-token'); await h.tick();
+    assert.equal(h.sessionRequests(), 1);
+    const roundId = 'd4b2f85e-1d43-4d95-b3a6-f1cbabf9bd1b';
+    h.api.setMetricsPhase('compose', roundId, 'secret-round-capability');
+    const ticket = h.api.beginMeasuredRequest(`/rounds/${roundId}/messages`, 'POST', 'secret-round-capability');
+    h.advance(2500);
+    h.api.finishMeasuredRequest(ticket, 'success');
+    h.api.recordMetricsInteraction('submit', roundId, 'secret-round-capability');
+    h.releaseSession(0); await h.tick(); await h.flushAll();
+    const batches = h.requests.filter(request => request.url.includes('/telemetry/events'));
+    assert.ok(batches.length);
+    assert.ok(batches.every(request => request.body.sessionId === 'b48e8de6-c0ad-4b2d-87f5-5cb0c69bb330'));
+    const recorded = events(h).filter(event => event.roundId === roundId);
+    assert.ok(recorded.some(event => event.phase === 'compose'));
+    assert.ok(recorded.some(event => event.requestCategory === 'round_action' && event.requestOutcome === 'success'));
+    assert.ok(recorded.some(event => event.interaction === 'submit'));
+    assert.equal(JSON.stringify(batches.map(request => request.body)).includes('secret-round-capability'), false);
+    assert.ok(batches.some(request => request.headers['x-round-token'] === 'secret-round-capability'));
+  } finally { h.restore(); }
+});
+
+serialTest('identity change while session creation is pending discards the previous identity buffer', async () => {
+  const h = await harness({ holdSession: true });
+  try {
+    h.start('/'); await h.tick();
+    h.api.recordMetricsInteraction('hint');
+    h.api.setMetricsPhase('compose');
+    h.api.syncMetricsIdentity('owner-id'); await h.tick();
+    assert.equal(h.sessionRequests(), 2);
+    h.releaseSession(1); await h.tick();
+    h.releaseSession(0); await h.tick();
+    await h.flushAll();
+    const requests = h.requests.filter(request => request.url.includes('/telemetry/events'));
+    const newIdentityEvents = requests.filter(request => request.body.sessionId === 'a78f7502-fdb1-4fa3-8757-cc062fed7d38').flatMap(request => request.body.events);
+    assert.ok(newIdentityEvents.length);
+    assert.ok(newIdentityEvents.every(event => event.kind === 'page_enter' || ((event.kind === 'heartbeat' || event.kind === 'page_exit') && event.phase === 'read_think')), JSON.stringify(newIdentityEvents));
+    assert.equal(newIdentityEvents.some(event => event.kind === 'interaction' || event.phase === 'compose'), false);
+  } finally { h.restore(); }
+});
+
+serialTest('consent revocation while session creation is pending discards the buffer', async () => {
+  const h = await harness({ holdSession: true });
+  try {
+    h.start('/'); await h.tick();
+    h.api.recordMetricsInteraction('hint');
+    h.api.setMetricsConsent(false);
+    h.releaseSession(0); await h.tick(); await h.flushAll();
+    assert.deepEqual(h.requests.filter(request => request.url.includes('/telemetry/events')), []);
+  } finally { h.restore(); }
+});
+
+serialTest('failed initial session creation discards unbound consented events', async () => {
+  const h = await harness({ holdSession: true, sessionStatus: 503 });
+  try {
+    h.start('/'); await h.tick();
+    h.api.recordMetricsInteraction('hint');
+    h.releaseSession(0); await h.tick(); await h.flushAll();
+    assert.deepEqual(h.requests.filter(request => request.url.includes('/telemetry/events')), []);
   } finally { h.restore(); }
 });
 

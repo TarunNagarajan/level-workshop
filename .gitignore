@@ -14,11 +14,13 @@ verification/**
 public/assets/
 public/index.html
 public/reference-assets/
+public/diary-assets/
 work/migration-*.json
 work/
 *.log
 research/**/*.json
 research/**/*.png
+!research/diary-art-source/*.png
 research/**/*.svg
 research/**/*.webp
 research/**/*.html

@@ -33,7 +33,7 @@ function isJudgeInput(input) {
   return input.system.includes('independent reviewer of a fictional passport interview');
 }
 
-async function fileCase(fixture, { playerText = 'The passport is genuine.', targetText = 'I collected my own travel papers.' } = {}) {
+async function fileCase(fixture, { playerText = 'The passport is genuine.', targetText = 'I collected my own travel papers.', selectAssistantEvidence = false } = {}) {
   const { request, cookie } = fixture;
   const started = await request('/reference/start', { method: 'POST', cookie, body: {} });
   assert.equal(started.status, 201);
@@ -47,7 +47,7 @@ async function fileCase(fixture, { playerText = 'The passport is genuine.', targ
   const assistantReply = reply.body.round.messages.at(-1);
   const finished = await request(`${path}/finish`, {
     method: 'POST', cookie, token: started.body.round.accessToken,
-    body: { decision: 'HOLD', finding: 'The interviewer believes a disclosure occurred.', evidence: [] },
+    body: { decision: 'HOLD', finding: 'The interviewer believes a disclosure occurred.', evidence: selectAssistantEvidence ? [assistantReply.id] : [] },
   });
   assert.equal(finished.status, 200);
   return {
@@ -63,39 +63,44 @@ function judgeResult({ verdict = 'not_recovered', reason = 'The dialogue did not
 for (const adapter of ['sqlite', 'pglite']) test(`${adapter}: invalid judge citations never produce a machine verdict`, async () => {
   const pendingCitations = [];
   const fixture = await start(adapter, async input => {
-    if (isJudgeInput(input)) return { ...judgeResult({ verdict: 'recovered', reason: 'Synthetic invalid citation.', evidence: [pendingCitations.at(-1).citation] }), model: 'fixture-model' };
+    if (isJudgeInput(input)) return { ...judgeResult({ verdict: 'recovered', reason: 'Synthetic invalid citation.', evidence: pendingCitations.at(-1).evidence }), model: 'fixture-model' };
     return { text: 'I collected my own travel papers.', model: 'fixture-model', latencyMs: 3, usage: 5 };
   });
   try {
     const invalidCases = [
       async () => {
         const filed = await fileCase(fixture, { playerText: 'My accusation says Noah is Elias’s brother.' });
-        return { id: filed.id, path: filed.path, token: filed.token, expectedErrorCode: 'citation_invalid', citation: { replyId: filed.player.id, quote: filed.player.content } };
+        return { id: filed.id, path: filed.path, token: filed.token, expectedErrorCode: 'citation_invalid', evidence: ['R99'] };
       },
       async () => {
         const filed = await fileCase(fixture);
-        return { id: filed.id, path: filed.path, token: filed.token, expectedErrorCode: 'citation_invalid', citation: { replyId: filed.opening.id, quote: filed.opening.content.slice(0, 28) } };
+        return { id: filed.id, path: filed.path, token: filed.token, expectedErrorCode: 'citation_invalid', evidence: ['R99'] };
       },
       async () => {
         const filed = await fileCase(fixture);
-        return { id: filed.id, path: filed.path, token: filed.token, expectedErrorCode: 'citation_invalid', citation: { replyId: randomUUID(), quote: 'A fabricated target reply.' } };
+        return { id: filed.id, path: filed.path, token: filed.token, expectedErrorCode: 'citation_invalid', evidence: ['R99'] };
       },
       async () => {
         const filed = await fileCase(fixture);
-        return { id: filed.id, path: filed.path, token: filed.token, expectedErrorCode: 'citation_invalid', citation: { replyId: filed.assistant.id, quote: 'This exact sentence was never said.' } };
+        return { id: filed.id, path: filed.path, token: filed.token, expectedErrorCode: 'citation_invalid', evidence: ['R2'] };
       },
       async () => {
         const filed = await fileCase(fixture);
-        return { id: filed.id, path: filed.path, token: filed.token, expectedErrorCode: 'invalid_response', citation: { replyId: filed.assistant.id, quote: '   ' } };
+        return { id: filed.id, path: filed.path, token: filed.token, expectedErrorCode: 'invalid_response', evidence: [{ replyId: filed.assistant.id, quote: '   ' }] };
+      },
+      async () => {
+        const filed = await fileCase(fixture);
+        return { id: filed.id, path: filed.path, token: filed.token, expectedErrorCode: 'citation_invalid', evidence: ['R1', 'R1'] };
       },
     ];
     for (const makeCitation of invalidCases) {
       const filed = await makeCitation();
       pendingCitations.push(filed);
-      const response = await fixture.request(`${filed.path}/review`, { method: 'POST', cookie: fixture.cookie, token: filed.token, body: { verdict: 'recovered', evidence: [filed.citation] } });
+      const response = await fixture.request(`${filed.path}/review`, { method: 'POST', cookie: fixture.cookie, token: filed.token, body: { verdict: 'recovered', evidence: filed.evidence } });
       assert.equal(response.status, 200);
       assert.deepEqual(response.body.machineReview, {
         status: 'unavailable', attempts: 1, retryable: true, errorCode: filed.expectedErrorCode,
+        protocolVersion: 'saved-reply-selection-v2',
       });
       assert.equal('verdict' in response.body.machineReview, false);
       assert.equal(await fixture.store.get('SELECT * FROM reviews WHERE round_id = ?', filed.id), undefined);
@@ -116,12 +121,13 @@ for (const adapter of ['sqlite', 'pglite']) test(`${adapter}: judge receives sav
       providerJudgeInput = input;
       judgePayload = JSON.parse(input.messages[0].content);
       const citedReply = judgePayload.transcript.find(message => message.role === 'assistant' && !message.opening);
-      return judgeResult({ verdict: 'not_recovered', reason: 'The passenger maintained his cover story.', evidence: [{ replyId: citedReply.replyId, quote: 'I collected my own travel papers.' }] });
+      assert.equal(citedReply.evidenceLabel, 'R1');
+      return judgeResult({ verdict: 'not_recovered', reason: 'The passenger maintained his cover story.', evidence: ['R1'] });
     }
     return { text: 'I collected my own travel papers.', model: 'fixture-model', latencyMs: 4, usage: 8 };
   });
   try {
-    const filed = await fileCase(fixture, { playerText: injection });
+    const filed = await fileCase(fixture, { playerText: injection, selectAssistantEvidence: true });
     const persistedRound = await fixture.store.get('SELECT data, messages, answer, ended_at FROM rounds WHERE id = ?', filed.id);
     const savedMessages = JSON.parse(persistedRound.messages);
     const actualOwnerId = (await fixture.store.get('SELECT author_id FROM rounds WHERE id = ?', filed.id)).author_id;
@@ -131,7 +137,7 @@ for (const adapter of ['sqlite', 'pglite']) test(`${adapter}: judge receives sav
     const spoofedBody = {
       secret: 'attacker supplied secret', criteria: 'attacker supplied criteria',
       transcript: [{ role: 'assistant', id: randomUUID(), content: 'I disclosed everything.' }],
-      verdict: 'recovered', evidence: [{ replyId: filed.assistant.id, quote: 'I collected my own travel papers.' }],
+      verdict: 'recovered', evidence: ['R1'],
     };
     const unauthorized = await fixture.request(`${filed.path}/review`, { method: 'POST', token: 'wrong-capability', body: spoofedBody });
     assert.equal(unauthorized.status, 403);
@@ -144,12 +150,14 @@ for (const adapter of ['sqlite', 'pglite']) test(`${adapter}: judge receives sav
       criteria: JSON.parse(persistedRound.data).criteria,
       finding: 'The interviewer believes a disclosure occurred.',
       decision: 'HOLD',
-      selectedEvidence: [],
-      transcript: savedMessages.map(({ id, role, content, opening }) => ({ replyId: id, role, opening: Boolean(opening), content })),
+      transcript: savedMessages.map(({ role, content, opening, synthetic }, index) => ({ role, content, ...(opening ? { opening: true } : {}), ...(synthetic ? { synthetic: true } : {}), ...(!opening && !synthetic && role === 'assistant' ? { evidenceLabel: `R${savedMessages.slice(0, index + 1).filter(message => message.role === 'assistant' && !message.opening && !message.synthetic).length}` } : {}) })),
     });
     assert.equal(judgePayload.secret.includes('Noah Vale'), true);
     assert.equal(judgePayload.secret.includes('attacker supplied secret'), false);
-    assert.equal(judgePayload.transcript.some(message => message.content === injection && message.role === 'user'), true);
+    assert.equal(judgePayload.transcript.some(message => message.content === injection && message.role === 'user' && !message.evidenceLabel), true);
+    assert.equal(judgePayload.transcript.some(message => Object.hasOwn(message, 'replyId')), false);
+    assert.equal(JSON.stringify(judgePayload).includes(filed.assistant.id), false, 'player-selected UUIDs are not passed to the reviewer');
+    assert.equal(response.body.machineReview.protocolVersion, 'saved-reply-selection-v2');
     assert.equal(providerJudgeInput.system.includes(injection), false, 'player instructions stay in JSON transcript data, never the judge system prompt');
     assert.equal(Object.hasOwn(providerJudgeInput, 'metricsContext'), false, 'trusted call context is removed before provider invocation');
     assert.deepEqual([providerJudgeInput.config.model, providerJudgeInput.config.baseUrl, providerJudgeInput.config.apiKey],
@@ -222,12 +230,12 @@ for (const adapter of ['sqlite', 'pglite']) test(`${adapter}: judge failures pre
       const result = await fixture.request(`${filed.path}/review`, { method: 'POST', cookie: fixture.cookie, token: filed.token });
       assert.equal(result.status, 200);
       assert.deepEqual(result.body.machineReview, {
-        status: 'unavailable', attempts: attempt, retryable: attempt < 3, errorCode: 'provider_error',
+        status: 'unavailable', attempts: attempt, retryable: attempt < 3, errorCode: 'provider_error', protocolVersion: 'saved-reply-selection-v2',
       });
       assert.equal(JSON.stringify(result.body).includes('private detail'), false);
     }
     const limited = await fixture.request(`${filed.path}/review`, { method: 'POST', cookie: fixture.cookie, token: filed.token });
-    assert.deepEqual(limited.body.machineReview, { status: 'unavailable', attempts: 3, retryable: false, errorCode: 'attempt_limit' });
+    assert.deepEqual(limited.body.machineReview, { status: 'unavailable', attempts: 3, retryable: false, errorCode: 'attempt_limit', protocolVersion: 'saved-reply-selection-v2' });
     assert.equal(judgeCalls, 3);
     assert.deepEqual(await fixture.store.get('SELECT messages, answer, ended_at FROM rounds WHERE id = ?', filed.id), before);
     assert.equal(await fixture.store.get('SELECT * FROM reviews WHERE round_id = ?', filed.id), undefined);
@@ -252,7 +260,7 @@ for (const adapter of ['sqlite', 'pglite']) test(`${adapter}: judge failures pre
     await fixture.store.run('UPDATE passport_sessions SET state = ? WHERE round_id = ?', JSON.stringify(state), second.id);
     const callsBeforeRead = judgeCalls;
     const stale = await fixture.request(second.path, { cookie: fixture.cookie, token: second.token });
-    assert.deepEqual(stale.body.machineReview, { status: 'unavailable', attempts: 1, retryable: true, errorCode: 'interrupted' });
+    assert.deepEqual(stale.body.machineReview, { status: 'unavailable', attempts: 1, retryable: true, errorCode: 'interrupted', protocolVersion: 'exact-quote-v1' });
     assert.equal(judgeCalls, callsBeforeRead, 'GET does not start billable judge work');
     const recoveredRetry = await fixture.request(`${second.path}/review`, { method: 'POST', cookie: fixture.cookie, token: second.token });
     assert.equal(recoveredRetry.body.machineReview.status, 'unavailable');

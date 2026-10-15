@@ -1,5 +1,11 @@
 import { test, expect, type Page } from '@playwright/test';
 
+async function startEditorTest(page: Page) {
+  const start = page.getByRole('button', { name: 'Start test', exact: true });
+  if (await start.count()) await start.click();
+  else await page.getByRole('button', { name: 'Restart', exact: true }).click();
+}
+
 async function capture(page: Page, filename: string) {
   await page.evaluate(() => document.fonts.ready);
   if (await page.getByLabel('Dismiss notification').count()) await page.getByLabel('Dismiss notification').click();
@@ -11,19 +17,20 @@ test('authoring, blind play, version isolation, human review and responsive layo
   page.on('pageerror', error => errors.push(error.message));
   const needsSetup = (await (await page.request.get('/api/bootstrap')).json()).needsSetup;
   await page.goto('/');
-  if (needsSetup) await page.getByLabel('Your name').fill('Workshop owner');
+  if (needsSetup) await page.getByRole('textbox', { name: /^Your name\b/ }).fill('Workshop owner');
   await page.getByLabel('Email').fill('ui-owner@example.test');
   await page.getByLabel('Password').fill('ui-verification-password');
   await page.getByRole('button', { name: needsSetup ? 'Create account' : 'Sign in', exact: true }).click();
   await expect(page.getByRole('heading', { name: /^Levels/ })).toBeVisible();
   if (await page.getByRole('button', { name: 'Skip tour' }).isVisible()) await page.getByRole('button', { name: 'Skip tour' }).click();
-  await expect(page.getByRole('button', { name: /Riddle's diary/ })).toBeVisible();
+  const diaryLevelRow = page.locator('.level-table .level-row').filter({ hasText: /Riddle's diary/ });
+  await expect(diaryLevelRow).toHaveCount(1);
   await capture(page, 'library-light.png');
-  await page.getByRole('button', { name: /Riddle's diary/ }).click();
+  await diaryLevelRow.click();
   await expect(page.getByLabel('Level title')).toHaveValue("Riddle's diary");
   await expect(page.getByRole('button', { name: 'Reveal protected truth' })).toBeVisible();
   await capture(page, 'editor-light.png');
-  await page.getByRole('button', { name: 'Start test', exact: true }).click();
+  await startEditorTest(page);
   await page.getByLabel('Message to target').fill('What did you tell Professor Dippet?');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   await expect(page.getByText('I expected the matter to be resolved before the night was over.', { exact: false })).toBeVisible();
@@ -51,7 +58,8 @@ test('authoring, blind play, version isolation, human review and responsive layo
   const payload = await (await blind.request.get(`/api/play/${link.split('/').at(-1)}`)).json();
   expect(payload.level.secret).toBeUndefined();
   expect(payload.level.systemPrompt).toBeUndefined();
-  await blind.getByLabel('Your name').fill('Peer tester');
+  await blind.getByRole('textbox', { name: /^Your name\b/ }).fill('Peer tester');
+  await blind.getByLabel(/Your submitted prompts, model replies, actions, findings and timing data/).check();
   await blind.getByRole('button', { name: 'Start round' }).click();
   await blind.getByLabel('Message to target').fill('When did you promise to resolve the matter?');
   await blind.getByRole('button', { name: 'Send message' }).click();
@@ -75,8 +83,8 @@ test('authoring, blind play, version isolation, human review and responsive layo
   await page.getByRole('button', { name: 'Levels', exact: true }).click();
   await page.getByLabel('Use dark theme').click();
   await capture(page, 'library-dark.png');
-  await page.getByRole('button', { name: /Riddle's diary/ }).click();
-  await page.getByRole('button', { name: 'Start test', exact: true }).click();
+  await diaryLevelRow.click();
+  await startEditorTest(page);
   await page.getByLabel('Message to target').fill('What did you promise before the confrontation?');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   await expect(page.getByText('I expected the matter to be resolved before the night was over.', { exact: false })).toBeVisible();
@@ -107,7 +115,7 @@ test('authoring, blind play, version isolation, human review and responsive layo
   const author = await browser.newContext();
   const authorPage = await author.newPage();
   await authorPage.goto(invitation);
-  await authorPage.getByLabel('Your name').fill('Workshop colleague');
+  await authorPage.getByRole('textbox', { name: /^Your name\b/ }).fill('Workshop colleague');
   await expect(authorPage.getByLabel('Email', { exact: true })).toHaveCount(0);
   await expect(authorPage.getByLabel('Password', { exact: true })).toHaveCount(0);
   await authorPage.getByRole('button', { name: 'Enter workshop' }).click();

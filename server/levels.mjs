@@ -34,7 +34,16 @@ export function compilePrompt(level) {
 }
 
 export function playerLevel(level) {
-  return { title: level.title, theme: level.theme, character: level.character, briefing: level.briefing, opening: level.opening, duration: level.duration, hintCount: level.hints.length };
+  const passengerCase = level?._passportScenario?.schema === 'passport-case-v1';
+  return {
+    title: passengerCase ? 'One last passenger' : level.title,
+    theme: level.theme,
+    character: passengerCase ? 'The passenger' : level.character,
+    briefing: level.briefing,
+    opening: level.opening,
+    duration: level.duration,
+    hintCount: level.hints.length,
+  };
 }
 
 export function validatePlayable(level) {

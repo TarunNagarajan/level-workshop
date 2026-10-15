@@ -57,6 +57,41 @@
       "when": 1792038464816,
       "tag": "0007_metrics_ingestion_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1792068723215,
+      "tag": "0008_durable_submissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1792068723216,
+      "tag": "0009_passport_case_rotation",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1792068723217,
+      "tag": "0010_generic_machine_reviews",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1792068807241,
+      "tag": "0011_riddle_diary",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1792083739603,
+      "tag": "0012_saved_reply_selection_protocol",
+      "breakpoints": true
     }
   ]
 }

@@ -16,8 +16,8 @@ test('opt-in main website entry remembers authors and owner pause clears their s
   const visitor = await visitorContext.newPage();
   await visitor.goto('/');
   await expect(visitor.getByRole('heading', { name: 'Enter the workshop.' })).toBeVisible();
-  await expect(visitor.getByLabel('Your name')).toBeEnabled();
-  await visitor.getByLabel('Your name').fill('Root visitor');
+  await expect(visitor.getByRole('textbox', { name: /^Your name\b/ })).toBeEnabled();
+  await visitor.getByRole('textbox', { name: /^Your name\b/ }).fill('Root visitor');
   await visitor.getByRole('button', { name: 'Enter workshop' }).click();
   await expect(visitor.getByRole('heading', { name: 'Find your way around.' })).toBeVisible();
   await visitor.getByRole('button', { name: 'Skip tour' }).click();
@@ -37,7 +37,7 @@ test('opt-in main website entry remembers authors and owner pause clears their s
   await page.getByRole('button', { name: 'Reopen entry' }).click();
   await expect(page.getByText('Name-only entry is available')).toBeVisible();
   await visitor.reload();
-  await visitor.getByLabel('Your name').fill('Root visitor');
+  await visitor.getByRole('textbox', { name: /^Your name\b/ }).fill('Root visitor');
   await visitor.getByRole('button', { name: 'Enter workshop' }).click();
   await expect(visitor.getByRole('heading', { name: 'Find your way around.' })).toBeVisible();
   await visitor.getByRole('button', { name: 'Skip tour' }).click();
@@ -46,6 +46,6 @@ test('opt-in main website entry remembers authors and owner pause clears their s
   expect(secondUser.id).not.toBe(firstUser.id);
   await visitor.getByRole('button', { name: 'Sign out' }).click();
   await expect(visitor.getByRole('heading', { name: 'Enter the workshop.' })).toBeVisible();
-  await expect(visitor.getByLabel('Your name')).toHaveValue('');
+  await expect(visitor.getByRole('textbox', { name: /^Your name\b/ })).toHaveValue('');
   await visitorContext.close();
 });

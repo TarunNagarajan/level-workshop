@@ -22,12 +22,12 @@ export async function complete({ config, system, messages, temperature }) {
     });
   } catch (error) {
     const timeout = error?.name === 'TimeoutError' || error?.name === 'AbortError';
-    throw Object.assign(new Error(timeout ? 'The target did not respond in time. Your message was not saved; retry it.' : 'The provider is temporarily unavailable. Your message was not saved; retry it.'), { status: 502, providerCode: timeout ? 'timeout' : 'provider_unavailable' });
+    throw Object.assign(new Error(timeout ? 'The target did not respond in time. Retry the request.' : 'The provider is temporarily unavailable. Retry the request.'), { status: 502, providerCode: timeout ? 'timeout' : 'provider_unavailable' });
   }
   if (!response.ok) {
     const message = response.status === 429 ? 'The provider limit was reached. Wait briefly and retry.'
       : [401, 403].includes(response.status) ? 'The provider rejected the server API key. Check its access and restart.'
-      : `The provider could not complete this turn (${response.status}). Your message was not saved.`;
+      : `The provider could not complete this turn (${response.status}).`;
     throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : 502, providerCode: response.status === 429 ? 'rate_limited' : [401, 403].includes(response.status) ? 'provider_auth' : response.status >= 500 ? 'provider_unavailable' : 'provider_rejected' });
   }
   const result = await response.json();

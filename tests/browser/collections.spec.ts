@@ -65,8 +65,8 @@ test('owner can freeze a reference collection, recover a blind session after pau
   });
   await participant.goto(participantUrl);
   await expect(participant.getByRole('heading', { name: /His documents are here/ })).toBeVisible();
-  await participant.getByLabel('Your name').fill('Collection participant');
-  await participant.getByLabel(/My name, typed questions, replies, actions/).check();
+  await participant.getByRole('textbox', { name: /^Your name\b/ }).fill('Collection participant');
+  await participant.locator('.collection-consent input').first().check();
   await participant.getByRole('button', { name: 'Start recorded playthrough' }).click();
   await expect(participant.getByText('INTERVIEW IN PROGRESS', { exact: false })).toBeVisible();
   await expect.poll(() => admissionBodies.length).toBe(1);
@@ -120,7 +120,7 @@ test('copied collection keeps its pinned saved version when a newer source versi
   const owner = await signInOwner(page.request);
   await page.request.put('/api/tutorial', { data: { result: 'skipped' } });
   const levels = await (await page.request.get('/api/levels')).json() as Array<{ id: string; ownerId: string; draft: { title: string } }>;
-  const source = levels.find(level => level.id !== referenceLevelId && level.ownerId === owner.user.id);
+  const source = levels.find(level => level.ownerId === owner.user.id && level.id !== referenceLevelId && !/(passport|passenger|boarding|arrival|diary)/i.test(level.draft.title));
   expect(source, 'the test owner has a seeded scenario').toBeTruthy();
   const detailResponse = await page.request.get(`/api/levels/${source!.id}`);
   expect(detailResponse.ok()).toBe(true);
@@ -138,12 +138,46 @@ test('copied collection keeps its pinned saved version when a newer source versi
   await expect(page.getByLabel('Saved version').locator('option').filter({ hasText: 'Newer version after frozen snapshot' })).toHaveCount(1);
 });
 
+test('copied collection keeps its pinned version when the initial level detail response arrives late', async ({ page }) => {
+  const owner = await signInOwner(page.request);
+  await page.request.put('/api/tutorial', { data: { result: 'skipped' } });
+  const levels = await (await page.request.get('/api/levels')).json() as Array<{ id: string; ownerId: string; draft: { title: string } }>;
+  const owned = levels.filter(level => level.ownerId === owner.user.id && level.id !== referenceLevelId);
+  expect(owned.length).toBeGreaterThan(1);
+  const defaultLevel = owned[0];
+  const source = owned[1];
+  const detail = await (await page.request.get(`/api/levels/${source.id}`)).json() as { versions: Array<{ id: string }> };
+  const pinnedVersion = detail.versions.at(-1)!.id;
+  const created = await page.request.post('/api/collections', { data: { levelId: source.id, versionId: pinnedVersion } });
+  expect(created.ok()).toBe(true);
+  const collectionId = (await created.json()).id as string;
+  const update = await page.request.get(`/api/levels/${source.id}`);
+  const latest = await update.json() as { revision: number };
+  expect((await page.request.post(`/api/levels/${source.id}/versions`, { data: { revision: latest.revision, note: 'Later version' } })).ok()).toBe(true);
+
+  let releaseDefault!: () => void;
+  let defaultDetailRequested = false;
+  const heldDefault = new Promise<void>(resolve => { releaseDefault = resolve; });
+  await page.route(`**/api/levels/${defaultLevel.id}`, async route => {
+    defaultDetailRequested = true;
+    await heldDefault;
+    await route.continue();
+  });
+  const sourceDetail = page.waitForResponse(response => response.url().includes(`/api/levels/${source.id}`) && response.request().method() === 'GET');
+  await page.goto(`/collections/new?from=${encodeURIComponent(collectionId)}&levelId=${defaultLevel.id}`);
+  await expect(page.getByRole('heading', { name: 'Set up a collection' })).toBeVisible();
+  await sourceDetail;
+  if (defaultDetailRequested) releaseDefault();
+  await expect(page.getByLabel('Scenario')).toHaveValue(source.id);
+  await expect(page.getByLabel('Saved version')).toHaveValue(pinnedVersion);
+});
+
 test('generic blind participants stay private and complete exports page beyond 200 attempts', async ({ page, browser }) => {
   test.setTimeout(120000);
   const owner = await signInOwner(page.request);
   await page.request.put('/api/tutorial', { data: { result: 'skipped' } });
   const levels = await (await page.request.get('/api/levels')).json() as Array<{ id: string; ownerId: string; draft: { title: string } }>;
-  const source = levels.find(level => level.id !== referenceLevelId && level.ownerId === owner.user.id);
+  const source = levels.find(level => level.ownerId === owner.user.id && level.id !== referenceLevelId && !/(passport|passenger|boarding|arrival|diary)/i.test(level.draft.title));
   expect(source, 'the test owner has a seeded conversation scenario').toBeTruthy();
   const detailResponse = await page.request.get(`/api/levels/${source!.id}`);
   const detail = await detailResponse.json() as { versions: Array<{ id: string }> };
@@ -172,8 +206,8 @@ test('generic blind participants stay private and complete exports page beyond 2
   });
   await participant.goto(linkPath);
   await expect(participant.getByRole('heading', { name: source!.draft.title, exact: true })).toBeVisible();
-  await participant.getByLabel('Your name').fill('Generic blind participant');
-  await participant.getByLabel(/My name, typed questions, replies/).check();
+  await participant.getByRole('textbox', { name: /^Your name\b/ }).fill('Generic blind participant');
+  await participant.getByLabel(/Your submitted prompts, model replies, actions, findings and timing data/).check();
   await participant.getByRole('button', { name: 'Start playthrough' }).click();
   await participant.getByLabel('Message to target').fill('A fixed UI check. [fixture:rate-limit-once]');
   await participant.getByRole('button', { name: 'Send message' }).click();
@@ -211,7 +245,7 @@ test('a new workshop member can create a collection from the reference desk', as
   const memberContext = await browser.newContext();
   const member = await memberContext.newPage();
   await member.goto(invitePath);
-  await member.getByLabel('Your name').fill('Collection author');
+  await member.getByRole('textbox', { name: /^Your name\b/ }).fill('Collection author');
   await member.getByRole('button', { name: 'Enter workshop' }).click();
   await member.request.put('/api/tutorial', { data: { result: 'skipped' } });
   await member.reload();

@@ -32,5 +32,5 @@ export async function createFixture(options) {
     store = openStore(options.dbPath || ':memory:');
   }
   store = wrapStore ? wrapStore(store) : store;
-  return createWorkshop({ ...workshopOptions, store });
+  return createWorkshop({ passportScenarioRotation: false, ...workshopOptions, store });
 }

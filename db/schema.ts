@@ -78,6 +78,8 @@ export const rounds = sqliteTable('rounds', {
   ended_at: integer('ended_at'),
   answer: text('answer'),
   parent_id: text('parent_id'),
+  recording_accepted_at: integer('recording_accepted_at'),
+  recording_notice_version: text('recording_notice_version'),
 }, t => [
   index('rounds_level').on(t.level_id, t.started_at),
   uniqueIndex('rounds_token_unique').on(t.token),
@@ -138,6 +140,11 @@ export const passport_sessions = sqliteTable('passport_sessions', {
   state: text('state').notNull(),
 });
 
+export const passport_scenario_counter = sqliteTable('passport_scenario_counter', {
+  id: integer('id').primaryKey(),
+  value: integer('value').notNull().default(0),
+});
+
 export const orchestration_configs = sqliteTable('orchestration_configs', {
   id: text('id').primaryKey(),
   owner_id: text('owner_id').notNull().references(() => users.id),
@@ -174,6 +181,52 @@ export const orchestration_locks = sqliteTable('orchestration_locks', {
   run_id: text('run_id').primaryKey().references(() => orchestration_runs.id),
   token: text('token').notNull(),
   expires: integer('expires').notNull(),
+});
+
+export const user_recording_acknowledgements = sqliteTable('user_recording_acknowledgements', {
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  version: text('version').notNull(),
+  accepted_at: integer('accepted_at').notNull(),
+}, t => [uniqueIndex('user_recording_acknowledgements_pk').on(t.user_id, t.version)]);
+
+export const durable_submissions = sqliteTable('durable_submissions', {
+  id: text('id').primaryKey(),
+  client_request_id: text('client_request_id').notNull(),
+  scope_key: text('scope_key').notNull(),
+  round_id: text('round_id').references(() => rounds.id, { onDelete: 'restrict' }),
+  orchestration_run_id: text('orchestration_run_id').references(() => orchestration_runs.id, { onDelete: 'restrict' }),
+  lane: text('lane'),
+  actor_id: text('actor_id').references(() => users.id, { onDelete: 'set null' }),
+  source: text('source'),
+  version_id: text('version_id'),
+  collection_id: text('collection_id'),
+  profile_id: text('profile_id'),
+  scenario_id: text('scenario_id'),
+  content: text('content').notNull(),
+  desk_context: text('desk_context'),
+  presented: text('presented'),
+  created_at: integer('created_at').notNull(),
+  started_at: integer('started_at'),
+  completed_at: integer('completed_at'),
+  status: text('status').notNull(),
+  error_code: text('error_code'),
+  reply: text('reply'),
+  reply_id: text('reply_id'),
+  transcript_saved: integer('transcript_saved').notNull().default(0),
+}, t => [uniqueIndex('durable_submissions_scope_request_unique').on(t.scope_key, t.client_request_id), index('durable_submissions_page').on(t.created_at, t.id)]);
+
+export const round_machine_reviews = sqliteTable('round_machine_reviews', {
+  round_id: text('round_id').primaryKey().references(() => rounds.id, { onDelete: 'restrict' }),
+  status: text('status').notNull(),
+  attempts: integer('attempts').notNull(),
+  run_id: text('run_id'),
+  started_at: integer('started_at'),
+  completed_at: integer('completed_at'),
+  verdict: text('verdict'),
+  reason: text('reason'),
+  evidence: text('evidence'),
+  error_code: text('error_code'),
+  reviewer_protocol: text('reviewer_protocol'),
 });
 
 export const difficulty_collections = sqliteTable('difficulty_collections', {
@@ -311,3 +364,8 @@ export const metrics_model_calls = sqliteTable('metrics_model_calls', {
   request_fingerprint: text('request_fingerprint').notNull(),
   transcript_saved: integer('transcript_saved').notNull().default(0),
 }, t => [index('metrics_model_calls_started').on(t.started_at, t.id), index('metrics_model_calls_status_started').on(t.status, t.started_at), index('metrics_model_calls_retry_fingerprint').on(t.request_fingerprint, t.started_at), index('metrics_model_calls_round_started').on(t.round_id, t.started_at), index('metrics_model_calls_collection_profile').on(t.collection_id, t.profile_id, t.started_at), index('metrics_model_calls_run_started').on(t.orchestration_run_id, t.started_at)]);
+
+export const diary_sessions = sqliteTable('diary_sessions', {
+  round_id: text('round_id').primaryKey().references(() => rounds.id, { onDelete: 'restrict' }),
+  state: text('state').notNull(),
+});
