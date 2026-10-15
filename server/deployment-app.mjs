@@ -26,6 +26,7 @@ export function createDeploymentApp({ includeSpaFallback = false, apiNotFound = 
       secureCookies: true,
       publicOrigin: process.env.PUBLIC_ORIGIN || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : ''),
       metricsEnabled: process.env.WORKSHOP_METRICS !== 'false',
+      metricsSessionCreationLimit: 120,
     });
     workshop.app.set('trust proxy', 1);
     app.use(workshop.app);

@@ -43,6 +43,20 @@
       "when": 1791983702799,
       "tag": "0005_difficulty_question_count",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792037463235,
+      "tag": "0006_owner_metrics",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1792038464816,
+      "tag": "0007_metrics_ingestion_guard",
+      "breakpoints": true
     }
   ]
 }

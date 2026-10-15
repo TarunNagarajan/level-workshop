@@ -254,7 +254,7 @@ export function addPassportRoutes(app, { store, provider, completion, member, cr
     if (!collectionSystem && config.baseUrl !== provider.baseUrl) fail(409, 'The provider changed. Start a fresh interview.');
     const player = { id: randomUUID(), role: 'user', content, createdAt: Date.now(), deskContext: context, presented: [...state.presented] };
     const system = `${collectionSystem || compilePrompt(data)}\n\nVERIFIED DESK OBSERVATIONS\n${context}`;
-    const { result, callId } = await collectionModels.request({ row, system, messages: [...messages, player], temperature: data.temperature });
+    const { result, callId } = await collectionModels.request({ row, system, messages: [...messages, player], temperature: data.temperature, actor: req.user });
     const next = [...messages, player, { id: randomUUID(), role: 'assistant', content: result.text, createdAt: Date.now(), latencyMs: result.latencyMs, usage: result.usage, model: result.model }];
     const saved = await collectionModels.finish({ row, lease, messages: next, callId, result });
     if (!saved) fail(409, 'This reply could not be saved in time. Retry it.');
