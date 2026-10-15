@@ -236,7 +236,7 @@ export function addOrchestrationRoutes(app, { store, provider, completion }) {
       const sourceObservation = binding?.observation_mode === 'sealed-card' && lane === binding.source_lane
         ? { factValue: observation ? binding.fact_value : null } : undefined;
       const context = compileOrchestrationContext({ snapshot, testInput: current.test_input, messages, board, lane, content, model: provider.model, sourceObservation });
-      const result = await completion({ config: provider, ...context });
+      const result = await completion({ config: provider, ...context, metricsContext: { kind: 'orchestration', runId: row.id, lane, userId: req.user.id, userRole: req.user.role } });
       let publication = binding?.observation_mode === 'sealed-card' && lane === binding.source_lane && !observation
         ? normalized(result.text) === normalized(sealedCardWait)
           ? { status: 'waiting', reason: 'The dispatch seal has not been opened.', value: sealedCardWait, exactFormat: result.text === sealedCardWait }
@@ -256,6 +256,7 @@ export function addOrchestrationRoutes(app, { store, provider, completion }) {
       const now = Date.now();
       const next = [...messages, { id: id(), lane, role: 'user', content, createdAt: now }, { id: id(), lane, role: 'assistant', content: result.text, publication, model: result.model, latencyMs: result.latencyMs, usage: result.usage, context, createdAt: Date.now() }];
       await saveRunEvent({ row: current, lease, messages: next, board, kind: 'turn', sourceMessageId: next.at(-1).id });
+      if (result.metricsCallId) { try { await run("UPDATE metrics_model_calls SET transcript_saved=1 WHERE id=? AND status='succeeded'", result.metricsCallId); } catch { /* best effort */ } }
       res.json(runView(await runRow(row.id)));
     });
   });

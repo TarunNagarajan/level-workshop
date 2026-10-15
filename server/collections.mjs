@@ -82,17 +82,21 @@ const median = values => {
   return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
 };
 
-export function createCollectionModelServices({ store, provider, completion }) {
+export function createCollectionModelServices({ store, provider, completion, metrics }) {
   const { get, run } = store;
   return {
     async systemForRound(row) {
       const assignment = await get('SELECT profile_snapshot FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
       return assignment ? JSON.parse(assignment.profile_snapshot).compiledPrompt : null;
     },
-    async request({ row, system, messages, temperature }) {
-      const assignment = await get('SELECT collection_id FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
+    async request({ row, system, messages, temperature, actor = null }) {
+      const assignment = await get('SELECT collection_id, profile_id, source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
       const config = JSON.parse(row.config);
-      if (!assignment) return { result: await completion({ config: { ...config, apiKey: provider.apiKey }, system, messages, temperature }), callId: null };
+      const round = await get('SELECT source, author_id FROM rounds WHERE id = ?', row.id);
+      const rawSource = assignment?.source || round?.source;
+      const source = ({ 'collection-participant':'participant','collection-preview':'preview','reference-research-preview':'preview','reference-research':'participant','reference-blind':'participant','blind':'participant' })[rawSource] || rawSource || null;
+      const metricsContext = { kind: 'round', roundId: row.id, userId: actor?.id || null, userRole: actor?.role || null, source, versionId: row.version_id, collectionId: assignment?.collection_id || null, profileId: assignment?.profile_id || null };
+      if (!assignment) return { result: await completion({ config: { ...config, apiKey: provider.apiKey }, system, messages, temperature, metricsContext }), callId: null };
       const callId = id(), startedAt = Date.now();
       const context = { baseUrl: safeBaseUrl(config.baseUrl), body: buildCompletionBody({ config, system, messages, temperature }) };
       await run('INSERT INTO difficulty_provider_calls (id, collection_id, round_id, status, started_at, request_context) VALUES (?, ?, ?, ?, ?, ?)', callId, assignment.collection_id, row.id, 'started', startedAt, JSON.stringify(context));
@@ -101,7 +105,7 @@ export function createCollectionModelServices({ store, provider, completion }) {
         fail(503, 'The server connection no longer matches this frozen collection. Create a new collection with the current model settings.');
       }
       try {
-        const result = await completion({ config: { ...config, apiKey: provider.apiKey }, system, messages, temperature });
+        const result = await completion({ config: { ...config, apiKey: provider.apiKey }, system, messages, temperature, metricsContext });
         return { result, callId };
       } catch (error) {
         await run('UPDATE difficulty_provider_calls SET status = ?, completed_at = ?, error_code = ? WHERE id = ?', 'failed', Date.now(), safeErrorCode(error), callId);
@@ -123,6 +127,7 @@ export function createCollectionModelServices({ store, provider, completion }) {
         if (callId) await run('UPDATE difficulty_provider_calls SET status = ?, completed_at = ?, error_code = ? WHERE id = ? AND status = ?', 'interrupted', Date.now(), 'lease_expired_unsaved_reply', callId, 'started');
         return false;
       }
+      if (result?.metricsCallId) await metrics?.markSaved(result.metricsCallId);
       return true;
     },
     async interrupted(callId, code = 'lease_expired_unsaved_reply') {

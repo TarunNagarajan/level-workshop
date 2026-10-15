@@ -8,6 +8,7 @@ import { emptyLevel, levelSchema, seedLevels, compilePrompt, playerLevel, valida
 import { addPassportRoutes, passportContext, passportScenarioForVersion } from './passport-reference.mjs';
 import { addOrchestrationRoutes } from './orchestration.mjs';
 import { addCollectionRoutes, createCollectionModelServices } from './collections.mjs';
+import { addMetricsRoutes, createMetricsService } from './metrics.mjs';
 const scrypt = promisify(scryptCallback);
 const id = () => randomUUID();
 const token = () => randomBytes(32).toString('base64url');
@@ -25,7 +26,7 @@ async function verifyPassword(password, stored) {
     const actual = Buffer.from(await scrypt(password, salt, 64));
     return timingSafeEqual(actual, Buffer.from(expected, 'hex'));
 }
-export function createWorkshop({ store, provider = modelConfig(), completion = complete, ownerKey = '', sharingKey = '', rootEntry = false, secureCookies = false, publicOrigin = '', researchWorlds = false, researchWorldId = '' } = {}) {
+export function createWorkshop({ store, provider = modelConfig(), completion = complete, ownerKey = '', sharingKey = '', rootEntry = false, secureCookies = false, publicOrigin = '', researchWorlds = false, researchWorldId = '', metricsEnabled = false, metricsSessionCreationLimit = 120 } = {}) {
     if (!store)
         throw new Error('A persistent store is required.');
     const cookieOptions = { httpOnly: true, sameSite: 'strict', path: '/', secure: secureCookies, maxAge: 30 * 86400000 };
@@ -49,6 +50,8 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     });
     const member = (req, res, next) => req.user ? next() : res.status(401).json({ error: 'Sign in to use the workshop.' });
     const admin = (req, res, next) => req.user?.role === 'admin' ? next() : res.status(403).json({ error: 'Only the workspace owner can do this.' });
+    const metrics = createMetricsService({ store, enabled: metricsEnabled });
+    const instrumentedCompletion = input => metrics.recordCompletion(completion, input);
     const owner = async (req, levelId) => {
         const row = await get('SELECT * FROM levels WHERE id = ?', levelId);
         if (!row)
@@ -104,8 +107,8 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     const serializeLevel = async (row) => ({ id: row.id, draft: JSON.parse(row.draft), revision: row.revision, status: row.status, ownerId: row.owner_id, owner: (await get('SELECT name FROM users WHERE id = ?', row.owner_id))?.name, updatedAt: row.updated_at });
     const versions = async (levelId) => (await all('SELECT versions.*, users.name AS author FROM versions JOIN users ON users.id = versions.author_id WHERE level_id = ? ORDER BY number DESC', levelId)).map(v => ({ id: v.id, number: v.number, data: JSON.parse(v.data), note: v.note, author: v.author, createdAt: v.created_at }));
     const publicRound = row => ({ id: row.id, ...(row.source === 'collection-participant' ? {} : { versionId: row.source === 'reference-research-preview' ? 'reference-passport-study' : row.version_id, model: JSON.parse(row.config).model, source: row.source }), level: playerLevel(JSON.parse(row.data)), tester: row.tester, messages: row.source === 'collection-participant' ? JSON.parse(row.messages).map(({ id: messageId, role, content, createdAt, opening, latencyMs }) => ({ id: messageId, role, content, createdAt, ...(opening ? { opening: true } : {}), ...(Number.isFinite(latencyMs) ? { latencyMs } : {}) })) : JSON.parse(row.messages), startedAt: row.started_at, endedAt: row.ended_at, deadline: row.started_at + JSON.parse(row.data).duration * 1000, answer: row.answer, hintsUsed: row.hints_used });
-    const accessRound = async (req) => {
-        const row = await get('SELECT * FROM rounds WHERE id = ?', req.params.id);
+    const accessRound = async (req, roundId = req.params.id) => {
+        const row = await get('SELECT * FROM rounds WHERE id = ?', roundId);
         if (!row)
             fail(404, 'Test session not found.');
         const supplied = req.get('x-round-token');
@@ -436,7 +439,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         try { return await action(await accessRound(req), lease); }
         finally { await run('DELETE FROM round_locks WHERE round_id = ? AND token = ?', initial.id, lease); }
     };
-    const collectionModels = createCollectionModelServices({ store, provider, completion });
+    const collectionModels = createCollectionModelServices({ store, provider, completion: instrumentedCompletion, metrics });
     app.post('/api/rounds/:id/messages', async (req, res) => withRoundLock(req, async (row, lease) => {
         if (isPassportVersion(row.version_id)) fail(409, 'Continue this interview at the interactive reference desk.');
         const content = z.string().trim().min(1).max(4000).parse(req.body.content);
@@ -452,7 +455,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             const playerMessage = { id: id(), role: 'user', content, createdAt: Date.now() };
             const data = JSON.parse(row.data);
             const system = collectionSystem || compilePrompt(data);
-            const { result, callId } = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature });
+            const { result, callId } = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user });
             const next = [...messages, playerMessage, { id: id(), role: 'assistant', content: result.text, createdAt: Date.now(), latencyMs: result.latencyMs, usage: result.usage, model: result.model }];
             const saved = await collectionModels.finish({ row, lease, messages: next, callId, result });
             if (!saved) fail(409, 'This reply took too long to save. Retry your message.');
@@ -556,9 +559,10 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         res.json({ system: (await collectionModels.systemForRound(row) || compilePrompt(JSON.parse(row.data))) + (lastQuestion?.deskContext ? `\n\nVERIFIED DESK OBSERVATIONS\n${lastQuestion.deskContext}` : ''), config: JSON.parse(row.config), messages });
     });
     app.get('/api/levels/:id/prompt', member, async (req, res) => res.json({ system: compilePrompt(JSON.parse((await levelRow(req.params.id)).draft)), config: safeConfig() }));
-    addOrchestrationRoutes(app, { store, provider, completion });
+    addOrchestrationRoutes(app, { store, provider, completion: instrumentedCompletion });
     addCollectionRoutes(app, { store, provider, member, owner, versionRow, createRound });
-    addPassportRoutes(app, { store, provider, completion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds, researchWorldId, collectionModels });
+    addPassportRoutes(app, { store, provider, completion: instrumentedCompletion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds, researchWorldId, collectionModels });
+    addMetricsRoutes(app, { store, enabled: metricsEnabled, secureCookies, authorizeRound: (req, roundId) => accessRound(req, roundId), admin, sessionCreationLimit: metricsSessionCreationLimit });
     app.use('/api', async (req, res) => res.status(404).json({ error: 'Endpoint not found.' }));
     app.use(async (error, req, res, next) => {
         if (error instanceof z.ZodError)

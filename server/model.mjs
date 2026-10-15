@@ -34,5 +34,6 @@ export async function complete({ config, system, messages, temperature }) {
   const text = result.choices?.[0]?.message?.content?.trim();
   if (!text) throw Object.assign(new Error('The target returned no visible reply. Retry this turn.'), { status: 502, providerCode: 'empty_response' });
   // Only visible content crosses the player boundary; provider reasoning is deliberately discarded.
-  return { text, latencyMs: Math.round(performance.now() - start), usage: result.usage?.total_tokens ?? null, model: result.model || config.model };
+  const tokenCount = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  return { text, latencyMs: Math.round(performance.now() - start), usage: tokenCount(result.usage?.total_tokens), usageDetails: { inputTokens: tokenCount(result.usage?.prompt_tokens), outputTokens: tokenCount(result.usage?.completion_tokens), totalTokens: tokenCount(result.usage?.total_tokens) }, model: result.model || config.model };
 }
