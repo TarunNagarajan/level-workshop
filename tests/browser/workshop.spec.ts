@@ -2,8 +2,11 @@ import { test, expect, type Page } from '@playwright/test';
 
 async function startEditorTest(page: Page) {
   const start = page.getByRole('button', { name: 'Start test', exact: true });
+  const startNew = page.getByRole('button', { name: 'Start a new test', exact: true });
   if (await start.count()) await start.click();
+  else if (await startNew.count()) await startNew.click();
   else await page.getByRole('button', { name: 'Restart', exact: true }).click();
+  await expect(page.getByLabel('Message to target')).toBeEnabled();
 }
 
 async function capture(page: Page, filename: string) {
@@ -13,6 +16,7 @@ async function capture(page: Page, filename: string) {
 }
 
 test('authoring, blind play, version isolation, human review and responsive layouts', async ({ page, context, browser }) => {
+  test.setTimeout(60000);
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   const needsSetup = (await (await page.request.get('/api/bootstrap')).json()).needsSetup;
@@ -84,7 +88,28 @@ test('authoring, blind play, version isolation, human review and responsive layo
   await page.getByLabel('Use dark theme').click();
   await capture(page, 'library-dark.png');
   await diaryLevelRow.click();
-  await startEditorTest(page);
+  if (await page.getByRole('button', { name: 'Start test', exact: true }).count() || await page.getByRole('button', { name: 'Start a new test', exact: true }).count()) await startEditorTest(page);
+  else await expect(page.getByLabel('Message to target')).toBeEnabled();
+  let releaseRestart!: () => void;
+  let markRestartRequested!: () => void;
+  const restartRequestStarted = new Promise<void>(resolve => { markRestartRequested = resolve; });
+  const restartRequestGate = new Promise<void>(resolve => { releaseRestart = resolve; });
+  const delayNewRound = async (route: import('@playwright/test').Route) => {
+    if (route.request().method() === 'POST' && /\/api\/levels\/[^/]+\/rounds$/.test(route.request().url()) && !route.request().postDataJSON()?.replayOf) {
+      markRestartRequested();
+      await restartRequestGate;
+    }
+    await route.continue();
+  };
+  await page.route('**/api/levels/*/rounds', delayNewRound);
+  await page.getByRole('button', { name: 'Restart', exact: true }).click();
+  await restartRequestStarted;
+  await expect(page.getByLabel('Message to target')).toBeDisabled();
+  await expect(page.getByRole('status').filter({ hasText: 'Starting a fresh round' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Branch from this reply' })).toBeDisabled();
+  releaseRestart();
+  await expect(page.getByLabel('Message to target')).toBeEnabled();
+  await page.unroute('**/api/levels/*/rounds', delayNewRound);
   await page.getByLabel('Message to target').fill('What did you promise before the confrontation?');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   await expect(page.getByText('I expected the matter to be resolved before the night was over.', { exact: false })).toBeVisible();
