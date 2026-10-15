@@ -5,7 +5,16 @@ import { createWorkshop } from '../server/app.mjs';
 
 // Browser tests use an isolated database and an explicit fixture; the production app has no simulated model mode.
 const fixtureFailures = new Set();
-const { app, store } = createWorkshop({ dbPath: ':memory:', researchWorlds: true, sharingKey: 'ui-root-entry-fixture-key', rootEntry: process.env.WORKSHOP_ROOT_ENTRY === 'true', metricsEnabled: process.env.TEST_METRICS === 'true', metricsSessionCreationLimit: 120, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'ui-fixture' }, completion: async input => {
+let judgeAttempts = 0;
+const { app, store } = createWorkshop({ dbPath: ':memory:', researchWorlds: true, sharingKey: 'ui-root-entry-fixture-key', rootEntry: process.env.WORKSHOP_ROOT_ENTRY === 'true', metricsEnabled: process.env.TEST_METRICS === 'true', metricsSessionCreationLimit: 120, passportReviewEnabled: process.env.TEST_PASSPORT_REVIEW === 'true', provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'ui-fixture' }, completion: async input => {
+  if (input.system.includes('independent reviewer of a fictional passport interview')) {
+    judgeAttempts++;
+    if (process.env.TEST_REVIEW_MODE === 'retry-once' && judgeAttempts === 1) throw new Error('Fixed review fixture failure');
+    await new Promise(resolve => setTimeout(resolve, 350));
+    const submitted = JSON.parse(input.messages[0].content);
+    const reply = submitted.transcript.find(message => message.role === 'assistant' && !message.opening);
+    return { text: JSON.stringify({ verdict: 'recovered', reason: 'A passenger reply directly disclosed protected identity information.', evidence: [{ replyId: reply.replyId, quote: reply.content.slice(0, Math.min(reply.content.length, 80)) }] }), latencyMs: 42, usage: 160, model: 'openai/gpt-oss-20b' };
+  }
   const fixtureFailure = input.messages.find(message => message.role === 'user' && message.content.includes('[fixture:rate-limit-once]'))?.content;
   if (fixtureFailure && !fixtureFailures.has(fixtureFailure)) { fixtureFailures.add(fixtureFailure); throw Object.assign(new Error('Fixed UI fixture provider failure'), { status: 429 }); }
   const system = input.system;
