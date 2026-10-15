@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes, randomInt, randomUUID } from 'node
 import { z } from 'zod';
 import { playerLevel, validatePlayable } from './levels.mjs';
 import { MODULE_CATALOGUE_VERSION, defaultProfiles, normalizeProfiles, protectionModules, compileProfilePrompt } from './difficulty.mjs';
-import { initialPassportState, passportLevel, passportScenario, playerDocuments } from './passport-reference.mjs';
+import { initialPassportState, passportLevel, passportScenario, playerDocuments, publicPassportState, publicMachineReview } from './passport-reference.mjs';
 import { buildCompletionBody } from './model.mjs';
 
 export const CONSENT_TEXT_VERSION = 'collection-recording-v1';
@@ -136,7 +136,7 @@ export function createCollectionModelServices({ store, provider, completion, met
   };
 }
 
-export function addCollectionRoutes(app, { store, provider, member, owner, versionRow, createRound, passportPromptData = passportLevel }) {
+export function addCollectionRoutes(app, { store, provider, member, owner, versionRow, createRound, passportPromptData = passportLevel, passportReviewEnabled = false }) {
   const { get, all, run, batch } = store;
   const reconcileCalls = collectionId => run("UPDATE difficulty_provider_calls SET status = 'interrupted', completed_at = ?, error_code = 'server_interrupted' WHERE collection_id = ? AND status = 'started' AND NOT EXISTS (SELECT 1 FROM round_locks WHERE round_locks.round_id = difficulty_provider_calls.round_id AND round_locks.expires > ?)", Date.now(), collectionId, Date.now());
   const collectionRow = async collectionId => {
@@ -290,8 +290,9 @@ export function addCollectionRoutes(app, { store, provider, member, owner, versi
     const round = { ...pseudonymousRound(row), accessToken };
     if (!isPassport) return { kind: 'conversation', round };
     const desk = await get('SELECT state FROM passport_sessions WHERE round_id = ?', row.round_id);
-    const state = JSON.parse(desk.state);
-    return { kind: 'passport', round, state, documents: playerDocuments(state, passportScenario) };
+    const stored = JSON.parse(desk.state), state = publicPassportState(stored);
+    const machineReview = publicMachineReview(stored.machineReview);
+    return { kind: 'passport', round, state, documents: playerDocuments(state, passportScenario), reviewEnabled: Boolean(passportReviewEnabled), ...(machineReview ? { machineReview } : {}) };
   };
 
   app.get('/api/collections/:id/attempts', member, async (req, res) => {
@@ -308,7 +309,7 @@ export function addCollectionRoutes(app, { store, provider, member, owner, versi
       const annotationRow = await get('SELECT attempted_strategies AS "attemptedStrategies", observed_failures AS "observedFailures", note, updated_at AS "updatedAt" FROM difficulty_annotations WHERE round_id = ?', record.round_id);
       const annotation = annotationRow ? { ...annotationRow, attemptedStrategies: JSON.parse(annotationRow.attemptedStrategies), observedFailures: JSON.parse(annotationRow.observedFailures) } : null;
       const desk = await get('SELECT state FROM passport_sessions WHERE round_id = ?', record.round_id);
-      const passport = desk ? JSON.parse(desk.state) : undefined;
+      const passport = desk ? publicPassportState(JSON.parse(desk.state)) : undefined;
       const finding = passport && record.answer ? record.answer.match(/(?:^|\n)Finding: ([\s\S]*?)(?:\nSupporting replies:|$)/)?.[1]?.trim() : undefined;
       const providerCalls = await all('SELECT status, started_at AS "startedAt", completed_at AS "completedAt", latency_ms AS "latencyMs", error_code AS "errorCode" FROM difficulty_provider_calls WHERE round_id = ? ORDER BY started_at, id', record.round_id);
       return {
@@ -316,7 +317,7 @@ export function addCollectionRoutes(app, { store, provider, member, owner, versi
         assignedAt: record.assigned_at, tester: record.tester, version: record.version_number,
         startedAt: record.started_at, endedAt: record.ended_at, answer: record.answer, ...(finding !== undefined ? { finding } : {}), ...(passport?.decision ? { decision: passport.decision } : {}), hintsUsed: record.hints_used,
         messages: JSON.parse(record.messages), review: record.outcome ? { outcome: record.outcome, note: record.review_note, evidence: JSON.parse(record.evidence), updatedAt: record.review_updated_at } : null,
-        annotation, providerCalls, passport,
+        annotation, providerCalls, passport: passport ? publicPassportState(passport) : passport,
       };
     }));
     const last = page.at(-1), nextCursor = hasMore && last ? cursorEncode({ cutoff, at: last.assigned_at, id: last.id }) : null;
@@ -386,7 +387,7 @@ export function addCollectionRoutes(app, { store, provider, member, owner, versi
         profile: includeAuthor ? JSON.parse(assignment.profile_snapshot) : (({ id, label, moduleIds }) => ({ id, label, moduleIds }))(JSON.parse(assignment.profile_snapshot)), source: assignment.source,
         parentId: assignment.parent_id, assignedAt: assignment.assigned_at, consentAt: assignment.consent_at, consentTextVersion: assignment.consent_version,
         startedAt: round.started_at, submittedAt: round.ended_at, answer: round.answer, hintsUsed: round.hints_used,
-        messages: roundExportMessages(JSON.parse(round.messages)), ...(desk ? { passport: JSON.parse(desk.state) } : {}), review: review ? { ...review, evidence: JSON.parse(review.evidence) } : null,
+        messages: roundExportMessages(JSON.parse(round.messages)), ...(desk ? { passport: publicPassportState(JSON.parse(desk.state)) } : {}), review: review ? { ...review, evidence: JSON.parse(review.evidence) } : null,
         annotation: annotation ? { ...annotation, attemptedStrategies: JSON.parse(annotation.attempted_strategies), observedFailures: JSON.parse(annotation.observed_failures) } : null,
         providerCalls: calls.map(call => ({ status: call.status, startedAt: call.started_at, completedAt: call.completed_at, latencyMs: call.latency_ms, errorCode: call.error_code, ...(includeAuthor ? { requestContext: call.request_context ? JSON.parse(call.request_context) : null } : {}) })),
         ...(includeAuthor ? { scenario: JSON.parse(round.data), provider: JSON.parse(round.config) } : {}),
@@ -406,7 +407,7 @@ export function addCollectionRoutes(app, { store, provider, member, owner, versi
     const deskState = version.id === 'reference-passport-desk-v1' ? initialPassportState() : undefined;
     const result = await createRound({ version, frozenConfig, userId: req.user.id, tester: req.user.name, source: 'collection-preview', deskState, collectionAssignment: { id: id(), collectionId: collection.id, profileId, profileSnapshot: profile, source: 'preview', linkId: null, startKeyHash: null, consentAt: null, consentVersion: null, assignedAt: Date.now() } });
     res.status(201).json(deskState
-      ? { kind: 'passport', round: result, state: deskState, documents: playerDocuments(deskState, passportScenario), preview: true, profileId, profileLabel: profile.label }
+      ? { kind: 'passport', round: result, state: publicPassportState(deskState), documents: playerDocuments(deskState, passportScenario), reviewEnabled: Boolean(passportReviewEnabled), preview: true, profileId, profileLabel: profile.label }
       : { kind: 'conversation', round: result, preview: true, profileId, profileLabel: profile.label });
   });
 
