@@ -1,0 +1,75 @@
+import { test, expect } from '@playwright/test';
+
+test('guided practice completes without changing an active reference round', async ({ page, browser }) => {
+  const owner = { name: 'Workshop owner', email: 'ui-owner@example.test', password: 'ui-verification-password' };
+  const setup = await page.request.post('/api/setup', { data: owner });
+  if (setup.status() === 409) await page.request.post('/api/login', { data: owner });
+  await page.request.put('/api/tutorial', { data: { result: 'skipped' } });
+  const mutations: string[] = [];
+  page.on('request', request => { if (request.method() !== 'GET' && /\/api\/reference\/(start|rounds\/.*\/(action|messages|finish))/.test(request.url())) mutations.push(`${request.method()} ${request.url()}`); });
+  await page.goto('/reference');
+  await page.getByRole('button', { name: 'Open the counter' }).click();
+  await expect(page.getByText('INTERVIEW IN PROGRESS', { exact: false })).toBeVisible();
+  const before = await (await page.request.get('/api/reference/active')).json();
+  mutations.length = 0;
+  const guide = page.getByRole('button', { name: 'Guided playthrough' });
+  await guide.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Briefing' })).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({ path: 'verification/passport-playthrough-desktop.png', fullPage: true, animations: 'disabled' });
+  await expect(dialog.getByText(/Mara Ellis/)).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await dialog.getByRole('button', { name: 'Open passport' }).click();
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await dialog.getByRole('button', { name: 'Turn page' }).click();
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await dialog.getByRole('button', { name: 'Request arrival card', exact: true }).last().click();
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await dialog.getByRole('button', { name: 'Compare signatures', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await dialog.getByRole('button', { name: 'Switch on UV lamp' }).click();
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await dialog.getByRole('button', { name: 'Present passport' }).click();
+  await dialog.getByRole('button', { name: 'Present arrival card' }).click();
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await dialog.getByRole('button', { name: 'Send example question' }).click();
+  await expect(dialog.getByText(/SCRIPTED PRACTICE REPLY/)).toBeVisible();
+  await dialog.getByRole('button', { name: 'Send follow-up' }).click();
+  await expect(dialog.getByText(/SCRIPTED PRACTICE DISCLOSURE/)).toBeVisible();
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await dialog.getByRole('checkbox', { name: /Keep as evidence/ }).check();
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await dialog.getByRole('button', { name: 'HOLD' }).click();
+  await dialog.getByLabel('Your finding').fill('Mara says the passport belongs to Ruth Ellis.');
+  await dialog.getByRole('button', { name: 'File practice case' }).click();
+  await expect(dialog.getByRole('button', { name: 'Back to real desk' })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Back to real desk' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByText('INTERVIEW IN PROGRESS', { exact: false })).toBeVisible();
+  const after = await (await page.request.get('/api/reference/active')).json();
+  expect(after.round.id).toBe(before.round.id);
+  expect(after.state.revision).toBe(before.state.revision);
+  expect(after.round.messages).toEqual(before.round.messages);
+  expect(mutations).toEqual([]);
+  await page.request.post(`/api/reference/rounds/${before.round.id}/finish`, {
+    headers: { 'x-round-token': before.round.accessToken },
+    data: { decision: 'HOLD', finding: 'Browser test cleanup.', evidence: [] },
+  });
+  await guide.click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(guide).toBeFocused();
+
+  const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, storageState: await page.context().storageState() });
+  const mobile = await mobileContext.newPage();
+  await mobile.goto('/reference');
+  await mobile.getByRole('button', { name: 'Guided playthrough' }).click();
+  await expect(mobile.getByRole('dialog')).toBeVisible();
+  await mobile.evaluate(() => document.fonts.ready);
+  await mobile.screenshot({ path: 'verification/passport-playthrough-mobile.png', fullPage: true, animations: 'disabled' });
+  expect(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  await mobileContext.close();
+});
