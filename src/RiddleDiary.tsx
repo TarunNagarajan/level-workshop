@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from 'react';
 import { createPortal } from 'react-dom';
 import '@fontsource-variable/caveat/wght.css';
 import './riddle-diary.css';
@@ -28,6 +28,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const [config, setConfig] = useState<DiaryConfig | null>(null);
   const [session, setSession] = useState<DiarySession | null>(null);
   const [pendingRound, setPendingRound] = useState<DiarySession | null>(null);
+  const [pageOverride, setPageOverride] = useState<DiaryState['page'] | null>(null);
   const [selectedProfile, setSelectedProfile] = useState('story');
   const [name, setName] = useState('');
   const [consented, setConsented] = useState(false);
@@ -51,6 +52,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const [instantReplies, setInstantReplies] = useState<string[]>([]);
   const [animatingReplyId, setAnimatingReplyId] = useState<string | null>(null);
   const [showShare, setShowShare] = useState(false);
+  const [showContext, setShowContext] = useState(false);
   const [sharePath, setSharePath] = useState('');
   const [copied, setCopied] = useState(false);
   const requestId = useRef('');
@@ -61,11 +63,15 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const scrollRef = useRef<HTMLDivElement>(null);
   const filingDialogRef = useRef<HTMLElement | null>(null);
   const shareDialogRef = useRef<HTMLElement | null>(null);
+  const contextDialogRef = useRef<HTMLElement | null>(null);
   const [dragOffset, setDragOffset] = useState(0);
   const dragStart = useRef<number | null>(null);
+  const bookRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
   useDialogControls(filingDialogRef, showAnswer, () => setShowAnswer(false));
   useDialogControls(shareDialogRef, showShare, () => setShowShare(false));
-  useEffect(() => {
+  useDialogControls(contextDialogRef, showContext, () => setShowContext(false));
+  useLayoutEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
     const update = () => setReducedMotion(media.matches);
     media.addEventListener('change', update);
@@ -73,7 +79,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   }, []);
 
   const installSession = (value: DiarySession, animateLatest = false) => {
-    setSession(value); setPendingRound(null); setMessage(''); setAnswer(''); setSelectedEvidence(value.state.filedEvidenceIds || []); setError(''); requestId.current = ''; setPendingSubmission(null);
+    setSession(value); setPendingRound(null); setPageOverride(null); setMessage(''); setAnswer(''); setSelectedEvidence(value.state.filedEvidenceIds || []); setError(''); requestId.current = ''; setPendingSubmission(null);
     setAnimatingReplyId(animateLatest ? [...value.round.messages].reverse().find(item => item.role === 'assistant' && !item.opening)?.id || null : null);
     setInstantReplies(animateLatest ? [] : value.round.messages.map(item => item.id));
   };
@@ -122,16 +128,31 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   useEffect(() => { if (session) setMetricsPhase('read_think', session.round.id, session.round.accessToken); }, [session?.round.id, session?.round.accessToken]);
   useEffect(() => { sendGeneration.current += 1; requestId.current = ''; setSending(false); }, [session?.round.id]);
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }, [session?.round.messages.length]);
-
   const profiles = useMemo(() => config?.profiles || [], [config?.profiles]);
   const profile = session?.diary || config?.profile || profiles.find(item => item.id === selectedProfile) || profiles[0];
   const profileKey = profile?.profileId || profile?.id || selectedProfile;
   const remaining = session ? Math.max(0, Math.ceil((session.round.deadline - now) / 1000)) : 300;
   const expired = Boolean(session && !session.round.endedAt && remaining <= 0);
   const latestMessages = session?.round.messages || [];
-  const pageBreak = Math.ceil(latestMessages.length / 2);
-  const leftMessages = latestMessages.slice(0, pageBreak);
-  const rightMessages = latestMessages.slice(pageBreak);
+  const latestQuestionIndex = latestMessages.map(item => item.role === 'user').lastIndexOf(true);
+  const leftMessages = latestQuestionIndex >= 0 ? latestMessages.slice(0, latestQuestionIndex) : latestMessages;
+  const rightMessages = latestQuestionIndex >= 0 ? latestMessages.slice(latestQuestionIndex) : [];
+  const visiblePage = pageOverride || session?.state.page || 'memory';
+  useLayoutEffect(() => {
+    const book = bookRef.current, composer = composerRef.current;
+    if (!book || !composer || typeof ResizeObserver === 'undefined') return;
+    const update = () => book.style.setProperty('--diary-composer-height', `${Math.ceil(composer.getBoundingClientRect().height)}px`);
+    const observer = new ResizeObserver(update); observer.observe(composer); update();
+    return () => { observer.disconnect(); book.style.removeProperty('--diary-composer-height'); };
+  }, [session?.round.id, session?.round.endedAt, session?.state.diaryOpen, pendingSubmission, sending, expired]);
+
+  function turnPage() {
+    if (!session) return;
+    const next = visiblePage === 'memory' ? 'response' : 'memory';
+    if (pageOverride && next === session.state.page) { setPageOverride(null); return; }
+    if (pageOverride) { void runAction({ type: 'turn_page' }); return; }
+    void runAction({ type: 'turn_page' });
+  }
 
   async function startMember(profileId = selectedProfile) {
     if (starting || !config?.connected) return;
@@ -177,6 +198,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
       const result = await api<{ state: DiaryState }>(`/diary/rounds/${roundId}/action`, { method: 'POST', token: session.round.accessToken, body: { ...pending.action, actionId: pending.id, revision: sceneRef.current?.state.revision ?? session.state.revision } });
       if (sceneRef.current?.round.id !== roundId) return;
       setSession(current => current?.round.id === roundId ? { ...current, state: result.state } : current);
+      if (action.type === 'turn_page' && pageOverride && result.state.page === pageOverride) setPageOverride(null);
       setPendingAction(null); setDragOffset(0);
     } catch (cause) {
       if (sceneRef.current?.round.id !== roundId) return;
@@ -204,6 +226,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
       if (generation !== sendGeneration.current || sceneRef.current?.round.id !== roundId) return;
       const assistant = [...next.messages].reverse().find(item => item.role === 'assistant' && !item.opening);
       setSession(current => current?.round.id === roundId ? { ...current, round: { ...next, accessToken: current.round.accessToken } } : current);
+      if (sceneRef.current?.state.page !== 'response') setPageOverride('response');
       setAnimatingReplyId(assistant?.id || null);
       recordMetricsReply(roundId, session.round.accessToken);
       setMessage(current => current === sentText ? '' : current);
@@ -307,17 +330,18 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
         {!blind && <button className="diary-back" onClick={onHome}><ArrowLeft size={15} />Workshop</button>}
         <div className="diary-brand"><Mark /><span className="eyebrow">RIDDLE'S DIARY</span></div>
         <div className="diary-top-actions">
+          {session && <button className="diary-small-action" onClick={() => setShowContext(true)}>Story context</button>}
           {session && <button className="diary-small-action" aria-pressed={plainText} onClick={() => { setInstantReplies(items => [...new Set([...items, ...session.round.messages.filter(item => item.role === 'assistant').map(item => item.id)])]); setPlainText(value => !value); }}>{plainText ? 'Handwritten view' : 'Readable text'}</button>}
           {session && !session.round.endedAt && <span className="diary-clock" aria-label="Time remaining"><Clock3 size={14} />{time(remaining)}</span>}
           {!blind && canShare && profileKey && <button className="diary-small-action" onClick={() => void createShare()}><ArrowRight size={14} />Blind link</button>}
         </div>
       </header>
 
-          {error && <div className="diary-alert" role="alert"><span>{error}</span><button aria-label="Dismiss message" onClick={() => setError('')}><X size={14} /></button>{pendingSubmission && <Button className="secondary compact" disabled={sending} onClick={() => void send(true)}>Check previous submission</Button>}{pendingAction && <Button className="secondary compact" disabled={actionBusy} onClick={() => void runAction(pendingAction.action, pendingAction)}>Retry saved action</Button>}</div>}
+          {error && <div className="diary-alert" role="alert"><span>{error}</span><button aria-label="Dismiss message" onClick={() => setError('')}><X size={14} /></button>{pendingAction && <Button type="button" className="secondary compact" disabled={actionBusy} onClick={() => void runAction(pendingAction.action, pendingAction)}>Retry saved action</Button>}</div>}
 
       {blind && !session && !pendingRound && config && <section className="diary-consent-entry" aria-labelledby="diary-entry-title">
         <img className="diary-entry-book" src={`${ASSETS}/closed-diary.webp`} alt="A closed black cloth diary on a dark green surface" />
-        <div className="diary-entry-copy"><p className="eyebrow">A PRIVATE PLAYTEST</p><h1 id="diary-entry-title">A memory in ink.</h1><p>Something about the diary's account does not fit. Examine the papers, question Riddle, and establish what he changed and why.</p><DiaryQuickStart />
+        <div className="diary-entry-copy"><p className="eyebrow">A PRIVATE PLAYTEST</p><h1 id="diary-entry-title">A memory in ink.</h1><DiaryPrologue />
           <Field label="Your name" hint="Shown to the reviewer"><input value={name} maxLength={70} autoComplete="name" onChange={event => setName(event.target.value)} /></Field>
           <label className="diary-recording-consent"><input type="checkbox" checked={consented} onChange={event => setConsented(event.target.checked)} /><span>{RECORDING_NOTICE} <strong>I understand and agree to this recording.</strong></span></label>
           <Button className="diary-primary" disabled={!name.trim() || !consented || !config.connected} loading={starting} onClick={() => void startBlind()}>Open the diary<ArrowRight size={15} /></Button>
@@ -327,7 +351,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
 
       {blind && pendingRound && <section className="diary-consent-entry diary-resume-entry">
         <img className="diary-entry-book" src={`${ASSETS}/closed-diary.webp`} alt="A closed black cloth diary on a dark green surface" />
-        <div className="diary-entry-copy"><p className="eyebrow">SAVED SESSION</p><h1>Continue where you left off.</h1><p>This diary already contains a saved playthrough. Review the recording notice again to resume it.</p>
+        <div className="diary-entry-copy"><p className="eyebrow">SAVED SESSION</p><h1>Continue where you left off.</h1><DiaryPrologue /><p>This diary already contains a saved playthrough. Review the recording notice again to resume it.</p>
           <label className="diary-recording-consent"><input type="checkbox" checked={consented} onChange={event => setConsented(event.target.checked)} /><span>{RECORDING_NOTICE} <strong>I understand and agree to this recording.</strong></span></label>
           <Button className="diary-primary" disabled={!consented} loading={starting} onClick={() => void acknowledgeResume()}>Continue saved diary<ArrowRight size={15} /></Button>
         </div>
@@ -335,7 +359,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
 
       {!blind && !session && config && <section className="diary-start-panel" aria-labelledby="diary-start-title">
         <div className="diary-start-art"><img src={`${ASSETS}/closed-diary.webp`} alt="A worn black cloth diary with dark green corners" /><img className="diary-start-pen" src={`${ASSETS}/pen.webp`} alt="" /></div>
-        <div className="diary-start-copy"><p className="eyebrow">A FIVE-MINUTE PLAYTEST</p><h1 id="diary-start-title">A memory in ink.</h1><p className="diary-introduction">Something about the diary's account does not fit. Examine the papers, question Riddle, and establish what he changed and why.</p><DiaryQuickStart />
+        <div className="diary-start-copy"><p className="eyebrow">A FIVE-MINUTE PLAYTEST</p><h1 id="diary-start-title">A memory in ink.</h1><DiaryPrologue />
           <div className="diary-profile-heading"><h2>Choose a prompt profile</h2><span>Same story and evidence</span></div>
           <div className="diary-profiles" role="radiogroup" aria-label="Prompt profile">
             {profiles.map(item => <button key={item.id} type="button" role="radio" aria-checked={selectedProfile === item.id} className={`diary-profile ${selectedProfile === item.id ? 'selected' : ''}`} onClick={() => setSelectedProfile(item.id)}><span className="diary-profile-title">{item.label}</span><span>{item.description}</span></button>)}
@@ -347,40 +371,38 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
       </section>}
 
       {session && <section className="diary-session" aria-label="Interactive diary session">
-        <div className="diary-session-bar"><div><span className="eyebrow">{profile?.label || 'DIARY'} PROFILE</span><span className="diary-profile-note">{profile?.description}</span></div>{!session.round.endedAt && <div className="diary-speed-control" aria-label="Handwriting reveal speed"><span>Ink reveal</span><button aria-pressed={writingSpeed === 'steady'} onClick={() => setWritingSpeed('steady')}>Steady</button><button aria-pressed={writingSpeed === 'quick'} onClick={() => setWritingSpeed('quick')}>Quick</button></div>}</div>
+        <div className="diary-session-bar"><div><span className="eyebrow">{profile?.label || 'DIARY'} PROFILE</span><span className="diary-profile-note">{profile?.description}</span></div><div className="diary-session-actions">{!session.round.endedAt && <><div className="diary-speed-control" aria-label="Handwriting reveal speed"><span>Ink reveal</span><button aria-pressed={writingSpeed === 'steady'} onClick={() => setWritingSpeed('steady')}>Steady</button><button aria-pressed={writingSpeed === 'quick'} onClick={() => setWritingSpeed('quick')}>Quick</button></div><button className="diary-file-button diary-file-toolbar" disabled={!session.state.diaryOpen} onClick={() => setShowAnswer(true)}><FileText size={14} />{session.state.filed ? 'Finish saving finding' : 'File the case'}</button></>}</div></div>
 
-        <div className={`diary-open-book ${session.state.diaryOpen ? 'is-open' : 'is-closed'}`}>
+        <div ref={bookRef} className={`diary-open-book ${session.state.diaryOpen ? 'is-open' : 'is-closed'}`}>
           <img className="diary-open-book-art" src={`${ASSETS}/${session.state.diaryOpen ? 'open-diary.webp' : 'closed-diary.webp'}`} alt={session.state.diaryOpen ? 'An open, blank-paged cloth diary' : 'A closed black cloth diary'} />
           {session.state.diaryOpen ? <>
-            <section className={`diary-page diary-page-left ${session.state.page === 'memory' ? 'mobile-page-current' : ''}`} aria-label="Earlier diary entries">
+            <section className={`diary-page diary-page-left ${visiblePage === 'memory' ? 'mobile-page-current' : ''}`} aria-label="Earlier diary entries">
               <div className="diary-page-heading"><span>MEMORY</span><span>1</span></div>
               <div className="diary-page-scroll" ref={scrollRef}>{messageList(leftMessages)}</div>
             </section>
-            <section className={`diary-page diary-page-right ${session.state.page === 'response' ? 'mobile-page-current' : ''}`} aria-label="Recent diary entries">
+            <section className={`diary-page diary-page-right ${visiblePage === 'response' ? 'mobile-page-current' : ''}`} aria-label="Recent diary entries">
               <div className="diary-page-heading"><span>RESPONSE</span><span>{String(Math.max(1, Math.ceil(latestMessages.length / 2) + 1)).padStart(2, '0')}</span></div>
-              <div className="diary-page-scroll">{messageList(rightMessages)}</div>
-              {rightMessages.length === 0 && <p className="diary-page-instruction">Ask the diary a question. Saved replies appear here, in Riddle's hand.</p>}
+              <div className="diary-page-scroll">{messageList(rightMessages)}{rightMessages.length === 0 && <p className="diary-page-instruction">Your latest question and Riddle's reply will appear here.</p>}</div>
+              {!session.round.endedAt && <div ref={composerRef} className="diary-composer-wrap">
+                {expired && <p className="diary-expired-note" role="status">Time is up. You can still file what you discovered.</p>}
+                <form className="diary-composer" onSubmit={event => { event.preventDefault(); void send(); }}>
+                  <label htmlFor="diary-question">Ask the diary</label>
+                  <div className="diary-composer-paper"><textarea id="diary-question" value={message} maxLength={4000} rows={2} placeholder="Write a question…" disabled={(expired && !pendingSubmission) || !session.state.diaryOpen} onFocus={() => setMetricsPhase('compose', session.round.id, session.round.accessToken)} onBlur={() => setMetricsPhase('read_think', session.round.id, session.round.accessToken)} onChange={event => { if (!pendingSubmission && event.target.value !== message) requestId.current = ''; setMessage(event.target.value); }} />
+                    <button type="submit" aria-label="Send question" disabled={sending || expired || Boolean(pendingSubmission) || !message.trim()}>{sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}</button>
+                  </div>
+                  {pendingSubmission && <Button type="button" className="diary-inline-recovery" disabled={sending} onClick={() => void send(true)}>Check previous submission</Button>}
+                  {sending && <span className="diary-writing-status" role="status">Waiting for the saved reply…</span>}
+                </form>
+              </div>}
             </section>
             <img className="diary-pen-art" src={`${ASSETS}/pen.webp`} alt="" />
             <div className="diary-mobile-turn">
-              <button aria-label="Turn to earlier entries" disabled={session.state.page === 'memory' || actionBusy} onClick={() => void runAction({ type: 'turn_page' })}><ChevronLeft size={17} />Earlier</button>
-              <span>{session.state.page === 'memory' ? 'Memory' : 'Responses'}</span>
-              <button aria-label="Turn to recent entries" disabled={session.state.page === 'response' || actionBusy} onClick={() => void runAction({ type: 'turn_page' })}>Recent<ChevronRight size={17} /></button>
+              <button aria-label="Turn to earlier entries" disabled={visiblePage === 'memory' || actionBusy} onClick={turnPage}><ChevronLeft size={17} />Earlier</button>
+              <span>{visiblePage === 'memory' ? 'Memory' : 'Responses'}</span>
+              <button aria-label="Turn to recent entries" disabled={visiblePage === 'response' || actionBusy} onClick={turnPage}>Recent<ChevronRight size={17} /></button>
             </div>
           </> : <div className="diary-cover-prompt"><p className="eyebrow">A PRIVATE ACCOUNT</p><h2>Open to the first entry</h2><p>The saved account is here. Read it before deciding what to ask.</p><Button className="diary-paper-button" disabled={actionBusy} loading={actionBusy} onClick={() => void runAction({ type: 'open_diary' })}><BookOpen size={15} />Open the diary</Button></div>}
         </div>
-
-        {!session.round.endedAt && <div className="diary-composer-wrap">
-          {expired && <p className="diary-expired-note" role="status">The five-minute conversation has ended. You can still file what you discovered.</p>}
-          <form className="diary-composer" onSubmit={event => { event.preventDefault(); void send(); }}>
-            <label htmlFor="diary-question">Write a question</label>
-            <div className="diary-composer-paper"><textarea id="diary-question" value={message} maxLength={4000} rows={2} placeholder="Ask Tom Riddle…" disabled={(expired && !pendingSubmission) || !session.state.diaryOpen} onFocus={() => setMetricsPhase('compose', session.round.id, session.round.accessToken)} onBlur={() => setMetricsPhase('read_think', session.round.id, session.round.accessToken)} onChange={event => { if (!pendingSubmission && event.target.value !== message) requestId.current = ''; setMessage(event.target.value); }} />
-              <button type="submit" aria-label="Send question" disabled={!message.trim() || sending || expired || Boolean(pendingSubmission)}>{sending ? <Loader2 className="spin" size={17} /> : <Send size={17} />}</button>
-            </div>
-            {sending && <span className="diary-writing-status" role="status">Waiting for Riddle's saved reply…</span>}
-          </form>
-          <button className="diary-file-button" disabled={!session.state.diaryOpen} onClick={() => setShowAnswer(true)}><FileText size={15} />File the case<ArrowRight size={14} /></button>
-        </div>}
 
         {!session.round.endedAt && <section className="diary-object-shelf" aria-labelledby="diary-object-title">
           <div className="diary-shelf-heading"><div><p className="eyebrow">THE PAPERS</p><h2 id="diary-object-title">Examine the objects</h2></div><span>Each inspection is saved to this diary.</span></div>
@@ -393,13 +415,12 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
 
         {session.state.presentedObjects.length > 0 && !session.round.endedAt && <section className="diary-presented" aria-label="Objects beside the diary"><div className="diary-shelf-heading"><div><p className="eyebrow">ON THE DESK</p><h2>Beside the diary</h2></div><span>Riddle can consider the objects you place here.</span></div><div className="diary-observation-list">{session.state.presentedObjects.map(id => <div key={id}><span>{artifactName(id)}</span><button className="diary-text-action" onClick={() => void runAction({ type: 'remove_object', objectId: id as Artifact })}>Remove</button></div>)}</div>{session.state.observations.map(observation => <blockquote key={observation}>{observation}</blockquote>)}</section>}
 
-        {session.round.endedAt ? <section className="diary-filed-panel" aria-labelledby="diary-filed-title"><div className="diary-filed-title"><Check size={18} /><div><p className="eyebrow">SAVED FOR REVIEW</p><h2 id="diary-filed-title">The case is filed.</h2></div></div><p>{session.round.answer}</p>
+        {session.round.endedAt ? <section className="diary-filed-panel" aria-labelledby="diary-filed-title"><div className="diary-filed-title"><Check size={18} /><div><p className="eyebrow">SAVED FOR REVIEW</p><h2 id="diary-filed-title">The case is filed.</h2></div></div><p>{session.round.answer}</p>{pendingSubmission && <Button type="button" className="diary-inline-recovery" disabled={sending} onClick={() => void send(true)}>Check previous submission</Button>}
             {selectedEvidence.length > 0 && <div className="diary-filed-evidence"><span>Replies you kept</span>{selectedEvidence.map(id => { const item = keepable.find(reply => reply.id === id); return item ? <blockquote key={id}>{item.content}</blockquote> : null; })}</div>}
             {machineReviewPanel}
             <Button className="diary-paper-button" onClick={() => { setSession(null); setSelectedEvidence([]); setAnswer(''); setError(''); setSelectedProfile('story'); if (blind) { window.sessionStorage.removeItem(receiptKey); setName(''); setConsented(false); setRecordingAcknowledged(false); } }}><RotateCcw size={14} />{blind ? 'Open another diary' : 'Choose another prompt profile'}</Button>
           </section> : <section className="diary-evidence-tray" aria-labelledby="diary-evidence-title"><div className="diary-shelf-heading"><div><p className="eyebrow">EVIDENCE</p><h2 id="diary-evidence-title">Saved replies</h2></div><span>{session.state.keptReplyIds.length}/20 kept</span></div>
             {session.state.keptReplyIds.length ? <div className="diary-kept-list">{session.state.keptReplyIds.map(id => { const item = keepable.find(reply => reply.id === id); if (!item) return null; return <div key={id}><p>{item.content}</p><button aria-label="Remove reply from evidence tray" onClick={() => void runAction({ type: 'remove_kept_reply', replyId: id })}><X size={14} /></button></div>; })}</div> : <p className="diary-subtle">Keep a useful saved reply with the feather icon beside it. Your guesses and inspected objects are not transcript evidence.</p>}
-            {!session.round.endedAt && <Button className="diary-file-button" disabled={!session.state.diaryOpen} onClick={() => setShowAnswer(true)}><FileText size={15} />{session.state.filed ? 'Finish saving finding' : 'Write your finding'}</Button>}
           </section>}
       </section>}
       {loading && <div className="diary-loading"><Loader2 className="spin" size={18} />Opening the diary…</div>}
@@ -407,16 +428,21 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
       {showAnswer && session && createPortal(<div className="diary-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setShowAnswer(false); }}><section ref={filingDialogRef} className="diary-filing-modal" role="dialog" aria-modal="true" aria-labelledby="diary-filing-title"><button className="diary-modal-close" aria-label="Close filing form" onClick={() => setShowAnswer(false)}><X size={16} /></button><p className="eyebrow">THE FINDING</p><h2 id="diary-filing-title">What did you discover?</h2><p className="diary-subtle">The transcript is assessed from Riddle's saved replies. Your answer and the objects you inspected are not evidence of what he disclosed.</p><form onSubmit={event => { event.preventDefault(); void fileCase(); }}><Field label="Your account" hint="Use your own words"><textarea required={!session.state.filed} autoFocus maxLength={4000} rows={5} value={answer} onChange={event => setAnswer(event.target.value)} /></Field><fieldset className="diary-evidence-choices"><legend>Which saved replies support your finding? Select up to six.</legend>{session.state.keptReplyIds.map(id => { const item = keepable.find(reply => reply.id === id); return item ? <label key={id}><input type="checkbox" checked={selectedEvidence.includes(id)} onChange={event => toggleEvidence(id, event.target.checked)} disabled={!selectedEvidence.includes(id) && selectedEvidence.length >= 6} /><span>{item.content}</span></label> : null; })}{!session.state.keptReplyIds.length && <p className="diary-subtle">No replies are in the evidence tray. You can still file the case.</p>}</fieldset>{error && <p className="diary-inline-error" role="alert">{error}</p>}<Button className="diary-primary" loading={filing}>{session.state.filed ? 'Finish saving finding' : 'File finding'}<ArrowRight size={15} /></Button></form></section></div>, document.body)}
       {activeArtifact && session && <ArtifactDialog artifact={activeArtifact} session={session} busy={actionBusy} plainText={plainText} onClose={() => { setActiveArtifact(null); setDragOffset(0); }} onAction={action => void runAction(action)} dragOffset={dragOffset} setDragOffset={setDragOffset} dragStart={dragStart} />}
       {showShare && createPortal(<div className="diary-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setShowShare(false); }}><section ref={shareDialogRef} className="diary-filing-modal" role="dialog" aria-modal="true" aria-labelledby="diary-share-title"><button className="diary-modal-close" aria-label="Close link panel" onClick={() => setShowShare(false)}><X size={16} /></button><p className="eyebrow">BLIND PLAYTEST</p><h2 id="diary-share-title">Share this prompt profile</h2><p className="diary-subtle">The player sees the diary, not the owner workspace or its hidden instructions.</p><div className="diary-share-link"><input aria-label="Blind diary link" readOnly value={sharePath} /><button aria-label={copied ? 'Link copied' : 'Copy blind diary link'} onClick={() => void navigator.clipboard.writeText(sharePath).then(() => setCopied(true)).catch(() => setError('Select and copy the link.'))}>{copied ? <Check size={15} /> : <Download size={15} />}</button></div><a className="diary-paper-button" href={sharePath} target="_blank" rel="noreferrer">Open player view<ArrowRight size={14} /></a></section></div>, document.body)}
+      {showContext && createPortal(<div className="diary-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setShowContext(false); }}><section ref={contextDialogRef} className="diary-filing-modal diary-context-dialog" role="dialog" aria-modal="true" aria-labelledby="diary-context-title"><button className="diary-modal-close" aria-label="Close story context" onClick={() => setShowContext(false)}><X size={16} /></button><p className="eyebrow">BEFORE THE FIRST ENTRY</p><h2 id="diary-context-title">Story context</h2><DiaryPrologue /><Button type="button" className="diary-paper-button" onClick={() => setShowContext(false)}>Return to the diary</Button></section></div>, document.body)}
       <footer className="diary-footer"><span>Riddle's Diary</span><span>Prompt profile: {profile?.label || profiles.find(item => item.id === selectedProfile)?.label || 'Story'}</span>{blind && <span>Recorded playtest</span>}</footer>
     </div>
   </Landmark>;
 }
 
-function DiaryQuickStart() {
-  return <aside className="diary-quick-start" aria-label="Three steps for this playtest">
-    <ol><li><strong>Read</strong> the entry already saved in the diary.</li><li><strong>Inspect</strong> the torn fragment and Dippet's letter.</li><li><strong>Ask</strong> Riddle focused questions and keep useful replies.</li></ol>
-    <p><strong>Practice example, not sent:</strong> “How are you today?”</p>
-  </aside>;
+function DiaryPrologue() {
+  return <div className="diary-prologue" aria-label="Story and character context">
+    <p className="diary-prologue-copy"><span>HOGWARTS, 1943</span>Attacks inside the school have put Hogwarts at risk of closing. Tom Riddle says he found the creature responsible, exposed the student hiding it, and brought the attacks to an end. Years later, his diary still tells that story with absolute confidence. Read the diary, torn memory fragment, and headmaster's letter, then decide whether his account holds together.</p>
+    <div className="diary-character-cards" aria-label="People in this story">
+      <article><img src={`${ASSETS}/closed-diary.webp`} alt="Black cloth diary" /><div><h2>Tom Riddle</h2><p>The voice in the diary. A sixteen-year-old Hogwarts student, admired for intelligence and composure.</p></div></article>
+      <article><img src={`${ASSETS}/fragment.webp`} alt="Torn memory fragment" /><div><h2>Hagrid</h2><p>The student Riddle named. He was a Hogwarts student during the attacks.</p></div></article>
+      <article><img src={`${ASSETS}/letter.webp`} alt="Headmaster's letter" /><div><h2>Professor Dippet</h2><p>The headmaster, responsible for the school's future while the attacks continued.</p></div></article>
+    </div>
+  </div>;
 }
 
 function useDialogControls(ref: MutableRefObject<HTMLElement | null>, active: boolean, onClose: () => void) {
