@@ -152,6 +152,18 @@
 .filed-summary .case-result-note { padding-top: 9px; border-top: 1px solid #d5d9cb; color: #74786b; font-size: 10px; }
 .filed-summary, .filed-summary p, .case-result { overflow-wrap: anywhere; }
 .filed-summary a { display: block; font-size: 11px; color: #526b47; text-decoration: underline; margin-bottom: 14px; }
+.machine-review { margin: 16px 0; padding: 16px; border: 1px solid #bfc8ae; background: #f1f2e9; }
+.machine-review > .eyebrow { margin: 0 0 7px; color: #657451; font-size: 9px; letter-spacing: .12em; }
+.machine-review h3 { margin: 0 0 10px; color: #303b2b; font: 21px Georgia, serif; }
+.machine-review > p { margin: 8px 0; }
+.machine-review-finding, .machine-review-evidence { margin-top: 13px; padding-top: 11px; border-top: 1px solid #d3d8c9; }
+.machine-review-finding > strong, .machine-review-evidence > strong { font-size: 11px; }
+.machine-review-finding p { margin-bottom: 0; }
+.machine-review-evidence blockquote { margin: 9px 0 0; padding: 10px 12px; border-left: 2px solid #87966e; background: #fafaf6; }
+.machine-review-evidence blockquote span { color: #68715d; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.machine-review-evidence blockquote p { margin: 5px 0 0; }
+.machine-review .machine-review-note { padding-top: 10px; border-top: 1px solid #d3d8c9; color: #74786b; font-size: 10px; }
+.machine-review button { margin-top: 8px; }
 .document-inspection { width: min(580px, 100%); margin: 15px auto 30px; }
 .document-inspection .book-cover { width: 250px; margin: auto; }
 .document-inspection .document-kicker { font-size: 11px; }
