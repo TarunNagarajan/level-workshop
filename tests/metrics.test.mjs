@@ -42,31 +42,56 @@ for (const adapter of ['sqlite','pglite']) test(`${adapter}: workshop completion
     const rawLink=link.path.split('/').at(-1);
     const started=await fixture.request(`/play/${rawLink}`,{method:'POST',body:{tester:'anonymous participant'}});
     assert.equal(started.status,201);
+    const metricsSession=await fixture.request('/telemetry/session',{method:'POST'});
+    const scopedEvent=()=>({events:[{eventId:uuid(),tabId:uuid(),pageId:uuid(),kind:'heartbeat',view:'workshop',roundId:started.body.id,elapsedMs:1000,activeMs:500,visibleMs:1000}]});
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:metricsSession.cookie,body:{sessionId:metricsSession.body.sessionId,roundId:started.body.id,...scopedEvent()}})).status,403,'round-scoped telemetry requires a capability');
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:metricsSession.cookie,headers:{'x-round-token':'wrong'},body:{sessionId:metricsSession.body.sessionId,roundId:started.body.id,...scopedEvent()}})).status,403,'wrong capabilities are rejected');
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:metricsSession.cookie,headers:{'x-round-token':started.body.accessToken},body:{sessionId:metricsSession.body.sessionId,roundId:started.body.id,...scopedEvent()}})).status,200);
+    const scopedRow=await fixture.store.get('SELECT collection_id,profile_id,source,version_id FROM metrics_events WHERE round_id=?',started.body.id);
+    assert.equal(scopedRow.source,'participant');
+    assert.equal(scopedRow.version_id,detail.versions[0].id,'Postgres preserves camelCase DTO aliases during round inference');
+    await fixture.store.run('UPDATE metrics_sessions SET last_seen_at=?,expires_at=? WHERE token_hash=?',Date.now()-31*60*1000,Date.now()-1,(await fixture.store.get('SELECT token_hash FROM metrics_sessions ORDER BY created_at DESC LIMIT 1')).token_hash);
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:metricsSession.cookie,headers:{'x-round-token':started.body.accessToken},body:{sessionId:metricsSession.body.sessionId,roundId:started.body.id,...scopedEvent()}})).status,401,'sessions idle for over 30 minutes have expired');
+    const refreshedSession=await fixture.request('/telemetry/session',{method:'POST',cookie:metricsSession.cookie});
+    const refreshedHash=(await fixture.store.get('SELECT token_hash FROM metrics_sessions ORDER BY created_at DESC LIMIT 1')).token_hash;
+    await fixture.store.run('UPDATE metrics_sessions SET created_at=?,expires_at=? WHERE token_hash=?',Date.now()-24*60*60*1000-1,Date.now()+60000,refreshedHash);
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:refreshedSession.cookie,headers:{'x-round-token':started.body.accessToken},body:{sessionId:refreshedSession.body.sessionId,roundId:started.body.id,...scopedEvent()}})).status,401,'sessions older than 24 hours have expired even if idle expiry was extended');
     const path=`/rounds/${started.body.id}/messages`;
-    const failed=await fixture.request(path,{method:'POST',headers:{'x-round-token':started.body.accessToken},body:{content:'First question'}});
+    const failed=await fixture.request(path,{method:'POST',headers:{'x-round-token':started.body.accessToken},body:{content:'Retry this question'}});
     assert.equal(failed.status,429);
-    const succeeded=await fixture.request(path,{method:'POST',headers:{'x-round-token':started.body.accessToken},body:{content:'Second question'}});
+    const succeeded=await fixture.request(path,{method:'POST',headers:{'x-round-token':started.body.accessToken},body:{content:'Retry this question'}});
     assert.equal(succeeded.status,200);
     assert.equal(succeeded.body.messages.at(-1).content,'A visible answer.');
-    const rows=await fixture.store.all('SELECT source,context_kind,round_id,actor_user_id,status,error_category,input_tokens,output_tokens,total_tokens,transcript_saved FROM metrics_model_calls WHERE round_id=? ORDER BY started_at,id',started.body.id);
-    assert.equal(rows.length,2);
-    assert.deepEqual(rows.map(row=>row.status),['failed','succeeded']);
-    assert.equal(rows[0].error_category,'rate_limited');
-    assert.equal(rows[1].source,'participant');
-    assert.equal(rows[1].context_kind,'round');
-    assert.equal(rows[1].actor_user_id,null,'anonymous participant calls are not attributed to the round author');
-    assert.equal(rows[1].input_tokens,4);
-    assert.equal(rows[1].output_tokens,3);
-    assert.equal(rows[1].total_tokens,7);
-    assert.equal(rows[1].transcript_saved,1);
-    assert.ok(!JSON.stringify(await fixture.store.all('SELECT * FROM metrics_model_calls WHERE round_id=?',started.body.id)).includes('First question'));
+    const nextTurn=await fixture.request(path,{method:'POST',headers:{'x-round-token':started.body.accessToken},body:{content:'A new successful turn'}});
+    assert.equal(nextTurn.status,200);
+    const rows=await fixture.store.all('SELECT id,source,context_kind,round_id,actor_user_id,status,error_category,input_tokens,output_tokens,total_tokens,transcript_saved,retry_of_id,request_fingerprint FROM metrics_model_calls WHERE round_id=?',started.body.id);
+    assert.equal(rows.length,3);
+    const failedCall=rows.find(row=>row.status==='failed');
+    const retriedCall=rows.find(row=>row.retry_of_id===failedCall.id);
+    const independentCall=rows.find(row=>row.id!==failedCall.id&&row.id!==retriedCall.id);
+    assert.equal(failedCall.error_category,'rate_limited');
+    assert.equal(retriedCall.status,'succeeded');
+    assert.equal(retriedCall.request_fingerprint,failedCall.request_fingerprint);
+    assert.equal(independentCall.status,'succeeded');
+    assert.equal(independentCall.retry_of_id,null,'a later successful turn is not an inferred retry');
+    assert.equal(retriedCall.source,'participant');
+    assert.equal(retriedCall.context_kind,'round');
+    assert.equal(retriedCall.actor_user_id,null,'anonymous participant calls are not attributed to the round author');
+    assert.equal(retriedCall.input_tokens,4);
+    assert.equal(retriedCall.output_tokens,3);
+    assert.equal(retriedCall.total_tokens,7);
+    assert.equal(retriedCall.transcript_saved,1);
+    assert.ok(!JSON.stringify(await fixture.store.all('SELECT * FROM metrics_model_calls WHERE round_id=?',started.body.id)).includes('Retry this question'));
     const calls=await fixture.request(`/metrics/calls?from=${Date.now()-60000}`,{cookie:ownerCookie});
     assert.equal(calls.status,200);
-    assert.deepEqual(calls.body.items.map(item=>item.status),['succeeded','failed']);
+    assert.equal(calls.body.items.length,3);
+    await fixture.store.run("INSERT INTO metrics_model_calls (id,context_kind,round_id,started_at,requested_model,status,request_fingerprint) VALUES (?,?,?,?,?,?,?)",uuid(),'round',started.body.id,Date.now()-5*60*1000,'test/model','started',uuid());
     await fixture.store.run('INSERT INTO rounds (id,token,level_id,author_id,source,data,config,tester,messages,started_at) VALUES (?,?,?,?,?,?,?,?,?,?)',uuid(),uuid(),level.id,(await fixture.request('/bootstrap',{cookie:ownerCookie})).body.user.id,'reference-research',JSON.stringify({duration:600,privatePrompt:'must not be loaded'}),'{}','diagnostic fixture','[]',Date.now());
     const summary=await fixture.request(`/metrics/summary?from=${Date.now()-60000}`,{cookie:ownerCookie});
     assert.equal(summary.body.rounds.started,1);
+    assert.equal(summary.body.rounds.questions,2);
     assert.equal(summary.body.rounds.diagnostics.started,1);
+    assert.equal(summary.body.rounds.diagnostics.questions,0);
     assert.equal(summary.body.rounds.bySource.find(item=>item.source==='reference-research').started,1);
     const collectionInput={levelId:level.id,versionId:detail.versions[0].id,profiles:[{id:'same-profile',label:'Same label',notes:'test notes',moduleIds:['secret-boundary'],additionalInstructions:''}]};
     const collectionA=await fixture.request('/collections',{method:'POST',cookie:ownerCookie,body:collectionInput});
@@ -77,7 +102,9 @@ for (const adapter of ['sqlite','pglite']) test(`${adapter}: workshop completion
     for(const [collectionId,latency,status] of [[collectionA.body.id,20,'succeeded'],[collectionA.body.id,40,'failed'],[collectionB.body.id,100,'succeeded']]) {
       await fixture.store.run('INSERT INTO metrics_model_calls (id,context_kind,collection_id,profile_id,source,started_at,latency_ms,requested_model,status,request_fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?)',uuid(),'round',collectionId,'same-profile','participant',callStart,latency,'test-model',status,uuid());
     }
+    await fixture.store.run("INSERT INTO metrics_model_calls (id,context_kind,round_id,started_at,requested_model,status,request_fingerprint) VALUES (?,?,?,?,?,?,?)",uuid(),'round',started.body.id,Date.now(),'test/model','started',uuid());
     const profileSummary=await fixture.request(`/metrics/summary?from=${Date.now()-60000}`,{cookie:ownerCookie});
+    assert.equal(profileSummary.body.modelCalls.inFlight,1);
     const profiles=profileSummary.body.byProfile;
     assert.equal(profiles.length,2,'identically named profile IDs in separate collections stay separate');
     const profileA=profiles.find(item=>item.collectionId===collectionA.body.id);
@@ -89,6 +116,7 @@ for (const adapter of ['sqlite','pglite']) test(`${adapter}: workshop completion
     assert.equal(profileA.latency.p50Ms,20);
     assert.equal(profileA.latency.p95Ms,40);
     assert.equal(profiles.find(item=>item.collectionId===collectionB.body.id).latency.p95Ms,100);
+    assert.equal((await fixture.store.get("SELECT status FROM metrics_model_calls WHERE status='interrupted' AND round_id=?",started.body.id))?.status,'interrupted','stale started provider calls are reconciled, not shown as failures');
   } finally { await fixture.close(); }
 });
 
@@ -98,22 +126,34 @@ for (const adapter of ['sqlite', 'pglite']) test(`${adapter}: metrics session, e
     assert.equal((await fixture.request('/metrics/summary')).status, 403);
     const ownerCookie = await owner(fixture.request);
     assert.equal((await fixture.request('/metrics/summary', { cookie: 'workshop=bad' })).status, 403);
+    const encoded=payload=>Buffer.from(JSON.stringify(payload)).toString('base64url');
+    for(const cursor of [
+      {at:Date.now(),id:'x',from:0,to:Date.now()},
+      {at:Date.now()+10000,id:'x',from:Date.now()-1000,to:Date.now(),type:'model_call'},
+      {at:Date.now()-100,id:'x',from:Date.now()-1000,to:Date.now(),type:'event'},
+      {at:Date.now()-100,id:'x',from:Date.now()-1000},
+    ]) assert.equal((await fixture.request(`/metrics/calls?cursor=${encoded(cursor)}`,{cookie:ownerCookie})).status,400);
+    assert.equal((await fixture.request(`/metrics/export?cursor=${encoded({at:Date.now()-100,id:'x',from:Date.now()-1000,to:Date.now()})}`,{cookie:ownerCookie})).status,400,'export cursors include a valid record type');
     const session = await fixture.request('/telemetry/session', { method: 'POST', cookie: ownerCookie });
-    assert.deepEqual(session.body, { enabled: true, heartbeatSeconds: 18, idleAfterMs: 30000 });
+    assert.deepEqual(session.body, { enabled: true, heartbeatSeconds: 18, idleAfterMs: 30000, sessionId: session.body.sessionId });
+    assert.match(session.body.sessionId,/^[0-9a-f-]{36}$/i);
     assert.match(session.cookie, /^workshop_metrics=/);
     const cookie = `${session.cookie}; ${ownerCookie}`;
     const event = { eventId: uuid(), tabId: uuid(), pageId: uuid(), kind: 'heartbeat', view: 'workshop', elapsedMs: 18000, activeMs: 17000, visibleMs: 18000, idleMs: 0 };
-    assert.deepEqual((await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { events: [event] } })).body, { accepted: 1, duplicates: 0 });
-    assert.deepEqual((await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { events: [event] } })).body, { accepted: 0, duplicates: 1 });
-    const invalid = await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { events: [{ ...event, activeMs: 19000 }] } });
+    const marker = { eventId: uuid(), tabId: event.tabId, pageId: event.pageId, kind: 'phase', view: 'workshop', phase: 'read_think' };
+    assert.deepEqual((await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { sessionId:session.body.sessionId,events: [event,marker] } })).body, { accepted: 2, duplicates: 0 });
+    assert.deepEqual((await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { sessionId:session.body.sessionId,events: [event,marker] } })).body, { accepted: 0, duplicates: 2 });
+    const invalid = await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { sessionId:session.body.sessionId,events: [{ ...event, activeMs: 19000 }] } });
     assert.equal(invalid.status, 400);
-    const leak = await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { events: [{ ...event, eventId: uuid(), message: 'unsent secret' }] } });
+    const leak = await fixture.request('/telemetry/events', { method: 'POST', cookie, body: { sessionId:session.body.sessionId,events: [{ ...event, eventId: uuid(), message: 'unsent secret' }] } });
     assert.equal(leak.status, 400);
     const summary = await fixture.request('/metrics/summary', { cookie: ownerCookie });
     assert.equal(summary.status, 200);
     assert.equal(summary.body.browser.activeMs, 17000);
     assert.equal(summary.body.browser.visibleMs, 18000);
     assert.equal(summary.body.browser.timedIntervals, 1);
+    assert.equal(summary.body.browser.missingIntervals, 0,'phase markers are not missing interval measurements');
+    assert.equal(summary.body.browser.events, 2);
     const page = await fixture.request('/metrics/sessions?limit=1', { cookie: ownerCookie });
     assert.equal(page.body.items.length, 1);
     assert.equal(page.body.items[0].userId, (await fixture.request('/bootstrap', { cookie: ownerCookie })).body.user.id);
@@ -144,9 +184,9 @@ for (const adapter of ['sqlite', 'pglite']) test(`${adapter}: metrics session, e
       assert.equal(result.status, 200);
       exported.push(...result.body.items); cursor = result.body.nextCursor;
     } while (cursor);
-    assert.equal(exported.length, 207);
+    assert.equal(exported.length, 208);
     assert.equal(exported.filter(item => item.type === 'model_call').length, 102);
-    assert.equal(exported.filter(item => item.type === 'event').length, 103);
+    assert.equal(exported.filter(item => item.type === 'event').length, 104);
     assert.equal(exported.filter(item => item.type === 'session').length, 2);
     assert.equal(exported.filter(item => item.id === sharedId).map(item=>item.type).sort().join(','),'event,model_call,session');
     assert.equal(JSON.stringify(exported).includes('private-api-key'), false);
@@ -178,9 +218,11 @@ for (const adapter of ['sqlite','pglite']) test(`${adapter}: session identity, a
     assert.equal(sessions.length,2);
     assert.ok(sessions[0].closed_at);
     assert.equal(sessions[1].user_id,(await fixture.request('/bootstrap',{cookie:ownerCookie})).body.user.id);
+    assert.notEqual(anonymous.body.sessionId,rotated.body.sessionId);
 
     const sessionCookie=`${rotated.cookie}; ${ownerCookie}`;
-    const makeBatch=()=>({events:Array.from({length:50},()=>({eventId:uuid(),tabId:uuid(),pageId:uuid(),kind:'heartbeat',view:'workshop',elapsedMs:1000,activeMs:900,visibleMs:1000}))});
+    const makeBatch=()=>({sessionId:rotated.body.sessionId,events:Array.from({length:50},()=>({eventId:uuid(),tabId:uuid(),pageId:uuid(),kind:'heartbeat',view:'workshop',elapsedMs:1000,activeMs:900,visibleMs:1000}))});
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:sessionCookie,body:{...makeBatch(),sessionId:anonymous.body.sessionId}})).status,401,'queued events from a previous identity session cannot attach to the rotated cookie');
     assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:sessionCookie,body:makeBatch()})).status,200);
     assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:sessionCookie,body:makeBatch()})).status,200);
     assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:sessionCookie,body:makeBatch()})).status,200);

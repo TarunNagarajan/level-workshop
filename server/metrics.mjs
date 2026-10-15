@@ -31,7 +31,7 @@ export function createMetricsService({ store, enabled = false }) {
       orchestration_run_id: metricsContext.runId || null, lane: metricsContext.lane || null,
       actor_user_id: metricsContext.userId || null, actor_role: metricsContext.userRole || null,
       collection_id: metricsContext.collectionId || null, profile_id: metricsContext.profileId || null,
-      source: metricsContext.source || null, version_id: metricsContext.versionId || null,
+      source: safeSource(metricsContext.source), version_id: metricsContext.versionId || null,
     };
     try {
       const previous = await get("SELECT id FROM metrics_model_calls WHERE request_fingerprint = ? AND status IN ('failed','interrupted') AND started_at >= ? ORDER BY started_at DESC LIMIT 1", fingerprint, startedAt - 30 * 60 * 1000);
@@ -62,7 +62,7 @@ export function createMetricsService({ store, enabled = false }) {
   async function reconcile() {
     if (!enabled) return;
     try {
-      await run("UPDATE metrics_model_calls SET status='interrupted', completed_at=?, error_category='interrupted' WHERE status='started' AND started_at < ?", now(), now() - 2 * 60 * 1000);
+      await run("UPDATE metrics_model_calls SET status='interrupted', error_category='interrupted' WHERE status='started' AND started_at < ?", now() - 2 * 60 * 1000);
     } catch { /* Best effort. */ }
   }
 
@@ -96,7 +96,7 @@ function validateEvent(event) {
   if (event.kind === 'request' && (!event.requestCategory || !event.requestOutcome || event.requestWallMs === undefined)) throw Object.assign(new Error('Request events require category, outcome, and wall time.'), { status: 400 });
   if (event.kind === 'interaction' && !event.interaction) throw Object.assign(new Error('Interaction events require interaction.'), { status: 400 });
   const { elapsedMs = 0, activeMs = 0, visibleMs = 0, idleMs = 0, readThinkMs = 0, composeMs = 0, waitingMs = 0 } = event;
-  if (activeMs > visibleMs || visibleMs > elapsedMs || idleMs > visibleMs || readThinkMs + composeMs + waitingMs > activeMs || (event.phase === 'hidden' && (activeMs !== 0 || visibleMs !== 0))) throw Object.assign(new Error('Event duration totals are inconsistent.'), { status: 400 });
+  if (activeMs + idleMs > visibleMs || visibleMs > elapsedMs || readThinkMs + composeMs + waitingMs > activeMs || (event.phase === 'hidden' && (activeMs !== 0 || visibleMs !== 0))) throw Object.assign(new Error('Event duration totals are inconsistent.'), { status: 400 });
 }
 
 function windowFromQuery(query) {
@@ -105,22 +105,24 @@ function windowFromQuery(query) {
   if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from >= to || to - from > 365 * 86400000) throw Object.assign(new Error('Date window must be a valid range of at most 365 days.'), { status: 400 });
   return { from, to };
 }
-function pageArgs(query) {
+function pageArgs(query, { allowType = false, requireType = false } = {}) {
   const limit = query.limit === undefined ? 50 : Number(query.limit);
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw Object.assign(new Error('limit must be an integer from 1 to 200.'), { status: 400 });
   let cursor = null;
   if (query.cursor !== undefined) {
     try { cursor = JSON.parse(Buffer.from(String(query.cursor), 'base64url').toString()); } catch { throw Object.assign(new Error('Cursor is invalid.'), { status: 400 }); }
-    if (!cursor || !Number.isSafeInteger(cursor.at) || typeof cursor.id !== 'string' || cursor.id.length > 100 || (cursor.from !== undefined && !Number.isSafeInteger(cursor.from)) || (cursor.to !== undefined && !Number.isSafeInteger(cursor.to))) throw Object.assign(new Error('Cursor is invalid.'), { status: 400 });
+    if (!cursor || Object.keys(cursor).some(key => !['at','id','type','from','to'].includes(key)) || !Number.isSafeInteger(cursor.at) || typeof cursor.id !== 'string' || cursor.id.length > 100 || (cursor.from !== undefined && !Number.isSafeInteger(cursor.from)) || (cursor.to !== undefined && !Number.isSafeInteger(cursor.to)) || ((cursor.from === undefined) !== (cursor.to === undefined)) || (cursor.from !== undefined && (cursor.from >= cursor.to || cursor.to - cursor.from > 365 * 86400000)) || (cursor.type !== undefined && (!allowType || !['event','model_call','session'].includes(cursor.type))) || (requireType && !cursor.type)) throw Object.assign(new Error('Cursor is invalid.'), { status: 400 });
   }
   return { limit, cursor };
 }
 const nextCursor = (row, window) => row ? Buffer.from(JSON.stringify({ at: row._at, id: row._id, from: window.from, to: window.to })).toString('base64url') : null;
 function applyCursorWindow(query, window, cursor) {
   if (!cursor) return window;
+  const checked = cursor.from !== undefined && cursor.to !== undefined ? { from: cursor.from, to: cursor.to } : window;
+  if (cursor.at < checked.from || cursor.at >= checked.to) throw Object.assign(new Error('Cursor is outside its requested window.'), { status: 400 });
   if (cursor.from !== undefined && cursor.to !== undefined) {
     if ((query.from !== undefined && Number(query.from) !== cursor.from) || (query.to !== undefined && Number(query.to) !== cursor.to)) throw Object.assign(new Error('Cursor window does not match the requested window.'), { status: 400 });
-    return { from: cursor.from, to: cursor.to };
+    return checked;
   }
   return window;
 }
@@ -139,6 +141,7 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
       await run('UPDATE metrics_sessions SET closed_at=? WHERE id=? AND closed_at IS NULL', time, session.id);
       session = null;
     }
+    let currentSessionId;
     if (!session) {
       const key = req.ip || 'unknown';
       const previous = sessionCreationLimits.get(key);
@@ -150,19 +153,22 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
       const token = randomBytes(32).toString('base64url'), id = randomUUID();
       await run('INSERT INTO metrics_sessions (id,token_hash,user_id,created_at,last_seen_at,expires_at,event_window_started_at,event_window_count) VALUES (?,?,?,?,?,?,?,0)', id, hash(token), userId, time, time, time + 30 * 60 * 1000, time);
       res.cookie(cookieName, token, { ...cookieOptions, maxAge: 30 * 60 * 1000 });
+      currentSessionId = id;
     } else {
       const expires = Math.min(time + 30 * 60 * 1000, session.created_at + 24 * 60 * 60 * 1000);
       await run('UPDATE metrics_sessions SET last_seen_at=?, expires_at=? WHERE id=?', time, expires, session.id);
       res.cookie(cookieName, raw, { ...cookieOptions, maxAge: expires - time });
+      currentSessionId = session.id;
     }
-    res.json({ enabled: true, heartbeatSeconds: 18, idleAfterMs: 30000 });
+    res.json({ enabled: true, heartbeatSeconds: 18, idleAfterMs: 30000, sessionId: currentSessionId });
   });
   app.post('/api/telemetry/events', async (req, res) => {
     if (!enabled) return res.json({ accepted: 0, duplicates: 0 });
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(key => !['events','roundId'].includes(key))) return res.status(400).json({ error: 'Event batch contains an unsupported field.' });
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(key => !['events','roundId','sessionId'].includes(key))) return res.status(400).json({ error: 'Event batch contains an unsupported field.' });
+    if (!uuid(req.body.sessionId)) return res.status(400).json({ error: 'Metrics session ID is required.' });
     const raw = req.cookies?.[cookieName];
     const session = raw ? await get('SELECT * FROM metrics_sessions WHERE token_hash=?', hash(raw)) : null;
-    if (!session || session.expires_at <= now() || session.created_at + 24 * 60 * 60 * 1000 <= now() || session.closed_at || session.user_id !== (req.user?.id || null)) return res.status(401).json({ error: 'Metrics session expired.' });
+    if (!session || req.body.sessionId !== session.id || session.expires_at <= now() || session.created_at + 24 * 60 * 60 * 1000 <= now() || session.closed_at || session.user_id !== (req.user?.id || null)) return res.status(401).json({ error: 'Metrics session expired.' });
     const events = req.body?.events;
     if (!Array.isArray(events) || events.length < 1 || events.length > 50) return res.status(400).json({ error: 'Submit 1 through 50 events.' });
     events.forEach(validateEvent);
@@ -177,7 +183,7 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
       if (!req.get('x-round-token')) return res.status(403).json({ error: 'Round capability is required.' });
       const round = await authorizeRound(req, roundId);
       if (!round) return res.status(403).json({ error: 'Round capability is invalid.' });
-      inferred = await get('SELECT a.collection_id AS collectionId,a.profile_id AS profileId,COALESCE(a.source,r.source) AS source,r.version_id AS versionId FROM rounds r LEFT JOIN difficulty_collection_assignments a ON a.round_id=r.id WHERE r.id=?', roundId) || {};
+      inferred = await get('SELECT a.collection_id AS "collectionId",a.profile_id AS "profileId",COALESCE(a.source,r.source) AS source,r.version_id AS "versionId" FROM rounds r LEFT JOIN difficulty_collection_assignments a ON a.round_id=r.id WHERE r.id=?', roundId) || {};
       inferred.source = safeSource(inferred.source);
     }
     const time = now(), batchToken=randomUUID(), expires=Math.min(time+30*60*1000,session.created_at+24*60*60*1000);
@@ -199,17 +205,17 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
   app.get('/api/metrics/summary', owner, async (req, res) => {
     if (!enabled) return res.json({ enabled: false });
     const window = windowFromQuery(req.query);
-    await run("UPDATE metrics_model_calls SET status='interrupted',completed_at=?,error_category='interrupted' WHERE status='started' AND started_at<?", now(), now()-120000);
+    await run("UPDATE metrics_model_calls SET status='interrupted',error_category='interrupted' WHERE status='started' AND started_at<?", now()-120000);
     const [first,instrumentation,calls,browser,sessions,routes,sources,models,profiles,profileLatency,roundCoverage,reviews,rounds,overallLatency,modelLatency] = await Promise.all([
       get('SELECT MIN(t) AS t FROM (SELECT started_at AS t FROM metrics_model_calls WHERE started_at>=? AND started_at<? UNION ALL SELECT created_at AS t FROM metrics_events WHERE created_at>=? AND created_at<? UNION ALL SELECT created_at AS t FROM metrics_sessions WHERE created_at>=? AND created_at<?)',window.from,window.to,window.from,window.to,window.from,window.to),
       get('SELECT MIN(t) AS t FROM (SELECT started_at AS t FROM metrics_model_calls UNION ALL SELECT created_at AS t FROM metrics_events UNION ALL SELECT created_at AS t FROM metrics_sessions)'),
-      get('SELECT COUNT(*) AS total,SUM(CASE WHEN status=\'succeeded\' THEN 1 ELSE 0 END) AS succeeded,SUM(CASE WHEN status=\'failed\' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN status=\'interrupted\' THEN 1 ELSE 0 END) AS interrupted,SUM(CASE WHEN retry_of_id IS NOT NULL THEN 1 ELSE 0 END) AS retries,COUNT(latency_ms) AS "latencyCount",AVG(latency_ms) AS "latencyMean",MIN(latency_ms) AS "latencyMin",MAX(latency_ms) AS "latencyMax",SUM(input_tokens) AS "inputSum",COUNT(input_tokens) AS "inputCovered",SUM(output_tokens) AS "outputSum",COUNT(output_tokens) AS "outputCovered",SUM(total_tokens) AS "totalSum",COUNT(total_tokens) AS "totalCovered",SUM(response_chars) AS chars,SUM(response_words) AS words FROM metrics_model_calls WHERE started_at>=? AND started_at<?',window.from,window.to),
-      get('SELECT COUNT(*) AS events,COUNT(DISTINCT session_id) AS sessions,COUNT(active_ms) AS timed,COUNT(*)-COUNT(active_ms) AS missing,SUM(active_ms) AS active,SUM(visible_ms) AS visible,SUM(idle_ms) AS idle,SUM(read_think_ms) AS "readThink",SUM(compose_ms) AS compose,SUM(waiting_ms) AS waiting FROM metrics_events WHERE created_at>=? AND created_at<?',window.from,window.to),
+      get('SELECT COUNT(*) AS total,SUM(CASE WHEN status=\'succeeded\' THEN 1 ELSE 0 END) AS succeeded,SUM(CASE WHEN status=\'failed\' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN status=\'interrupted\' THEN 1 ELSE 0 END) AS interrupted,SUM(CASE WHEN status=\'started\' THEN 1 ELSE 0 END) AS started,SUM(CASE WHEN retry_of_id IS NOT NULL THEN 1 ELSE 0 END) AS retries,COUNT(latency_ms) AS "latencyCount",AVG(latency_ms) AS "latencyMean",MIN(latency_ms) AS "latencyMin",MAX(latency_ms) AS "latencyMax",SUM(input_tokens) AS "inputSum",COUNT(input_tokens) AS "inputCovered",SUM(output_tokens) AS "outputSum",COUNT(output_tokens) AS "outputCovered",SUM(total_tokens) AS "totalSum",COUNT(total_tokens) AS "totalCovered",SUM(response_chars) AS chars,SUM(response_words) AS words FROM metrics_model_calls WHERE started_at>=? AND started_at<?',window.from,window.to),
+      get("SELECT COUNT(*) AS events,COUNT(DISTINCT session_id) AS sessions,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') AND active_ms IS NOT NULL THEN 1 ELSE 0 END) AS timed,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') AND active_ms IS NULL THEN 1 ELSE 0 END) AS missing,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN active_ms END) AS active,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN visible_ms END) AS visible,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN idle_ms END) AS idle,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN read_think_ms END) AS \"readThink\",SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN compose_ms END) AS compose,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN waiting_ms END) AS waiting FROM metrics_events WHERE created_at>=? AND created_at<?",window.from,window.to),
       get('SELECT COUNT(*) AS count FROM metrics_sessions WHERE created_at>=? AND created_at<?',window.from,window.to),
       all('SELECT view_category AS view,COUNT(DISTINCT session_id) AS sessions,COUNT(*) AS events,SUM(active_ms) AS "activeMs",SUM(visible_ms) AS "visibleMs" FROM metrics_events WHERE created_at>=? AND created_at<? GROUP BY view_category',window.from,window.to),
-      all("SELECT COALESCE(source,context_kind) AS source,COUNT(*) AS calls,SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END) AS succeeded,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN status='interrupted' THEN 1 ELSE 0 END) AS interrupted,SUM(CASE WHEN retry_of_id IS NOT NULL THEN 1 ELSE 0 END) AS retries,COUNT(DISTINCT round_id) AS rounds FROM metrics_model_calls WHERE started_at>=? AND started_at<? GROUP BY COALESCE(source,context_kind)",window.from,window.to),
-      all("SELECT requested_model AS model,COUNT(*) AS calls,SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END) AS succeeded,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN status='interrupted' THEN 1 ELSE 0 END) AS interrupted FROM metrics_model_calls WHERE started_at>=? AND started_at<? GROUP BY requested_model",window.from,window.to),
-      all("SELECT collection_id AS \"collectionId\",source,profile_id AS \"profileId\",COUNT(*) AS calls,SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END) AS succeeded,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN status='interrupted' THEN 1 ELSE 0 END) AS interrupted,SUM(CASE WHEN retry_of_id IS NOT NULL THEN 1 ELSE 0 END) AS retries,COUNT(DISTINCT round_id) AS rounds FROM metrics_model_calls WHERE started_at>=? AND started_at<? AND profile_id IS NOT NULL GROUP BY collection_id,source,profile_id",window.from,window.to),
+      all("SELECT COALESCE(source,context_kind) AS source,COUNT(*) AS calls,SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END) AS succeeded,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN status='interrupted' THEN 1 ELSE 0 END) AS interrupted,SUM(CASE WHEN status='started' THEN 1 ELSE 0 END) AS started,SUM(CASE WHEN retry_of_id IS NOT NULL THEN 1 ELSE 0 END) AS retries,COUNT(DISTINCT round_id) AS rounds FROM metrics_model_calls WHERE started_at>=? AND started_at<? GROUP BY COALESCE(source,context_kind)",window.from,window.to),
+      all("SELECT requested_model AS model,COUNT(*) AS calls,SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END) AS succeeded,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN status='interrupted' THEN 1 ELSE 0 END) AS interrupted,SUM(CASE WHEN status='started' THEN 1 ELSE 0 END) AS started FROM metrics_model_calls WHERE started_at>=? AND started_at<? GROUP BY requested_model",window.from,window.to),
+      all("SELECT collection_id AS \"collectionId\",source,profile_id AS \"profileId\",COUNT(*) AS calls,SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END) AS succeeded,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,SUM(CASE WHEN status='interrupted' THEN 1 ELSE 0 END) AS interrupted,SUM(CASE WHEN status='started' THEN 1 ELSE 0 END) AS started,SUM(CASE WHEN retry_of_id IS NOT NULL THEN 1 ELSE 0 END) AS retries,COUNT(DISTINCT round_id) AS rounds FROM metrics_model_calls WHERE started_at>=? AND started_at<? AND profile_id IS NOT NULL GROUP BY collection_id,source,profile_id",window.from,window.to),
       profilePercentiles(all,window),
       get('SELECT COUNT(*) AS rounds,COUNT(c.round_id) AS "withCalls",COUNT(*)-COUNT(c.round_id) AS "withoutCalls" FROM rounds r LEFT JOIN (SELECT DISTINCT round_id FROM metrics_model_calls WHERE round_id IS NOT NULL) c ON c.round_id=r.id WHERE r.started_at>=? AND r.started_at<?',window.from,window.to),
       all('SELECT outcome,COUNT(*) AS count FROM reviews JOIN rounds ON rounds.id=reviews.round_id WHERE rounds.started_at>=? AND rounds.started_at<? GROUP BY outcome',window.from,window.to),
@@ -220,14 +226,15 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
     const asNum=value=>value==null?0:Number(value), tokenStat=(sum,covered)=>({sum:asNum(covered)?asNum(sum):null,covered:asNum(covered),missing:asNum(calls.total)-asNum(covered)});
     const totalLatency={count:asNum(calls.latencyCount),meanMs:calls.latencyMean==null?null:Number(calls.latencyMean),minMs:calls.latencyMin==null?null:Number(calls.latencyMin),maxMs:calls.latencyMax==null?null:Number(calls.latencyMax),p50Ms:overallLatency?.p50Ms==null?null:Number(overallLatency.p50Ms),p90Ms:overallLatency?.p90Ms==null?null:Number(overallLatency.p90Ms),p95Ms:overallLatency?.p95Ms==null?null:Number(overallLatency.p95Ms)};
     const modelsById=new Map(modelLatency.map(row=>[row.model,row]));
+    const profileLatencyByKey=new Map(profileLatency.map(row=>[`${row.collectionId||''}\0${row.source||''}\0${row.profileId}`,row]));
     res.json({window,instrumentationStartedAt:instrumentation?.t??null,firstRecordedAt:first?.t??null,
       coverage:{modelCalls:{recorded:asNum(calls.total),roundsWithoutCalls:asNum(roundCoverage.withoutCalls)},rounds:{withCalls:asNum(roundCoverage.withCalls),withoutCalls:asNum(roundCoverage.withoutCalls)},browserIntervals:{timed:asNum(browser.timed),missing:asNum(browser.missing)}},
       visits:{sessions:asNum(sessions.count)},browser:{sessions:asNum(browser.sessions),events:asNum(browser.events),activeMs:browser.active==null?null:Number(browser.active),visibleMs:browser.visible==null?null:Number(browser.visible),idleMs:browser.idle==null?null:Number(browser.idle),readThinkMs:browser.readThink==null?null:Number(browser.readThink),composeMs:browser.compose==null?null:Number(browser.compose),waitingMs:browser.waiting==null?null:Number(browser.waiting),timedIntervals:asNum(browser.timed),missingIntervals:asNum(browser.missing)},
-      modelCalls:{total:asNum(calls.total),succeeded:asNum(calls.succeeded),failed:asNum(calls.failed),interrupted:asNum(calls.interrupted),inferredRetries:asNum(calls.retries),latency:totalLatency,tokens:{input:tokenStat(calls.inputSum,calls.inputCovered),output:tokenStat(calls.outputSum,calls.outputCovered),total:tokenStat(calls.totalSum,calls.totalCovered)},response:{chars:asNum(calls.chars),words:asNum(calls.words)}},
+      modelCalls:{total:asNum(calls.total),succeeded:asNum(calls.succeeded),failed:asNum(calls.failed),interrupted:asNum(calls.interrupted),inFlight:asNum(calls.started),inferredRetries:asNum(calls.retries),latency:totalLatency,tokens:{input:tokenStat(calls.inputSum,calls.inputCovered),output:tokenStat(calls.outputSum,calls.outputCovered),total:tokenStat(calls.totalSum,calls.totalCovered)},response:{chars:asNum(calls.chars),words:asNum(calls.words)}},
       rounds:{...rounds,reviewOutcomes:Object.fromEntries(reviews.map(r=>[r.outcome,Number(r.count)]))},routes:routes.map(r=>({view:r.view,sessions:asNum(r.sessions),events:asNum(r.events),activeMs:r.activeMs==null?null:Number(r.activeMs),visibleMs:r.visibleMs==null?null:Number(r.visibleMs)})),
-      bySource:sources.map(r=>({source:r.source,calls:asNum(r.calls),succeeded:asNum(r.succeeded),failed:asNum(r.failed),interrupted:asNum(r.interrupted),inferredRetries:asNum(r.retries),rounds:asNum(r.rounds)})),
-      byModel:models.map(r=>{const lat=modelsById.get(r.model);return {model:r.model,calls:asNum(r.calls),succeeded:asNum(r.succeeded),failed:asNum(r.failed),interrupted:asNum(r.interrupted),latency:{count:asNum(lat?.count),meanMs:lat?.meanMs==null?null:Number(lat.meanMs),p50Ms:lat?.p50Ms==null?null:Number(lat.p50Ms),p90Ms:lat?.p90Ms==null?null:Number(lat.p90Ms),p95Ms:lat?.p95Ms==null?null:Number(lat.p95Ms)}}}),
-      byProfile:profiles.map(r=>{const latency=profileLatency.find(item=>item.collectionId===r.collectionId&&item.source===r.source&&item.profileId===r.profileId);return {collectionId:r.collectionId,source:r.source,profileId:r.profileId,calls:asNum(r.calls),succeeded:asNum(r.succeeded),failed:asNum(r.failed),interrupted:asNum(r.interrupted),inferredRetries:asNum(r.retries),rounds:asNum(r.rounds),latency:{count:asNum(latency?.count),meanMs:latency?.meanMs==null?null:Number(latency.meanMs),p50Ms:latency?.p50Ms==null?null:Number(latency.p50Ms),p95Ms:latency?.p95Ms==null?null:Number(latency.p95Ms)}};})});
+      bySource:sources.map(r=>({source:r.source,calls:asNum(r.calls),succeeded:asNum(r.succeeded),failed:asNum(r.failed),interrupted:asNum(r.interrupted),inFlight:asNum(r.started),inferredRetries:asNum(r.retries),rounds:asNum(r.rounds)})),
+      byModel:models.map(r=>{const lat=modelsById.get(r.model);return {model:r.model,calls:asNum(r.calls),succeeded:asNum(r.succeeded),failed:asNum(r.failed),interrupted:asNum(r.interrupted),inFlight:asNum(r.started),latency:{count:asNum(lat?.count),meanMs:lat?.meanMs==null?null:Number(lat.meanMs),p50Ms:lat?.p50Ms==null?null:Number(lat.p50Ms),p90Ms:lat?.p90Ms==null?null:Number(lat.p90Ms),p95Ms:lat?.p95Ms==null?null:Number(lat.p95Ms)}}}),
+      byProfile:profiles.map(r=>{const latency=profileLatencyByKey.get(`${r.collectionId||''}\0${r.source||''}\0${r.profileId}`);return {collectionId:r.collectionId,source:r.source,profileId:r.profileId,calls:asNum(r.calls),succeeded:asNum(r.succeeded),failed:asNum(r.failed),interrupted:asNum(r.interrupted),inFlight:asNum(r.started),inferredRetries:asNum(r.retries),rounds:asNum(r.rounds),latency:{count:asNum(latency?.count),meanMs:latency?.meanMs==null?null:Number(latency.meanMs),p50Ms:latency?.p50Ms==null?null:Number(latency.p50Ms),p95Ms:latency?.p95Ms==null?null:Number(latency.p95Ms)}};})});
   });
   for (const [path,table,timeColumn] of [['/api/metrics/sessions','metrics_sessions','created_at'],['/api/metrics/calls','metrics_model_calls','started_at']]) app.get(path,owner,async(req,res)=>{
     let window=windowFromQuery(req.query);const {limit,cursor}=pageArgs(req.query);window=applyCursorWindow(req.query,window,cursor);
@@ -238,7 +245,7 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
     res.json({items,limit,nextCursor:rows.length>limit?nextCursor(page.at(-1),window):null,window});
   });
   app.get('/api/metrics/export',owner,async(req,res)=>{
-    let window=windowFromQuery(req.query);const {limit,cursor}=pageArgs({...req.query,limit:req.query.limit??100});window=applyCursorWindow(req.query,window,cursor);
+    let window=windowFromQuery(req.query);const {limit,cursor}=pageArgs({...req.query,limit:req.query.limit??100},{allowType:true,requireType:true});window=applyCursorWindow(req.query,window,cursor);
     if(!enabled)return res.json({schema:'owner-metrics',schemaVersion:1,window,items:[],nextCursor:null,pageLimit:limit});
     const at=cursor?.at??window.to-1,id=cursor?.id??'\uffff',cap=limit+1;
     const [eventRows,callRows,sessionRows]=await Promise.all([
@@ -274,23 +281,28 @@ async function roundSummaryPages(store, window) {
   const durationExpression = store.dialect === 'postgres'
     ? "CASE WHEN r.data::jsonb->>'duration' ~ '^[0-9]+$' THEN (r.data::jsonb->>'duration')::numeric ELSE 0 END"
     : "CAST(json_extract(r.data, '$.duration') AS INTEGER)";
+  const questionExpression = store.dialect === 'postgres'
+    ? "(SELECT COUNT(*) FROM jsonb_array_elements(r.messages::jsonb) AS message(value) WHERE value->>'role'='user')"
+    : "(SELECT COUNT(*) FROM json_each(r.messages) AS message WHERE json_extract(message.value, '$.role')='user')";
   let lastAt=window.from-1,lastId='';
   while(true){
-    const rows=await all(`SELECT r.id,r.source,COALESCE(a.source,r.source) AS metric_source,r.started_at,r.ended_at,${durationExpression} AS duration_seconds,r.hints_used FROM rounds r LEFT JOIN difficulty_collection_assignments a ON a.round_id=r.id WHERE r.started_at>=? AND r.started_at<? AND (r.started_at>? OR (r.started_at=? AND r.id>?)) ORDER BY r.started_at,r.id LIMIT 500`,window.from,window.to,lastAt,lastAt,lastId);
+    const rows=await all(`SELECT r.id,r.source,COALESCE(a.source,r.source) AS metric_source,r.started_at,r.ended_at,${durationExpression} AS duration_seconds,${questionExpression} AS question_count,r.hints_used FROM rounds r LEFT JOIN difficulty_collection_assignments a ON a.round_id=r.id WHERE r.started_at>=? AND r.started_at<? AND (r.started_at>? OR (r.started_at=? AND r.id>?)) ORDER BY r.started_at,r.id LIMIT 500`,window.from,window.to,lastAt,lastAt,lastId);
     if(!rows.length)break;
     for(const row of rows){
       const source=row.metric_source||row.source||'unknown';
       const participant=['participant','blind','reference-blind','collection-participant'].includes(source);
       const bucket=participant?summary:summary.diagnostics;
       bucket.started++;
+      bucket.questions+=Number(row.question_count)||0;
       if(row.ended_at!=null)bucket.submitted++;
       else {
         const duration=Number(row.duration_seconds)||0;
         if(row.started_at+duration*1000<=now())bucket.abandoned++;else bucket.active++;
       }
       bucket.hints+=Number(row.hints_used||0);
-      const perSource=summary.bySource[source]||= {source,started:0,submitted:0,active:0,abandoned:0,hints:0};
+      const perSource=summary.bySource[source]||= {source,started:0,submitted:0,active:0,abandoned:0,hints:0,questions:0};
       perSource.started++;
+      perSource.questions+=Number(row.question_count)||0;
       if(row.ended_at!=null)perSource.submitted++;
       else if(row.started_at+(Number(row.duration_seconds)||0)*1000<=now())perSource.abandoned++;
       else perSource.active++;
@@ -299,18 +311,18 @@ async function roundSummaryPages(store, window) {
     lastAt=rows.at(-1).started_at;lastId=rows.at(-1).id;
     if(rows.length<500)break;
   }
-  const questions=await all("SELECT source,COUNT(*) AS count FROM metrics_model_calls WHERE started_at>=? AND started_at<? AND transcript_saved=1 AND context_kind='round' GROUP BY source",window.from,window.to);
-  summary.questions=Number(questions.find(r=>r.source==='participant')?.count||0);
-  summary.diagnostics.questions=questions.filter(r=>r.source!=='participant').reduce((n,r)=>n+Number(r.count),0);
   return {...summary,bySource:Object.values(summary.bySource)};
 }
 
 async function sessionDto(row,store){
   const {all}=store;
+  const questionExpression = store.dialect === 'postgres'
+    ? "(SELECT COUNT(*) FROM jsonb_array_elements(r.messages::jsonb) AS message(value) WHERE value->>'role'='user')"
+    : "(SELECT COUNT(*) FROM json_each(r.messages) AS message WHERE json_extract(message.value, '$.role')='user')";
   const [stats,routes,rounds]=await Promise.all([
-    store.get('SELECT COUNT(*) AS events,COUNT(DISTINCT tab_id) AS tabs,COUNT(DISTINCT page_id) AS pages,COUNT(active_ms) AS timed,COUNT(*)-COUNT(active_ms) AS missing,SUM(active_ms) AS active,SUM(visible_ms) AS visible,SUM(idle_ms) AS idle,SUM(read_think_ms) AS "readThink",SUM(compose_ms) AS compose,SUM(waiting_ms) AS waiting FROM metrics_events WHERE session_id=?',row.id),
-    all('SELECT view_category AS view,COUNT(*) AS events,SUM(active_ms) AS "activeMs",SUM(visible_ms) AS "visibleMs" FROM metrics_events WHERE session_id=? GROUP BY view_category',row.id),
-    all('SELECT r.id AS "roundId",COALESCE(a.source,r.source) AS source,r.version_id AS "versionId",r.started_at AS "startedAt",r.ended_at AS "submittedAt",r.hints_used AS hints,COALESCE(c.questions,0) AS questions FROM rounds r JOIN (SELECT DISTINCT round_id FROM metrics_events WHERE session_id=? AND round_id IS NOT NULL) e ON e.round_id=r.id LEFT JOIN difficulty_collection_assignments a ON a.round_id=r.id LEFT JOIN (SELECT round_id,COUNT(*) AS questions FROM metrics_model_calls WHERE transcript_saved=1 AND context_kind=\'round\' GROUP BY round_id) c ON c.round_id=r.id ORDER BY r.started_at',row.id),
+    store.get("SELECT COUNT(*) AS events,COUNT(DISTINCT tab_id) AS tabs,COUNT(DISTINCT page_id) AS pages,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') AND active_ms IS NOT NULL THEN 1 ELSE 0 END) AS timed,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') AND active_ms IS NULL THEN 1 ELSE 0 END) AS missing,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN active_ms END) AS active,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN visible_ms END) AS visible,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN idle_ms END) AS idle,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN read_think_ms END) AS \"readThink\",SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN compose_ms END) AS compose,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN waiting_ms END) AS waiting FROM metrics_events WHERE session_id=?",row.id),
+    all("SELECT view_category AS view,COUNT(*) AS events,SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN active_ms END) AS \"activeMs\",SUM(CASE WHEN event_kind IN ('heartbeat','visibility','page_exit') THEN visible_ms END) AS \"visibleMs\" FROM metrics_events WHERE session_id=? GROUP BY view_category",row.id),
+    all(`SELECT r.id AS "roundId",COALESCE(a.source,r.source) AS source,r.version_id AS "versionId",r.started_at AS "startedAt",r.ended_at AS "submittedAt",r.hints_used AS hints,${questionExpression} AS questions FROM rounds r JOIN (SELECT DISTINCT round_id FROM metrics_events WHERE session_id=? AND round_id IS NOT NULL) e ON e.round_id=r.id LEFT JOIN difficulty_collection_assignments a ON a.round_id=r.id ORDER BY r.started_at`,row.id),
   ]);
   return {sessionId:row.id,createdAt:row.created_at,lastSeenAt:row.last_seen_at,closedAt:row.closed_at,userId:row.user_id,tabCount:Number(stats.tabs),pageCount:Number(stats.pages),events:Number(stats.events),activeMs:stats.active==null?null:Number(stats.active),visibleMs:stats.visible==null?null:Number(stats.visible),idleMs:stats.idle==null?null:Number(stats.idle),readThinkMs:stats.readThink==null?null:Number(stats.readThink),composeMs:stats.compose==null?null:Number(stats.compose),waitingMs:stats.waiting==null?null:Number(stats.waiting),routeUsage:routes.map(r=>({view:r.view,events:Number(r.events),activeMs:r.activeMs==null?null:Number(r.activeMs),visibleMs:r.visibleMs==null?null:Number(r.visibleMs)})),rounds:rounds.map(r=>({...r,hints:Number(r.hints),questions:Number(r.questions)})),coverage:{timedIntervals:Number(stats.timed),missingIntervals:Number(stats.missing)}};
 }

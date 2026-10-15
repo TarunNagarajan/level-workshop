@@ -63,7 +63,7 @@ Draft saves reject stale revisions rather than overwrite someone else's edits. V
 
 The current default listens on this laptop only. To test with teammates on the same network, set `HOST=0.0.0.0` in the environment and restart. Open the app using the laptop's network address before creating invitation or player links; links use the address currently in the browser.
 
-For remote use, the Vercel deployment uses Neon PostgreSQL and the same private developer link. The earlier Sites version uses Cloudflare D1. The owner capability and model credential are server secrets. The application gates author material using the private link and an opaque session cookie.
+For remote use, the Vercel deployment uses Neon PostgreSQL and the same private developer link. The earlier Sites version uses Cloudflare D1. The owner capability and model credential are server secrets. The application gates author material using the private link and an opaque session cookie. Owner-only usage metrics are available in the workshop's Metrics page; the API and export shapes are documented in [docs/metrics-api.md](docs/metrics-api.md). Metrics include provider request round-trip times and bounded browser activity estimates. Records persist until removed by an explicit database maintenance action; exports are paginated and omit prompts, transcripts, credentials, IP addresses, and capabilities.
 
 To back up, stop the server and copy `data/`. It contains author material, account hashes, invitations, versions and transcripts. Store backups privately. No API key is written there. The first-run owner flow has no email delivery or self-service password reset.
 
@@ -71,7 +71,7 @@ To back up, stop the server and copy `data/`. It contains author material, accou
 
 ### Vercel deployment
 
-The root `app.mjs` is the Express entry. `npm run build:vercel` builds the React client into `public/`, served by Vercel's CDN. The server handles API endpoints and client routes. `DATABASE_URL`, `WORKSHOP_OWNER_KEY`, `WORKSHOP_SHARE_KEY`, `WORKSHOP_ROOT_ENTRY` and `GROQ_API_KEY` belong in production environment variables. Set `PUBLIC_ORIGIN` to the production origin if using a custom domain. Missing database or capability credentials fail closed with a configuration message. The root entry flag defaults to off and requires an existing owner; pausing or reopening root admission is an explicit owner action in Team. Root admission has its own internal workshop-link record and does not depend on the private workshop link's expiry.
+Vercel serves the Vite-built client from `public/` and routes `/api/*` to `api/index.mjs`, which uses the shared setup in `server/deployment-app.mjs`. The legacy hosted Express entry `app.mjs` uses that same setup; the local `npm start` server uses SQLite. `npm run build:vercel` builds `dist/client/`, copies the static site into `public/`, and packages the API entry; Vercel's CDN serves the client assets. `DATABASE_URL`, `WORKSHOP_OWNER_KEY`, `WORKSHOP_SHARE_KEY`, `WORKSHOP_ROOT_ENTRY` and `GROQ_API_KEY` belong in production environment variables. Set `PUBLIC_ORIGIN` to the production origin if using a custom domain. Set `WORKSHOP_METRICS=false` to disable metrics collection and owner metrics routes; hosted deployments enable metrics by default. Missing database or capability credentials fail closed with a configuration message. The root entry flag defaults to off and requires an existing owner; pausing or reopening root admission is an explicit owner action in Team. Root admission has its own internal workshop-link record and does not depend on the private workshop link's expiry.
 
 Apply PostgreSQL migrations with `npm run db:migrate` before deploying. Migration checksums prevent editing an already applied file; changes belong in a new SQL migration under `db/postgres/`. Atomic batches and database leases preserve the same concurrency rules as the D1 deployment. Timestamps remain numeric in the application. Source snapshots in `work/` contain private workspace data and are excluded from Vercel uploads and Git.
 
@@ -90,6 +90,7 @@ Apply PostgreSQL migrations with `npm run db:migrate` before deploying. Migratio
 | `DATABASE_PATH` | `data/workshop.sqlite` |
 | `PUBLIC_ORIGIN` | Request origin |
 | `COOKIE_SECURE` | `false`; set `true` behind HTTPS |
+| `WORKSHOP_METRICS` | `true` in hosted deployment; set `false` to disable |
 
 A key being present means configured, not provider access verified. Run a test to confirm access. Provider errors and rate limits appear in the chat. The Groq adapter requests low reasoning effort and excludes reasoning for GPT-OSS. Other compatible providers can be configured through the environment; validate their supported completion parameters before switching.
 
