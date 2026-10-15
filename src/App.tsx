@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { PanelsTopLeft, FlaskConical, Users, SlidersHorizontal, Sun, Moon, LogOut, ArrowUpRight, Plus, Search, ChevronRight, Copy, Check, RefreshCcw, CircleHelp, Network, BookOpen, Layers3 } from 'lucide-react';
+import { PanelsTopLeft, FlaskConical, Users, SlidersHorizontal, Sun, Moon, LogOut, ArrowUpRight, Plus, Search, ChevronRight, Copy, Check, RefreshCcw, CircleHelp, Network, BookOpen, Layers3, ChartNoAxesCombined } from 'lucide-react';
 import { api, date } from './api';
 import type { Bootstrap, Summary, User } from './types';
 import { Mark, Status, Button, Field, Empty } from './ui';
@@ -11,6 +11,8 @@ import { OrchestrationLab } from './Orchestration';
 import { PassportReference } from './PassportReference';
 import { CollectionArea } from './Collections';
 import { CollectionParticipant } from './CollectionParticipant';
+import { Metrics } from './Metrics';
+import { navigateMetrics, syncMetricsIdentity } from './telemetry';
 
 let historyIndex = 0;
 let approvedNavigation: string | null = null;
@@ -60,6 +62,8 @@ export function App() {
   }, []);
   const reload = () => api<Bootstrap>('/bootstrap').then(setBootstrap).catch(e => setError(e.message));
   useEffect(() => { if (!standaloneCollection) void reload(); }, [standaloneCollection]);
+  useEffect(() => { navigateMetrics(path); }, [path]);
+  useEffect(() => { if (bootstrap) syncMetricsIdentity(bootstrap.user?.id || null); else if (standaloneCollection) syncMetricsIdentity(null); }, [bootstrap?.user?.id, bootstrap?.needsSetup, standaloneCollection]);
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('workshop-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4500); return () => clearTimeout(timer); }, [toast]);
   const notify = (message: string) => setToast(message);
@@ -76,12 +80,12 @@ export function App() {
   else {
     const user = bootstrap.user;
     const memberModel = { connected: bootstrap.model.connected, model: bootstrap.model.model || 'Not configured', provider: bootstrap.model.provider || 'Not configured' };
-    const page = path.startsWith('/levels/') ? 'editor' : path.startsWith('/collections') ? 'collections' : path.startsWith('/attempts') ? 'attempts' : path.startsWith('/reference') ? 'reference' : path.startsWith('/orchestration') ? 'orchestration' : path.startsWith('/team') ? 'team' : path.startsWith('/settings') ? 'settings' : 'levels';
+    const page = path.startsWith('/levels/') ? 'editor' : path.startsWith('/collections') ? 'collections' : path.startsWith('/attempts') ? 'attempts' : path.startsWith('/reference') ? 'reference' : path.startsWith('/orchestration') ? 'orchestration' : path.startsWith('/team') ? 'team' : path.startsWith('/settings') ? 'settings' : path.startsWith('/metrics') ? 'metrics' : 'levels';
     content = <div className="workspace">
       <aside className="sidebar">
         <div className="sidebar-top"><Mark /><span className="tiny">PRIVATE WORKSPACE</span></div>
         <nav aria-label="Main navigation">
-          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/reference', 'Reference', BookOpen, 'reference'], ['/collections', 'Collections', Layers3, 'collections'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team']].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
+          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/reference', 'Reference', BookOpen, 'reference'], ['/collections', 'Collections', Layers3, 'collections'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team'], ...(user.role === 'admin' ? [['/metrics', 'Metrics', ChartNoAxesCombined, 'metrics']] : [])].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
         </nav>
         <div className="sidebar-bottom">
           <button className="nav-item" aria-label="Quick tour" onClick={() => setTourOpen(true)}><CircleHelp size={17} strokeWidth={1.5} />Quick tour</button>
@@ -98,6 +102,7 @@ export function App() {
           : page === 'orchestration' ? <OrchestrationLab user={user} model={memberModel} configId={path.split('/')[2]} runId={path.split('/')[4]} notify={notify} />
           : page === 'team' ? <Team user={user} notify={notify} />
           : page === 'settings' ? <Connection model={memberModel} reload={reload} />
+          : page === 'metrics' ? user.role === 'admin' ? <Metrics /> : <div className="page narrow"><Empty>This page is not available for this account.</Empty></div>
           : <Library user={user} notify={notify} />}
       </main>
     </div>;
