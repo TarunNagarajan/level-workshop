@@ -155,7 +155,20 @@ export function addPassportRoutes(app, { store, provider, completion, member, cr
     if (!saved) fail(404, 'This desk session does not exist.');
     return JSON.parse(saved.state);
   };
-  const snapshot = async row => { const state = await stateFor(row); return { round: { ...publicRound(row), hintsUsed: state.hintsUsed }, state, documents: playerDocuments(state, scenarioFor(row)) }; };
+  const snapshot = async row => {
+    const state = await stateFor(row), result = { round: { ...publicRound(row), hintsUsed: state.hintsUsed }, state, documents: playerDocuments(state, scenarioFor(row)) };
+    if (row.ended_at && state.decision && row.version_id === versionId && ['reference', 'reference-blind'].includes(row.source)) {
+      const assignment = await get('SELECT round_id FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
+      if (!assignment) result.caseResult = {
+        title: 'Genuine passport, wrong traveller.',
+        explanation: 'Noah used his older brother Elias’s genuine passport because his own had expired. Elias lent it to him for their sister’s wedding. The document is authentic, but Noah is not the traveller named in it. This was deliberate identity misuse, not an innocent signature mistake or a forged passport.',
+        expectedDecision: 'HOLD',
+        playerDecision: state.decision,
+        decisionCorrect: state.decision === 'HOLD',
+      };
+    }
+    return result;
+  };
   const active = row => { if (row.ended_at || Date.now() >= row.started_at + 300000) fail(409, 'The interview has ended. File your finding or start another session.'); };
   const persist = async (row, state, lease) => {
     const now = Date.now();

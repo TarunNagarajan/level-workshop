@@ -82,6 +82,10 @@ test('local research worlds have separate immutable versions and consistent play
       assert.equal(sent.system, (await f.request(path + '/context', { cookie: f.cookie })).body.system);
       assert.equal(reply.body.round.versionId, current.round.versionId);
       assert.equal((await f.request(`/attempts/${current.round.id}`, { cookie: f.cookie })).body.desk.cardRequested, true);
+      const filedStudy = await f.request(path + '/finish', { method: 'POST', cookie: f.cookie, body: { decision: 'HOLD', finding: 'Research world practice filing.', evidence: [] } });
+      assert.equal(filedStudy.status, 200);
+      assert.equal(filedStudy.body.caseResult, undefined, 'counterfactual research worlds do not receive the canonical debrief');
+      assert.equal((await f.request(path, { cookie: f.cookie })).body.caseResult, undefined);
       assert.equal((await f.request(`/levels/reference-passport-study-${id}/rounds`, { method: 'POST', cookie: f.cookie, body: { versionId: current.round.versionId } })).status, 409);
     }
     const normal = await f.request('/reference/start', { method: 'POST', cookie: f.cookie, body: {} });
