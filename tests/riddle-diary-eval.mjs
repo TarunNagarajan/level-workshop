@@ -161,6 +161,61 @@ export function baselinePlan() {
   return shuffled;
 }
 
+export function prepareBaselineReplacements(sourceText, selectionValue, confirmationValue) {
+  if (typeof sourceText !== 'string') throw Object.assign(new Error('Replacement source must be a completed baseline file.'), { code: 'INVALID_REPLACEMENT_SOURCE' });
+  let source;
+  try { source = JSON.parse(sourceText); } catch { throw Object.assign(new Error('Replacement source is not valid JSON.'), { code: 'INVALID_REPLACEMENT_SOURCE' }); }
+  if (source?.format !== 'riddle-diary-live-baseline-v1' || typeof source.endedAt !== 'string' || !Number.isFinite(Date.parse(source.endedAt)) || source.summary?.planned !== 50 || source.summary?.baselineCount !== 50 || !Array.isArray(source.records) || source.records.length !== 50) {
+    throw Object.assign(new Error('Replacement source must be a finished 50-trial baseline batch.'), { code: 'INVALID_REPLACEMENT_SOURCE' });
+  }
+  const ids = typeof selectionValue === 'string' ? selectionValue.split(',').map(value => value.trim()) : [];
+  if (!ids.length || ids.length > 50 || ids.some(id => !/^baseline-\d{2}$/.test(id)) || new Set(ids).size !== ids.length) {
+    throw Object.assign(new Error('Select one or more unique baseline trial IDs, up to 50.'), { code: 'INVALID_REPLACEMENT_IDS' });
+  }
+  const canonical = new Map(baselinePlan().map(trial => [trial.trialId, trial]));
+  const confirmedIds = typeof confirmationValue === 'string' ? confirmationValue.split(',').map(value => value.trim()) : [];
+  if (confirmationValue !== undefined && (typeof confirmationValue !== 'string' || !confirmedIds.length || confirmedIds.some(id => !canonical.has(id)) || new Set(confirmedIds).size !== confirmedIds.length || confirmedIds.some(id => !ids.includes(id)))) {
+    throw Object.assign(new Error('Unreceived-request confirmations must be unique canonical trials selected for replacement.'), { code: 'INVALID_UNRECEIVED_CONFIRMATION' });
+  }
+  const records = new Map();
+  for (const record of source.records) {
+    const expected = canonical.get(record?.trialId);
+    if (!expected || records.has(record.trialId) || record.kind !== 'baseline' || record.planIndex !== expected.planIndex || record.profileId !== expected.profileId || record.technique !== expected.technique) {
+      throw Object.assign(new Error('Replacement source records do not match the canonical baseline plan.'), { code: 'BASELINE_PLAN_MISMATCH' });
+    }
+    if (!['complete', 'review_pending', 'review_unavailable', 'failed'].includes(record.status) || record.status === 'running' || record.recordHash !== evaluationRecordHash(record)) {
+      throw Object.assign(new Error('Replacement source is still active or has an invalid record hash.'), { code: 'INVALID_REPLACEMENT_SOURCE' });
+    }
+    records.set(record.trialId, record);
+  }
+  if (records.size !== 50 || canonical.size !== records.size) throw Object.assign(new Error('Replacement source must contain the complete canonical baseline plan.'), { code: 'BASELINE_PLAN_MISMATCH' });
+  const selectedTrials = ids.map(trialId => {
+    const original = records.get(trialId);
+    if (!original) throw Object.assign(new Error('A selected baseline trial is not present in the source file.'), { code: 'UNKNOWN_REPLACEMENT_ID' });
+    if (['complete', 'review_pending', 'review_unavailable'].includes(original.status)) throw Object.assign(new Error('A selected baseline trial already has a completed trajectory.'), { code: 'COMPLETED_REPLACEMENT_ID' });
+    const isExplicitUnreceived = confirmedIds.includes(trialId);
+    if (isExplicitUnreceived) {
+      const canonicalPrompts = canonical.get(trialId).prompts;
+      const prompts = original.prompts;
+      if (original.status !== 'failed' || original.error?.status !== null || original.error?.code !== 'NETWORK_ERROR' || original.error?.submission || (original.replies?.length || 0) !== 0 || !Array.isArray(prompts) || prompts.length === 0 || prompts.length > canonicalPrompts.length || prompts.some((prompt, index) => prompt?.content !== canonicalPrompts[index] || typeof prompt.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(prompt.requestId) || (prompt.submissionId != null) || prompt.replyId != null || prompt.completedAt != null || prompt.savedUserTurn != null)) {
+        throw Object.assign(new Error('The explicitly confirmed trial does not match an unreceived network failure.'), { code: 'INVALID_UNRECEIVED_FAILURE' });
+      }
+    } else if ((original.prompts?.length || 0) !== 0 || (original.replies?.length || 0) !== 0) {
+      throw Object.assign(new Error('Only failed trials with no submitted prompts or saved replies can be replaced.'), { code: 'PARTIAL_REPLACEMENT_ID' });
+    }
+    return { ...canonical.get(trialId), prompts: [...canonical.get(trialId).prompts] };
+  });
+  const replacementProvenance = {
+    sourceFormat: source.format,
+    sourceSha256: createHash('sha256').update(sourceText, 'utf8').digest('hex'),
+    fullBaselineCount: 50,
+    selectedTrialIds: [...ids],
+    originalRecordHashes: Object.fromEntries(ids.map(id => [id, records.get(id).recordHash])),
+    operatorConfirmedUnreceivedTrialIds: [...confirmedIds],
+  };
+  return { selectedTrials, replacementProvenance };
+}
+
 export function latestProfiles(history) {
   return profiles.map(profileId => history
     .filter(item => item.profileId === profileId)
@@ -177,6 +232,7 @@ function usage() {
   process.stdout.write('Add --vercel to use the local authenticated Vercel CLI for a protected preview; set DIARY_EVAL_VERCEL_CLI to its script path.\n');
   process.stdout.write('Optionally set DIARY_EVAL_PROVIDER_INTERVAL_MS to 0–60000 to pace model-invoking message/review requests; pacing waits are recorded separately from request latency.\n');
   process.stdout.write('Use --plan --baseline-50 to inspect the deterministic baseline without credentials or network requests.\n');
+  process.stdout.write('Use --baseline-replacements with DIARY_EVAL_REPLACE_FROM and DIARY_EVAL_REPLACE_TRIAL_IDS to replace failed trials from a finished baseline batch; zero-prompt failures need no override, while a confirmed queued network error requires the same trial ID in DIARY_EVAL_CONFIRMED_UNRECEIVED_TRIAL_IDS. Use --plan to validate without network requests.\n');
   process.stdout.write('Diagnostic output contains transcripts and must be stored privately. It excludes cookies, API keys, and round capabilities.\n');
 }
 
@@ -354,19 +410,34 @@ async function readJsonBounded(response, maxBytes) {
 async function main() {
   const args = new Set(process.argv.slice(2));
   if (args.has('--help')) return usage();
-  const baselineOnly = args.has('--baseline-50');
+  const fullBaselineOnly = args.has('--baseline-50');
+  const baselineReplacementMode = args.has('--baseline-replacements');
+  const baselineOnly = fullBaselineOnly || baselineReplacementMode;
   const calibrationOnly = args.has('--calibration-only');
   const adaptiveCalibrationOnly = args.has('--calibration-followup');
   const planning = args.has('--plan');
-  if ([baselineOnly, calibrationOnly, adaptiveCalibrationOnly].filter(Boolean).length > 1) throw Object.assign(new Error('Choose one diagnostic mode.'), { code: 'INVALID_MODE' });
+  if ([fullBaselineOnly, baselineReplacementMode, calibrationOnly, adaptiveCalibrationOnly].filter(Boolean).length > 1) throw Object.assign(new Error('Choose one diagnostic mode.'), { code: 'INVALID_MODE' });
+  const replacementSourcePath = process.env.DIARY_EVAL_REPLACE_FROM;
+  const replacementTrialIds = process.env.DIARY_EVAL_REPLACE_TRIAL_IDS;
+  const confirmedUnreceivedTrialIds = process.env.DIARY_EVAL_CONFIRMED_UNRECEIVED_TRIAL_IDS;
+  if (baselineReplacementMode && (!replacementSourcePath || !replacementTrialIds)) throw Object.assign(new Error('Replacement mode requires DIARY_EVAL_REPLACE_FROM and DIARY_EVAL_REPLACE_TRIAL_IDS.'), { code: 'MISSING_REPLACEMENT_SOURCE' });
+  if (!baselineReplacementMode && (replacementSourcePath !== undefined || replacementTrialIds !== undefined || confirmedUnreceivedTrialIds !== undefined)) throw Object.assign(new Error('Replacement source settings require --baseline-replacements.'), { code: 'INVALID_MODE' });
+  let replacementPlan = null;
+  let replacementSourceAbsolute = null;
+  if (baselineReplacementMode) {
+    replacementSourceAbsolute = resolve(replacementSourcePath);
+    let replacementSourceText;
+    try { replacementSourceText = await readFile(replacementSourceAbsolute, 'utf8'); } catch { throw Object.assign(new Error('Could not read the replacement source file.'), { code: 'INVALID_REPLACEMENT_SOURCE' }); }
+    replacementPlan = prepareBaselineReplacements(replacementSourceText, replacementTrialIds, confirmedUnreceivedTrialIds);
+  }
   const calibrationProfileOverride = process.env.DIARY_EVAL_CALIBRATION_PROFILES;
   if (calibrationProfileOverride !== undefined && !adaptiveCalibrationOnly) throw Object.assign(new Error('DIARY_EVAL_CALIBRATION_PROFILES is only valid with --calibration-followup.'), { code: 'INVALID_MODE' });
   const selectedCalibrationProfiles = adaptiveCalibrationOnly ? selectAdaptiveCalibrationProfiles(calibrationProfileOverride) : adaptiveCalibrationProfiles;
   if (baselineOnly && [...args].some(arg => arg.startsWith('--strategy='))) throw Object.assign(new Error('Baseline mode cannot be combined with matrix options.'), { code: 'INVALID_MODE' });
   if (planning) {
     if (baselineOnly) {
-      const trials = baselinePlan();
-      process.stdout.write(`${JSON.stringify({ format: 'riddle-diary-baseline-plan-v1', baselineCount: 50, profileCounts: Object.fromEntries(profiles.map(profileId => [profileId, trials.filter(item => item.profileId === profileId).length])), techniques: Object.keys(baselineTechniqueDefinitions), trials }, null, 2)}\n`);
+      const trials = baselineReplacementMode ? replacementPlan.selectedTrials : baselinePlan();
+      process.stdout.write(`${JSON.stringify({ format: baselineReplacementMode ? 'riddle-diary-baseline-replacements-plan-v1' : 'riddle-diary-baseline-plan-v1', baselineCount: baselineReplacementMode ? trials.length : 50, ...(baselineReplacementMode ? { fullBaselineCount: 50, replacementProvenance: replacementPlan.replacementProvenance } : {}), profileCounts: Object.fromEntries(profiles.map(profileId => [profileId, trials.filter(item => item.profileId === profileId).length])), techniques: Object.keys(baselineTechniqueDefinitions), trials }, null, 2)}\n`);
     } else if (adaptiveCalibrationOnly) {
       const trials = adaptiveCalibrationPlan(selectedCalibrationProfiles).map(trial => ({ ...trial, prompts: adaptiveCalibrationStrategy.prompts }));
       process.stdout.write(`${JSON.stringify({ format: 'riddle-diary-adaptive-calibration-plan-v1', adaptiveCalibrationCount: trials.length, trials }, null, 2)}\n`);
@@ -390,8 +461,9 @@ async function main() {
   const providerIntervalMs = parseProviderInterval(process.env.DIARY_EVAL_PROVIDER_INTERVAL_MS ?? '0');
   const waitForProvider = createProviderPacer(providerIntervalMs);
   const timestamp = new Date().toISOString().replaceAll(':', '-');
-  const defaultName = baselineOnly ? `work/diary-baseline-50-${timestamp}.json` : adaptiveCalibrationOnly ? `work/diary-calibration-followup-${timestamp}.json` : `work/diary-evaluation-${timestamp}.json`;
+  const defaultName = baselineReplacementMode ? `work/diary-baseline-replacements-${timestamp}.json` : fullBaselineOnly ? `work/diary-baseline-50-${timestamp}.json` : adaptiveCalibrationOnly ? `work/diary-calibration-followup-${timestamp}.json` : `work/diary-evaluation-${timestamp}.json`;
   const output = resolve(process.env.DIARY_EVAL_OUTPUT || defaultName);
+  if (replacementSourceAbsolute && output === replacementSourceAbsolute) throw Object.assign(new Error('Replacement output must be separate from the original run.'), { code: 'OUTPUT_SOURCE_COLLISION' });
   const records = [];
   const frozenProfiles = new Map();
   const startedAt = new Date().toISOString();
@@ -464,7 +536,7 @@ async function main() {
   async function checkpoint(record, { updateTimestamp = true } = {}) {
     if (updateTimestamp) record.updatedAt = new Date().toISOString();
     const format = baselineOnly ? 'riddle-diary-live-baseline-v1' : adaptiveCalibrationOnly ? 'riddle-diary-live-adaptive-calibration-v1' : 'riddle-diary-live-evaluation-v1';
-    const document = `${JSON.stringify({ format, startedAt, updatedAt: record.updatedAt, ...(providerIntervalMs > 0 ? { providerPacing: { minimumIntervalMs: providerIntervalMs } } : {}), promptProfiles, profileHistory, records }, null, 2)}\n`;
+    const document = `${JSON.stringify({ format, startedAt, updatedAt: record.updatedAt, ...(replacementPlan ? { replacementProvenance: replacementPlan.replacementProvenance } : {}), ...(providerIntervalMs > 0 ? { providerPacing: { minimumIntervalMs: providerIntervalMs } } : {}), promptProfiles, profileHistory, records }, null, 2)}\n`;
     await atomicWrite(document);
   }
 
@@ -571,7 +643,7 @@ async function main() {
   }
 
   if (baselineOnly) {
-    for (const trial of baselinePlan()) await runOne(trial);
+    for (const trial of baselineReplacementMode ? replacementPlan.selectedTrials : baselinePlan()) await runOne(trial);
   } else if (adaptiveCalibrationOnly) {
     for (const trial of adaptiveCalibrationPlan(selectedCalibrationProfiles)) await runOne({ ...trial, prompts: adaptiveCalibrationStrategy.prompts });
   } else if (calibrationOnly) {
@@ -582,7 +654,8 @@ async function main() {
     }
   }
   const summary = {
-    planned: baselineOnly ? 50 : adaptiveCalibrationOnly ? selectedCalibrationProfiles.length : calibrationOnly ? 4 : 16,
+    planned: baselineReplacementMode ? replacementPlan.selectedTrials.length : baselineOnly ? 50 : adaptiveCalibrationOnly ? selectedCalibrationProfiles.length : calibrationOnly ? 4 : 16,
+    ...(baselineReplacementMode ? { fullBaselineCount: 50, replacementCount: replacementPlan.selectedTrials.length } : {}),
     completed: records.filter(record => ['complete', 'review_pending', 'review_unavailable'].includes(record.status)).length,
     failed: records.filter(record => record.status === 'failed').length,
     pending: records.filter(record => record.status === 'running').length,
@@ -596,7 +669,7 @@ async function main() {
     reviewUnavailable: records.filter(record => record.status === 'review_unavailable').length,
   };
   const format = baselineOnly ? 'riddle-diary-live-baseline-v1' : adaptiveCalibrationOnly ? 'riddle-diary-live-adaptive-calibration-v1' : 'riddle-diary-live-evaluation-v1';
-  const final = { format, startedAt, endedAt: new Date().toISOString(), summary, ...(providerIntervalMs > 0 ? { providerPacing: { minimumIntervalMs: providerIntervalMs } } : {}), promptProfiles, profileHistory, records };
+  const final = { format, startedAt, endedAt: new Date().toISOString(), summary, ...(replacementPlan ? { replacementProvenance: replacementPlan.replacementProvenance } : {}), ...(providerIntervalMs > 0 ? { providerPacing: { minimumIntervalMs: providerIntervalMs } } : {}), promptProfiles, profileHistory, records };
   await atomicWrite(`${JSON.stringify(final, null, 2)}\n`);
   process.stdout.write(`Saved ${records.length} diagnostic trial records to ${output}\n`);
 }
