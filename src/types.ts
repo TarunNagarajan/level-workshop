@@ -12,4 +12,4 @@ export type Message = { id: string; role: 'user' | 'assistant' | 'hint'; content
 export type Review = { outcome: string; note: string; evidence: string; reviewer?: string };
 export type Round = { id: string; versionId?: string; version?: number; level: PlayerLevel; model?: string; tester: string; messages: Message[]; startedAt: number; deadline: number; endedAt: number | null; answer: string | null; hintsUsed: number; source?: string; accessToken?: string; review?: Review | null };
 export type Attempt = Round & { data: Level; config: { model: string; baseUrl: string }; parentId?: string | null; desk?: { evidence: string[]; events: { id: string; action: string; observation: string }[]; decision: string | null } };
-export type Bootstrap = { needsSetup: boolean; privateEntry?: boolean; tutorialDone?: boolean; user: User | null; model: { connected: boolean; model?: string; provider?: string } };
+export type Bootstrap = { needsSetup: boolean; privateEntry?: boolean; rootEntry: boolean; tutorialDone?: boolean; user: User | null; model: { connected: boolean; model?: string; provider?: string } };

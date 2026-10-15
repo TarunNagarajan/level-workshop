@@ -218,6 +218,10 @@ summary::-webkit-details-marker { display: none; }
 .modal-error { margin: -8px 0 18px; }
 .modal > .muted { margin: -7px 0 20px; }
 .share-link { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 16px 0 22px; }
+.root-entry-control { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 20px 0; padding: 16px 0; }
+.root-entry-control h2 { font: 22px Georgia, serif; margin: 0 0 6px; }
+.root-entry-control .settings-note { margin: 0 0 10px; }
+.root-entry-control .member-row { margin: 0; }
 .share-link input { flex: 1; min-width: 0; font-family: 'IBM Plex Mono', monospace; font-size: 10px; }
 .share-link small { flex-basis: 100%; color: var(--muted); margin-top: 5px; }
 .request-code { font-size: 11px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border: 1px solid var(--line); padding: 16px; max-height: 58dvh; overflow: auto; }

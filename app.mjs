@@ -13,13 +13,15 @@ app.use((req, res, next) => {
   next();
 });
 
-if (!process.env.DATABASE_URL || !process.env.WORKSHOP_OWNER_KEY || !process.env.WORKSHOP_SHARE_KEY) {
+const rootEntry = process.env.WORKSHOP_ROOT_ENTRY === 'true';
+if (!process.env.DATABASE_URL || !process.env.WORKSHOP_OWNER_KEY || (!process.env.WORKSHOP_SHARE_KEY && !rootEntry)) {
   app.use('/api', (req, res) => res.status(503).json({ error: 'The workshop is being configured. Please try again shortly.' }));
 } else {
   const workshop = createWorkshop({
     store: neonStore(process.env.DATABASE_URL),
     ownerKey: process.env.WORKSHOP_OWNER_KEY,
     sharingKey: process.env.WORKSHOP_SHARE_KEY,
+    rootEntry,
     secureCookies: true,
     publicOrigin: process.env.PUBLIC_ORIGIN || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : ''),
   });

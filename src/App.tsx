@@ -70,6 +70,7 @@ export function App() {
   else if (path.startsWith('/play/')) content = <BlindPlay token={path.split('/')[2]} />;
   else if (!bootstrap) content = <div className="auth-shell"><Mark />{error ? <><p className="error">{error}</p><Button onClick={reload}>Retry</Button></> : <p className="muted">Opening workshop…</p>}</div>;
   else if (path.startsWith('/enter/') || path.startsWith('/owner/')) content = <LinkEntry token={path.split('/')[2]} owner={path.startsWith('/owner/')} onDone={() => { navigate('/'); void reload(); }} />;
+  else if (!bootstrap.user && bootstrap.rootEntry && !path.startsWith('/join/')) content = <RootEntry onDone={() => { navigate('/'); void reload(); }} />;
   else if (!bootstrap.user && bootstrap.privateEntry && !path.startsWith('/join/')) content = <div className="auth-shell"><div className="auth-card"><Mark /><p className="eyebrow">LEVEL WORKSHOP</p><h1>A private workshop.</h1><p className="muted auth-description">Open the invitation link shared with you to enter the workshop.</p></div></div>;
   else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate('/'); void reload(); }} />;
   else {
@@ -102,6 +103,31 @@ export function App() {
     </div>;
   }
   return <>{content}{tourOpen && inWorkspace && bootstrap?.user && <Tutorial key={bootstrap.user.id} user={bootstrap.user} path={path} navigate={navigate} close={() => { setTourOpen(false); setBootstrap(b => b ? { ...b, tutorialDone: true } : b); }} />}{toast && <div role="status" className="toast"><Check size={15} />{toast}<button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast('')}>×</button></div>}</>;
+}
+
+function RootEntry({ onDone }: { onDone: () => void }) {
+  const [name, setName] = useState(''); const [ready, setReady] = useState(false); const [checking, setChecking] = useState(true);
+  const [busy, setBusy] = useState(false); const [error, setError] = useState('');
+  const check = async () => {
+    setChecking(true); setError(''); setReady(false);
+    try { const result = await api<{ ready: boolean }>('/entry'); setReady(result.ready); }
+    catch (e) { setError((e as Error).message); }
+    finally { setChecking(false); }
+  };
+  useEffect(() => { void check(); }, []);
+  return <div className="auth-shell"><div className="auth-card"><Mark /><p className="eyebrow">LEVEL WORKSHOP</p><h1>Enter the workshop.</h1><p className="muted auth-description">Enter your name to write and test levels with the team.</p>
+    <form onSubmit={async event => {
+      event.preventDefault(); setBusy(true); setError('');
+      try { await api('/entry', { method: 'POST', body: { name } }); onDone(); }
+      catch (e) { setError((e as Error).message); setReady(false); }
+      finally { setBusy(false); }
+    }}><Field label="Your name"><input autoComplete="name" autoFocus required maxLength={70} value={name} onChange={e => setName(e.target.value)} disabled={!ready || busy} /></Field>
+      {checking && <p className="muted" role="status">Checking workshop availability…</p>}
+      {error && <p className="error" role="alert">{error}</p>}
+      <Button className="primary full" disabled={!ready || !name.trim()} loading={busy}>Enter workshop<ArrowUpRight size={16} /></Button>
+    </form>{!ready && !checking && <Button className="secondary full" onClick={() => void check()}>Check availability again</Button>}
+    <p className="settings-note">This browser will remember your workspace for 30 days.</p>
+  </div></div>;
 }
 
 function LinkEntry({ token, owner, onDone }: { token: string; owner: boolean; onDone: () => void }) {
@@ -155,14 +181,16 @@ function Library({ user, notify }: { user: User; notify: (s: string) => void }) 
 
 function Team({ user, notify }: { user: User; notify: (s: string) => void }) {
   const [team, setTeam] = useState<User[]>([]); const [link, setLink] = useState('');
-  const [links, setLinks] = useState<{ id: string; createdAt: number; expires: number; revoked: number; path?: string }[]>([]);
-  const loadLinks = () => { if (user.role === 'admin') void api<typeof links>('/workshop-links').then(rows => { setLinks(rows); const initial = rows.find(l => l.path); if (initial && !link) setLink(window.location.origin + initial.path); }).catch(e => notify(e.message)); };
+  const [links, setLinks] = useState<{ id: string; createdAt: number; expires?: number; revoked: number; path?: string; rootEntry?: boolean; enabled?: boolean }[]>([]);
+  const loadLinks = () => { if (user.role === 'admin') void api<typeof links>('/workshop-links').then(rows => { setLinks(rows); const initial = rows.find(l => l.path && !l.rootEntry && l.path !== '/'); if (initial && !link) setLink(window.location.origin + initial.path); }).catch(e => notify(e.message)); };
+  const rootLink = links.find(item => item.rootEntry || item.path === '/');
   useEffect(() => { api<User[]>('/team').then(setTeam).catch(e => notify(e.message)); }, []);
   useEffect(loadLinks, []);
   return <div className="page narrow"><div className="breadcrumb">Workshop <ChevronRight size={12} /> Team</div><header className="page-heading"><div><h1>Team</h1></div>{user.role === 'admin' && <Button className="primary" onClick={async () => { try { const r = await api<{ path: string }>('/workshop-links', { method: 'POST', body: {} }); setLink(window.location.origin + r.path); loadLinks(); } catch (e) { notify((e as Error).message); } }}><Plus size={15} />Create workshop link</Button>}</header>
     {link && <div className="share-link"><input aria-label="Invitation link" value={link} readOnly /><button className="icon-button" aria-label="Copy invitation link" onClick={() => navigator.clipboard.writeText(link).then(() => notify('Workshop link copied.')).catch(() => notify('Select and copy the link.'))}><Copy size={16} /></button><small>Share with your developers. They only need a name. Expires in 30 days.</small></div>}
+    {user.role === 'admin' && rootLink && <section className="root-entry-control"><div><h2>Main website entry</h2><p className="settings-note">Visitors can start a separate editor session from the main website. Pausing also signs out sessions created there. Private workshop links keep their own expiry.</p></div><div className="member-row"><span><strong>{rootLink.enabled ? 'Name-only entry is available' : 'Name-only entry is paused'}</strong><small>The public address is the main website.</small></span><Button className="secondary" onClick={async () => { try { await api('/entry', { method: 'PUT', body: { enabled: !rootLink.enabled } }); loadLinks(); notify(rootLink.enabled ? 'Main website entry paused.' : 'Main website entry reopened.'); } catch (e) { notify((e as Error).message); } }}>{rootLink.enabled ? 'Pause entry' : 'Reopen entry'}</Button></div></section>}
     <div className="member-list">{team.map(u => <div className="member-row" key={u.id}><span className="avatar">{u.name[0]}</span><div><strong>{u.name}</strong>{!u.email.endsWith('@workshop.invalid') && <small>{u.email}</small>}</div><span className="muted">{u.role === 'admin' ? 'Owner' : 'Author'}</span></div>)}</div>
-    {user.role === 'admin' && links.some(l => !l.revoked && l.expires > Date.now()) && <><h2>Active workshop links</h2><p className="settings-note">Anyone with a link can join as an author. Revoking it also ends the author sessions created through it.</p><div className="member-list">{links.filter(l => !l.revoked && l.expires > Date.now()).map(l => <div className="member-row" key={l.id}><div><strong>Created {date(l.createdAt)}</strong><small>Expires {date(l.expires)}</small></div><Button onClick={async () => { try { await api(`/workshop-links/${l.id}`, { method: 'DELETE' }); loadLinks(); notify('Workshop link revoked.'); } catch (e) { notify((e as Error).message); } }}>Revoke</Button></div>)}</div></>}
+    {user.role === 'admin' && links.some(l => !l.rootEntry && !l.revoked && l.expires && l.expires > Date.now()) && <><h2>Active workshop links</h2><p className="settings-note">Anyone with a link can join as an author. Revoking it also ends the author sessions created through it.</p><div className="member-list">{links.filter(l => !l.rootEntry && !l.revoked && l.expires && l.expires > Date.now()).map(l => <div className="member-row" key={l.id}><div><strong>Created {date(l.createdAt)}</strong><small>Expires {date(l.expires!)}</small></div><Button onClick={async () => { try { await api(`/workshop-links/${l.id}`, { method: 'DELETE' }); loadLinks(); notify('Workshop link revoked.'); } catch (e) { notify((e as Error).message); } }}>Revoke</Button></div>)}</div></>}
   </div>;
 }
 
