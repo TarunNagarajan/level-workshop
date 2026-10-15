@@ -322,7 +322,7 @@ export function addPassportRoutes(app, { store, provider, completion, member, cr
       if (!provider.apiKey) fail(503, 'The review provider is not connected.');
       const state = await stateFor(row);
       const existing = state.machineReview;
-      if (existing?.status === 'complete') return { machineReview: existing };
+      if (existing?.status === 'complete') return { machineReview: publicMachineReview(existing) };
       if (existing && existing.attempts >= 3) return { machineReview: { status: 'unavailable', attempts: existing.attempts, retryable: false, errorCode: 'attempt_limit' } };
       const now = Date.now(), runId = randomUUID(), attempts = (existing?.attempts || 0) + 1;
       state.machineReview = { status: 'pending', attempts, retryable: false, startedAt: now };
@@ -334,7 +334,6 @@ export function addPassportRoutes(app, { store, provider, completion, member, cr
       const assignment = await get('SELECT collection_id, profile_id FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
       let reviewed;
       try {
-        const config = { ...JSON.parse(row.config), apiKey: provider.apiKey };
         const finding = typeof state.finding === 'string' ? state.finding : (row.answer || '');
         const transcript = messages.map(({ id, role, content, opening }) => ({ replyId: id, role, opening: Boolean(opening), content }));
         const answer = await completion({ config: provider, system: REVIEW_SYSTEM, messages: [{ role: 'user', content: JSON.stringify({ secret, criteria, finding, decision: state.decision, selectedEvidence: state.evidence, transcript }) }], temperature: 0, metricsContext: { kind: 'judge', source: 'judge', roundId: row.id, versionId: row.version_id, userId: req.user?.id || null, userRole: req.user?.role || null, collectionId: assignment?.collection_id || null, profileId: assignment?.profile_id || null } });
