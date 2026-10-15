@@ -115,6 +115,8 @@
 .object-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .object-actions button { font-size: 10px; padding: 7px 9px; }
 .interview-panel { border: 1px solid #d1d5c7; border-radius: 4px; background: #fcfaf3; display: flex; flex-direction: column; height: clamp(750px, 65vw, 890px); overflow: hidden; }
+.interview-panel.has-filed-result { height: auto; max-height: none; overflow: visible; align-self: start; }
+.interview-panel.has-filed-result .interview-transcript { flex: none; min-height: 100px; max-height: 38vh; overflow: auto; }
 .interview-heading { display: flex; gap: 13px; align-items: center; padding: 19px 17px; border-bottom: 1px solid #dcdccf; }
 .interview-heading .eyebrow { font-size: 7px; }
 .interview-heading h2 { font-size: 23px; margin-top: 5px; }
@@ -141,6 +143,14 @@
 .filed-summary { padding: 20px 17px; border-top: 1px solid #d5d9cb; }
 .filed-summary > strong { font: 24px Georgia, serif; }
 .filed-summary p { font-size: 12px; line-height: 1.8; margin: 10px 0; white-space: pre-wrap; }
+.case-result { margin: 14px 0; padding: 14px; border: 1px solid #cdd2c0; background: #f7f7f1; }
+.case-result h3 { margin: 0 0 8px; font: 19px Georgia, serif; }
+.filed-summary .case-result p { margin: 8px 0; }
+.filed-summary .case-result-decision { font-weight: 600; }
+.filed-summary .case-result-decision.correct { color: #426844; }
+.filed-summary .case-result-decision.incorrect { color: #9b493c; }
+.filed-summary .case-result-note { padding-top: 9px; border-top: 1px solid #d5d9cb; color: #74786b; font-size: 10px; }
+.filed-summary, .filed-summary p, .case-result { overflow-wrap: anywhere; }
 .filed-summary a { display: block; font-size: 11px; color: #526b47; text-decoration: underline; margin-bottom: 14px; }
 .document-inspection { width: min(580px, 100%); margin: 15px auto 30px; }
 .document-inspection .book-cover { width: 250px; margin: auto; }

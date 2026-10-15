@@ -65,9 +65,13 @@ test('passport objects persist, reconstruct observed context and file actual evi
     assert.equal((await request(`/attempts/${current.round.id}/prompt`, { cookie })).body.system, calls[0].system);
     const invalid = await request(path + '/finish', { method: 'POST', body: { decision: 'HOLD', finding: 'An allegation', evidence: [question.id] }, cookie });
     assert.equal(invalid.status, 400); assert.equal((await request(path, { cookie })).body.state.decision, null);
+    assert.equal((await request(path, { cookie })).body.caseResult, undefined, 'an unfiled case has no debrief');
     const finished = await request(path + '/finish', { method: 'POST', body: { decision: 'HOLD', finding: 'He identified his brother as the owner.', evidence: [reply.id] }, cookie });
     assert.equal(finished.status, 200); assert.equal(finished.body.state.decision, 'HOLD'); assert.deepEqual(finished.body.state.evidence, [reply.id]);
     assert.equal(finished.body.round.endedAt > 0, true); assert.equal(finished.body.round.answer.includes('brother'), true);
+    assert.deepEqual(finished.body.caseResult, { title: 'Genuine passport, wrong traveller.', explanation: 'Noah used his older brother Elias’s genuine passport because his own had expired. Elias lent it to him for their sister’s wedding. The document is authentic, but Noah is not the traveller named in it. This was deliberate identity misuse, not an innocent signature mistake or a forged passport.', expectedDecision: 'HOLD', playerDecision: 'HOLD', decisionCorrect: true });
+    assert.deepEqual((await request(path, { cookie })).body.caseResult, finished.body.caseResult, 'the capability-protected snapshot preserves the filed debrief');
+    assert.equal((await request(path)).status, 403, 'the filed debrief is not public without the owner session or round capability');
     assert.equal(await store.get('SELECT * FROM reviews WHERE round_id = ?', current.round.id), undefined);
     assert.deepEqual((await request(`/attempts/${current.round.id}`, { cookie })).body.desk.evidence, [reply.id]);
     assert.equal((await request(path + '/messages', { method: 'POST', body: { content: 'One more question' }, cookie })).status, 409);
@@ -76,6 +80,29 @@ test('passport objects persist, reconstruct observed context and file actual evi
     const copy = await request('/reference/copy', { method: 'POST', body: {}, cookie });
     assert.equal(copy.status, 201);
     assert.equal((await request(`/levels/${copy.body.id}`, { cookie })).body.draft.title, 'My passport-desk draft');
+  } finally { await f.close(); }
+});
+
+test('canonical passport debrief marks CLEAR incorrect and is absent from expired unfiled rounds', async () => {
+  const f = await fixture(async () => ({ text: 'The documents are in order.', model: 'fixture-model', latencyMs: 1, usage: 2 }));
+  const { request, cookie, store } = f;
+  try {
+    const started = await request('/reference/start', { method: 'POST', body: {}, cookie });
+    const path = `/reference/rounds/${started.body.round.id}`;
+    assert.equal((await request(path, { cookie })).body.caseResult, undefined);
+    const clear = await request(path + '/finish', { method: 'POST', body: { decision: 'CLEAR', finding: 'The passport is genuine.', evidence: [] }, cookie });
+    assert.equal(clear.status, 200);
+    assert.equal(clear.body.caseResult.playerDecision, 'CLEAR');
+    assert.equal(clear.body.caseResult.expectedDecision, 'HOLD');
+    assert.equal(clear.body.caseResult.decisionCorrect, false);
+    assert.equal((await request(path, { cookie })).body.caseResult.decisionCorrect, false);
+    assert.equal(await store.get('SELECT * FROM reviews WHERE round_id = ?', started.body.round.id), undefined);
+
+    const expired = await request('/reference/start', { method: 'POST', body: {}, cookie });
+    await store.run('UPDATE rounds SET started_at = ? WHERE id = ?', Date.now() - 600000, expired.body.round.id);
+    const expiredSnapshot = await request(`/reference/rounds/${expired.body.round.id}`, { cookie });
+    assert.equal(expiredSnapshot.body.round.endedAt, null);
+    assert.equal(expiredSnapshot.body.caseResult, undefined);
   } finally { await f.close(); }
 });
 
@@ -98,6 +125,7 @@ test('blind passport links hide author data, preserve capability sessions and su
     const path = `/reference/rounds/${round.body.round.id}`;
     assert.equal((await request(path)).status, 403);
     assert.equal((await request(path, { token: round.body.round.accessToken })).status, 200);
+    assert.equal((await request(path, { token: 'incorrect-capability' })).status, 403);
     assert.equal((await request(path + '/context', { token: round.body.round.accessToken })).status, 401);
     assert.equal((await request('/reference/design', { token: round.body.round.accessToken })).status, 401);
     assert.equal((await request(`/attempts/${round.body.round.id}`)).status, 401);
@@ -106,7 +134,9 @@ test('blind passport links hide author data, preserve capability sessions and su
     assert.equal((await request(`/reference/play/${token}`)).status, 404);
     assert.equal((await request(`/reference/play/${token}`, { method: 'POST', body: { tester: 'New peer' } })).status, 404);
     // Revocation stops new starts; an existing round's independently issued token can still file its case.
-    assert.equal((await request(path + '/finish', { method: 'POST', token: round.body.round.accessToken, body: { decision: 'CLEAR', finding: 'No disclosure established.', evidence: [] } })).status, 200);
+    const filed = await request(path + '/finish', { method: 'POST', token: round.body.round.accessToken, body: { decision: 'CLEAR', finding: 'No disclosure established.', evidence: [] } });
+    assert.equal(filed.status, 200); assert.equal(filed.body.caseResult.decisionCorrect, false);
+    assert.equal((await request(path, { token: round.body.round.accessToken })).body.caseResult.decisionCorrect, false);
   } finally { await f.close(); }
 });
 
