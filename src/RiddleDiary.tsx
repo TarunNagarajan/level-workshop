@@ -166,8 +166,12 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
       if (!active) return;
       const activeScroll = mobileBook && bookPageIndexRef.current % 2 === 0 ? left : mobileBook ? right : left;
       const width = Math.max(80, activeScroll.clientWidth - horizontalPadding(activeScroll));
-      const height = Math.max(1, activeScroll.clientHeight - verticalPadding(activeScroll));
+      const height = Math.max(0, activeScroll.clientHeight - verticalPadding(activeScroll));
       const next = paginateDiaryMessages(latestMessages, width, height, plainText);
+      // Resize and breakpoint changes can briefly collapse the flex scroll area. Keep the
+      // last measured book until a real page can fit content instead of printing one glyph
+      // per zero-height page while layout settles.
+      if (!next) return;
       setBookPages(current => sameBookPages(current, next) ? current : next);
       const anchor = readingAnchor.current;
       const messagesChanged = lastPaginatedMessages.current !== latestMessages;
@@ -528,7 +532,7 @@ function DiaryPrologue() {
   </div>;
 }
 
-function paginateDiaryMessages(messages: Message[], width: number, height: number, plainText: boolean): DiaryPageSegment[][] {
+function paginateDiaryMessages(messages: Message[], width: number, height: number, plainText: boolean): DiaryPageSegment[][] | null {
   const pages: DiaryPageSegment[][] = [[]];
   const probe = document.createElement('div');
   probe.className = 'diary-page-scroll diary-pagination-probe';
@@ -552,7 +556,7 @@ function paginateDiaryMessages(messages: Message[], width: number, height: numbe
         for (const length of tokens) { end += length; ends.push(end); }
         if (!ends.length && content.length) ends.push(content.length);
         if (!ends.length) ends.push(0);
-        const remainingHeight = Math.max(1, height - used);
+        const remainingHeight = Math.max(0, height - used);
         let low = 0, high = ends.length - 1, fit = -1;
         while (low <= high) {
           const middle = (low + high) >> 1;
@@ -572,7 +576,7 @@ function paginateDiaryMessages(messages: Message[], width: number, height: numbe
             const candidate = points.slice(0, middle).join('');
             if (measureDiaryEntry(probe, message, candidate, offset > 0, plainText, false) <= remainingHeight) { pointFit = middle; pointLow = middle + 1; } else pointHigh = middle - 1;
           }
-          if (!pointFit) pointFit = 1;
+          if (!pointFit) return null;
           selectedEnd = offset + points.slice(0, pointFit).join('').length;
         }
         const text = content.slice(offset, selectedEnd);

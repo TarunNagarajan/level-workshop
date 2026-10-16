@@ -521,6 +521,56 @@ test.describe('Riddle diary scene', () => {
       }
       await expect(page.getByLabel('Ask the diary')).toHaveValue('Keep this draft while reading.');
     }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.getByRole('button', { name: 'Readable text', exact: true }).click();
+    const reflowStarted = Date.now();
+    await page.setViewportSize({ width: 390, height: 600 });
+    const navigation = page.getByRole('navigation', { name: 'Book pages' });
+    const mobilePageCount = async () => {
+      const label = await navigation.locator('span').innerText();
+      return Number(label.match(/of (\d+)$/)?.[1] || 0);
+    };
+    await expect.poll(mobilePageCount, { timeout: 5000 }).toBeGreaterThan(0);
+    expect(Date.now() - reflowStarted).toBeLessThan(5000);
+    expect(await mobilePageCount()).toBeLessThan(500);
+    await navigation.getByRole('button', { name: 'First page', exact: true }).click();
+    const readableSegments = new Map(original.map(message => [message.id, [] as Array<{ start: number; end: number; text: string }>]));
+    let reflowPageCount = 0;
+    let priorReadableMessage = 0;
+    for (;;) {
+      const visibleEntries = page.locator('.diary-page.mobile-page-current .diary-entry');
+      await expect(visibleEntries.first()).toBeVisible();
+      const segments = await visibleEntries.evaluateAll(nodes => nodes.map(node => {
+        const text = node.querySelector<HTMLElement>('p[aria-hidden="true"], p.diary-reader-text, p.diary-ink-text')!;
+        const bounds = node.getBoundingClientRect();
+        const paper = node.closest('.diary-page-scroll')!.getBoundingClientRect();
+        return { id: node.getAttribute('data-message-id')!, start: Number(node.getAttribute('data-offset-start')), end: Number(node.getAttribute('data-offset-end')), text: text.textContent ?? '', bottom: bounds.bottom, paperBottom: paper.bottom, right: text.getBoundingClientRect().right, paperRight: paper.right, scrollWidth: text.scrollWidth, width: text.clientWidth };
+      }));
+      for (const segment of segments) {
+        const source = original.find(item => item.id === segment.id)!;
+        const sourceIndex = original.indexOf(source);
+        expect(sourceIndex).toBeGreaterThanOrEqual(priorReadableMessage);
+        priorReadableMessage = sourceIndex;
+        expect(segment.text).toBe(source.content.slice(segment.start, segment.end));
+        expect(segment.bottom).toBeLessThanOrEqual(segment.paperBottom + 2);
+        expect(segment.right).toBeLessThanOrEqual(segment.paperRight + 2);
+        expect(segment.scrollWidth).toBeLessThanOrEqual(segment.width + 2);
+        readableSegments.get(segment.id)!.push({ start: segment.start, end: segment.end, text: segment.text });
+      }
+      const next = navigation.getByRole('button', { name: 'Next', exact: true });
+      if (await next.isDisabled()) break;
+      await next.click();
+      expect(++reflowPageCount).toBeLessThan(500);
+    }
+    for (const item of original) {
+      const pieces = readableSegments.get(item.id)!;
+      let offset = 0;
+      for (const piece of pieces) { expect(piece.start).toBe(offset); offset = piece.end; }
+      expect(offset).toBe(item.content.length);
+      expect(pieces.map(piece => piece.text).join('')).toBe(item.content);
+    }
+    await expect(page.getByLabel('Ask the diary')).toHaveValue('Keep this draft while reading.');
+    await page.screenshot({ path: 'verification/riddle-diary-reflow-390x600-readable.png', fullPage: false, animations: 'disabled' });
     expect(modelRequests).toBe(0);
     expect(pageErrors).toEqual([]);
   });
