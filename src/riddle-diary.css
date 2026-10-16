@@ -115,6 +115,7 @@
 .diary-composer-paper { display: grid; grid-template-columns: minmax(0, 1fr) 46px; align-items: stretch; width: 100%; min-width: 0; box-sizing: border-box; min-height: 48px; background: transparent; border: 0; border-bottom: 1px solid #777a6659; box-shadow: none; }
 .diary-composer-paper:focus-within { border-bottom-color: #526147; box-shadow: 0 1px 0 #526147; }
 .diary-composer-paper textarea { width: 100%; min-width: 0; box-sizing: border-box; border: 0; background: transparent; color: #2f3c31; border-radius: 0; box-shadow: none; resize: none; min-height: 44px; max-height: 5.5em; overflow: auto; padding: 8px 10px; font: 15px/1.4 Georgia, serif; }
+.diary-composer-paper textarea:focus { outline: none; border: 0; box-shadow: none; }
 .diary-composer-paper textarea::placeholder { color: #767663; }
 .diary-composer-paper > button { display: inline-flex; align-items: center; justify-content: center; width: 46px; min-height: 46px; flex: none; color: #3d4d3e; }
 .diary-composer-paper > button:hover:not(:disabled) { color: #18261b; background: #68755418; }

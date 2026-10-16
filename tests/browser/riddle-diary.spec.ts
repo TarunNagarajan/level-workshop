@@ -451,6 +451,13 @@ test.describe('Riddle diary scene', () => {
     await page.goto('/diary');
     await expect(page.getByLabel('Ask the diary')).toBeVisible();
     await page.getByLabel('Ask the diary').fill('Keep this draft while reading.');
+    const focusedComposer = await page.getByLabel('Ask the diary').evaluate(element => {
+      const input = getComputedStyle(element);
+      const paper = getComputedStyle(element.parentElement!);
+      return { focused: document.activeElement === element, outline: input.outlineStyle, shadow: input.boxShadow, borderWidth: input.borderWidth, paperRule: paper.borderBottomWidth };
+    });
+    expect(focusedComposer).toEqual({ focused: true, outline: 'none', shadow: 'none', borderWidth: '0px', paperRule: '1px' });
+    await page.screenshot({ path: 'verification/riddle-diary-composer-focused.png', fullPage: false, animations: 'disabled' });
 
     for (const [width, height] of [[1366, 768], [390, 600]] as const) {
       await page.setViewportSize({ width, height });
