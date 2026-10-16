@@ -58,12 +58,29 @@ test.describe('Riddle diary scene', () => {
     await page.getByRole('button', { name: 'Open the diary', exact: true }).click();
     await page.getByRole('button', { name: 'Story context' }).click();
     await expect(page.getByRole('dialog', { name: 'Story context' })).toBeVisible();
+    const storyContrast = await page.getByRole('dialog', { name: 'Story context' }).locator(':scope > .eyebrow, :scope > h2, .diary-prologue-copy, .diary-prologue-copy > span, .diary-character-cards h2, .diary-character-cards p, .diary-paper-button').evaluateAll(elements => {
+      const rgb = (color: string) => color.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+      const luminance = (color: number[]) => color.map(value => { const channel = value / 255; return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4; }).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+      const dialog = elements[0].closest('[role="dialog"]')!;
+      const dialogBackground = rgb(getComputedStyle(dialog).backgroundColor);
+      return elements.map(element => {
+        let background = dialogBackground;
+        for (let ancestor = element as HTMLElement; ancestor && ancestor !== dialog; ancestor = ancestor.parentElement!) {
+          const candidate = getComputedStyle(ancestor).backgroundColor;
+          if (!candidate.includes('rgba(0, 0, 0, 0)') && !candidate.endsWith(', 0)')) { background = rgb(candidate); break; }
+        }
+        const foreground = rgb(getComputedStyle(element).color);
+        const [a, b] = [luminance(foreground), luminance(background)].sort((x, y) => y - x);
+        return { className: (element as HTMLElement).className, contrast: (a + .05) / (b + .05) };
+      });
+    });
+    expect(storyContrast.every(item => item.contrast >= 4.5), JSON.stringify(storyContrast)).toBe(true);
     expect(starts).toBe(1);
     expect(practiceModelRequests).toBe(0);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog', { name: 'Story context' })).toHaveCount(0);
-    await page.getByRole('button', { name: 'Turn to recent entries' }).click();
-    await expect(page.getByLabel('Recent diary entries')).toBeVisible();
+    await page.getByRole('button', { name: 'Latest entry', exact: true }).click();
+    await expect(page.locator('.diary-page.mobile-page-current')).toBeVisible();
     const mediumPageText = await page.locator('.diary-page.mobile-page-current .diary-entry p[aria-hidden="true"]').evaluateAll(items => items.map(element => { const paragraph = element as HTMLElement, page = element.closest('.diary-page-scroll') as HTMLElement; return { client: paragraph.clientWidth, scroll: paragraph.scrollWidth, paragraphRight: paragraph.getBoundingClientRect().right, textInset: page.getBoundingClientRect().right - paragraph.getBoundingClientRect().right }; }));
     expect(mediumPageText.every(width => width.scroll <= width.client + 2 && width.textInset >= 8), JSON.stringify(mediumPageText)).toBe(true);
     await page.screenshot({ path: 'verification/riddle-diary-open-599.png', fullPage: false, animations: 'disabled' });
@@ -85,9 +102,10 @@ test.describe('Riddle diary scene', () => {
 
     const preservedDraft = 'I would like to ask about the order of events.';
     await page.getByLabel('Ask the diary').fill(preservedDraft);
-    await page.getByRole('button', { name: 'Turn to earlier entries' }).click();
+    const previousPage = page.getByRole('button', { name: 'Previous', exact: true });
+    if (await previousPage.isEnabled()) await previousPage.click();
     await expect(page.getByLabel('Ask the diary')).toHaveValue(preservedDraft);
-    await page.getByRole('button', { name: 'Turn to recent entries' }).click();
+    await page.getByRole('button', { name: 'Latest entry', exact: true }).click();
     await expect(page.getByLabel('Ask the diary')).toHaveValue(preservedDraft);
 
     let sentReplyId = '';
@@ -117,28 +135,62 @@ test.describe('Riddle diary scene', () => {
     await expect(page.getByRole('button', { name: 'Show entire reply' })).toHaveCount(0);
 
     const secondQuestion = 'What did you tell Hagrid before the school meeting?';
-    await page.getByRole('button', { name: 'Turn to earlier entries' }).click();
+    await page.setViewportSize({ width: 390, height: 600 });
+    let releaseDelayedReply!: () => void;
+    let signalDelayedRequest!: () => void;
+    const delayedGate = new Promise<void>(resolve => { releaseDelayedReply = resolve; });
+    const delayedRequestSeen = new Promise<void>(resolve => { signalDelayedRequest = resolve; });
+    await page.route('**/api/rounds/*/messages', async route => {
+      if (route.request().method() === 'POST' && route.request().postDataJSON()?.content === secondQuestion) {
+        signalDelayedRequest();
+        await delayedGate;
+      }
+      await route.continue();
+    });
+    await page.getByRole('button', { name: 'Latest entry', exact: true }).click();
     await page.getByLabel('Ask the diary').fill(secondQuestion);
     const secondReplyResponse = page.waitForResponse(response => response.url().includes('/messages') && response.request().method() === 'POST' && response.ok());
     await page.getByRole('button', { name: 'Send question' }).click();
+    await delayedRequestSeen;
+    const navigation = page.getByRole('navigation', { name: 'Book pages' });
+    const latestPosition = await navigation.locator('span').innerText();
+    await expect(navigation.getByRole('button', { name: 'Previous', exact: true })).toBeEnabled();
+    await navigation.getByRole('button', { name: 'Previous', exact: true }).click();
+    const chosenOlderAnchor = await page.locator('.diary-page.mobile-page-current .diary-entry').first().evaluate(element => ({ id: element.getAttribute('data-message-id'), offset: element.getAttribute('data-offset-start') }));
+    const chosenOlderPosition = await navigation.locator('span').innerText();
+    expect(chosenOlderPosition).not.toBe(latestPosition);
+    releaseDelayedReply();
     const secondReply = await (await secondReplyResponse).json();
+    await expect.poll(() => page.locator('.diary-page.mobile-page-current .diary-entry').first().evaluate(element => ({ id: element.getAttribute('data-message-id'), offset: element.getAttribute('data-offset-start') }))).toEqual(chosenOlderAnchor);
+    await page.unroute('**/api/rounds/*/messages');
     expect(secondReply.messages.at(-2).content).toBe(secondQuestion);
-    await expect(page.locator('.diary-page-left .from-reader')).toContainText(question);
-    await expect(page.locator('.diary-page-right .from-reader')).toContainText(secondQuestion);
-    await expect(page.locator('.diary-page-right .from-diary .diary-ink-text').last()).toContainText(/I expected the matter to be resolved before the night was over/i);
-    await expect(page.locator('.diary-page-right')).toHaveClass(/mobile-page-current/);
-    await page.getByRole('button', { name: 'Turn to earlier entries' }).click();
-    await expect(page.locator('.diary-page-left')).toHaveClass(/mobile-page-current/);
-    await expect(page.locator('.diary-page-left .from-reader')).toContainText(question);
-    await page.getByRole('button', { name: 'Turn to recent entries' }).click();
-    await expect(page.locator('.diary-page-right')).toHaveClass(/mobile-page-current/);
+    const secondReplyId = secondReply.messages.at(-1).id;
+    await expect(page.locator(`.diary-page.mobile-page-current [data-message-id="${secondReplyId}"]`)).toHaveCount(0);
+    const postsBeforeRead = practiceModelRequests;
+    await page.getByRole('button', { name: 'Full conversation', exact: true }).click();
+    const transcript = page.getByRole('dialog', { name: 'Full conversation' });
+    await expect(transcript).toContainText(question);
+    await expect(transcript).toContainText(secondQuestion);
+    await expect(transcript.locator('.diary-transcript-item').last()).toContainText(secondReply.messages.at(-1).content);
+    await transcript.locator(`#full-message-${secondReply.messages.at(-2).id}`).getByRole('button', { name: 'Show in book' }).click();
+    await expect(page.locator(`.diary-page [data-message-id="${secondReply.messages.at(-2).id}"]`)).toBeVisible();
+    expect(practiceModelRequests).toBe(postsBeforeRead);
+    await page.getByRole('button', { name: 'Latest entry', exact: true }).click();
+    await expect(page.locator(`.diary-page [data-message-id="${secondReplyId}"]`)).toBeVisible();
+    await expect(page.locator('.diary-page.mobile-page-current')).toBeVisible();
+    const visualAnchor = await page.locator('.diary-page.mobile-page-current .diary-entry').first().evaluate(element => ({ id: element.getAttribute('data-message-id')!, offset: Number(element.getAttribute('data-offset-start')) }));
+    await page.getByRole('button', { name: 'Readable text', exact: true }).click();
+    await expect(page.locator('.diary-page.mobile-page-current .diary-plain-text').first()).toBeVisible();
+    await expect.poll(() => page.locator('.diary-page.mobile-page-current .diary-entry').evaluateAll((entries, anchor) => entries.some(entry => entry.getAttribute('data-message-id') === anchor.id && Number(entry.getAttribute('data-offset-start')) <= anchor.offset && Number(entry.getAttribute('data-offset-end')) >= anchor.offset), visualAnchor)).toBe(true);
+    await page.getByRole('button', { name: 'Handwritten view', exact: true }).click();
     await page.getByRole('button', { name: /Memory fragment/ }).first().click();
     await page.getByRole('button', { name: 'Place beside diary' }).click();
-    await expect(page.locator('.diary-page-right')).toHaveClass(/mobile-page-current/);
+    await expect(page.locator('.diary-page.mobile-page-current')).toBeVisible();
     await page.getByRole('button', { name: 'Done' }).click();
     await expect(page.getByLabel('Ask the diary')).toHaveValue('');
     await page.getByLabel('Ask the diary').fill(preservedDraft);
-    await page.getByRole('button', { name: 'Turn to earlier entries' }).click();
+    const firstPage = page.getByRole('button', { name: 'First page', exact: true });
+    if (await firstPage.isEnabled()) await firstPage.click();
     await expect(page.getByLabel('Ask the diary')).toHaveValue(preservedDraft);
     const longDraft = 'Could you explain what happened before the letter arrived? '.repeat(70).slice(0, 4000);
     await page.getByLabel('Ask the diary').fill(longDraft);
@@ -146,16 +198,22 @@ test.describe('Riddle diary scene', () => {
     await page.evaluate(() => window.scrollTo(0, 0));
     const draftHeight = await page.getByLabel('Ask the diary').evaluate(element => ({ client: element.clientHeight, scroll: element.scrollHeight }));
     expect(draftHeight.scroll).toBeGreaterThan(draftHeight.client);
-    await page.getByRole('button', { name: 'Turn to recent entries' }).click();
+    await page.getByRole('button', { name: 'Latest entry', exact: true }).click();
     await expect(page.getByLabel('Ask the diary')).toHaveValue(longDraft);
     await page.getByLabel('Ask the diary').fill('A question kept beside the latest reply.');
 
     for (const [width, height] of [[1440, 1000], [1366, 768], [599, 844], [599, 550], [390, 844], [390, 600]] as const) {
       await page.setViewportSize({ width, height });
       await page.evaluate(() => window.scrollTo(0, 0));
+      await page.getByRole('button', { name: 'Latest entry', exact: true }).click();
+      await page.evaluate(() => window.scrollTo(0, 0));
       const bounds = await page.evaluate(() => {
         const rect = (selector: string) => { const element = document.querySelector<HTMLElement>(selector); if (!element) return null; const value = element.getBoundingClientRect(); return { left: value.left, right: value.right, top: value.top, bottom: value.bottom }; };
-        return { book: rect('.diary-open-book'), page: rect('.diary-page-right'), composer: rect('.diary-composer-wrap'), paper: rect('.diary-composer-paper'), input: rect('#diary-question'), send: rect('.diary-composer-paper > button'), transcript: rect('.diary-page-right .diary-page-scroll'), earlierTranscript: rect('.diary-page-left .diary-page-scroll'), view: { width: innerWidth, height: innerHeight }, pageY: document.scrollingElement?.scrollTop || 0, visibleReply: Boolean(document.querySelector('.diary-page-right .from-diary .diary-ink-text')) };
+        const visibleReply = [...document.querySelectorAll<HTMLElement>('.diary-page .from-diary .diary-ink-text')].some(element => {
+          const page = element.closest('.diary-page')!;
+          return getComputedStyle(page).visibility !== 'hidden' && (innerWidth > 640 || page.classList.contains('mobile-page-current')) && element.getBoundingClientRect().height > 0;
+        });
+        return { book: rect('.diary-open-book'), page: rect('.diary-page-right'), composer: rect('.diary-composer-wrap'), paper: rect('.diary-composer-paper'), input: rect('#diary-question'), send: rect('.diary-composer-paper > button'), transcript: rect('.diary-page-right .diary-page-scroll'), earlierTranscript: rect('.diary-page-left .diary-page-scroll'), view: { width: innerWidth, height: innerHeight }, pageY: document.scrollingElement?.scrollTop || 0, visibleReply };
       });
       expect(bounds.book && bounds.page && bounds.composer && bounds.paper && bounds.input && bounds.send && bounds.transcript && bounds.earlierTranscript, JSON.stringify(bounds)).toBeTruthy();
       expect(bounds.book!.top).toBeGreaterThanOrEqual(-1);
@@ -179,7 +237,7 @@ test.describe('Riddle diary scene', () => {
       expect(bounds.visibleReply).toBe(true);
       await page.screenshot({ path: `verification/riddle-diary-active-${width}x${height}.png`, fullPage: false, animations: 'disabled' });
     }
-    await page.getByRole('button', { name: 'Turn to earlier entries' }).click();
+    await page.getByRole('button', { name: 'First page', exact: true }).click();
     await expect(page.getByLabel('Ask the diary')).toBeVisible();
     const earlierViewBounds = await page.evaluate(() => {
       const composer = document.querySelector('.diary-composer-wrap')!.getBoundingClientRect();
@@ -187,7 +245,7 @@ test.describe('Riddle diary scene', () => {
       return { composerTop: composer.top, transcriptBottom: transcript.bottom };
     });
     expect(earlierViewBounds.transcriptBottom).toBeLessThanOrEqual(earlierViewBounds.composerTop - 8);
-    await page.getByRole('button', { name: 'Turn to recent entries' }).click();
+    await page.getByRole('button', { name: 'Latest entry', exact: true }).click();
     await page.setViewportSize({ width: 599, height: 844 });
     const replyTextWidths599 = await page.locator('.diary-page.mobile-page-current .diary-entry p[aria-hidden="true"]').evaluateAll(items => items.map(element => { const paragraph = element as HTMLElement, page = element.closest('.diary-page-scroll') as HTMLElement; return { client: paragraph.clientWidth, scroll: paragraph.scrollWidth, right: paragraph.getBoundingClientRect().right, textInset: page.getBoundingClientRect().right - paragraph.getBoundingClientRect().right }; }));
     expect(replyTextWidths599.every(width => width.scroll <= width.client + 2 && width.textInset >= 8), JSON.stringify(replyTextWidths599)).toBe(true);
@@ -198,7 +256,7 @@ test.describe('Riddle diary scene', () => {
     expect(overflow.width <= 390, JSON.stringify(overflow)).toBe(true);
     const pageTextWidths = await page.locator('.diary-page.mobile-page-current .diary-entry p[aria-hidden="true"]').evaluateAll(items => items.map(element => { const paragraph = element.getBoundingClientRect(), page = element.closest('.diary-page-scroll')!.getBoundingClientRect(); return { client: element.clientWidth, scroll: element.scrollWidth, paragraphRight: Math.round(paragraph.right), pageRight: Math.round(page.right) }; }));
     expect(pageTextWidths.every(width => width.scroll <= width.client + 2 && width.paragraphRight <= width.pageRight + 2), JSON.stringify(pageTextWidths)).toBe(true);
-    await expect(page.getByLabel('Recent diary entries')).toBeVisible();
+    await expect(page.locator('.diary-page.mobile-page-current')).toBeVisible();
     await page.screenshot({ path: 'verification/riddle-diary-mobile.png', fullPage: false, animations: 'disabled' });
     const artifactImages = await page.locator('.diary-artifact-image img').evaluateAll(images => images.map(image => ({ width: (image as HTMLImageElement).naturalWidth, height: (image as HTMLImageElement).naturalHeight })));
     expect(artifactImages.length).toBeGreaterThanOrEqual(2);
@@ -224,6 +282,15 @@ test.describe('Riddle diary scene', () => {
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Part of the secret recovered' })).toBeVisible();
     await expect(page.locator('.machine-review-evidence blockquote')).toContainText('I expected the matter to be resolved before the night was over.');
+    const postsAtFiling = practiceModelRequests;
+    await page.getByRole('button', { name: 'Latest entry', exact: true }).click();
+    await expect(page.locator('.diary-page .from-diary .diary-ink-text').filter({ hasText: /I expected the matter to be resolved before the night was over/i })).toBeVisible();
+    await page.getByRole('button', { name: 'Full conversation', exact: true }).click();
+    const filedTranscript = page.getByRole('dialog', { name: 'Full conversation' });
+    await expect(filedTranscript).toContainText(question);
+    await expect(filedTranscript).toContainText(secondQuestion);
+    expect(practiceModelRequests).toBe(postsAtFiling);
+    await filedTranscript.getByRole('button', { name: 'Return to the book' }).click();
     await page.locator('.machine-review').scrollIntoViewIfNeeded();
     await page.screenshot({ path: 'verification/riddle-diary-ending-mobile.png', fullPage: false, animations: 'disabled' });
     expect(reviewPosts).toBe(1);
@@ -276,7 +343,10 @@ test.describe('Riddle diary scene', () => {
       await blind.reload();
       await resumed;
       await expect(blind.getByLabel('Ask the diary')).toHaveValue('');
-      await expect(blind.locator('.diary-entry.from-reader')).toContainText('What did you tell Professor Dippet?');
+      await blind.getByRole('button', { name: 'Latest entry', exact: true }).click();
+      await expect(blind.locator('.diary-entry.from-diary').last()).toContainText(/understand\./);
+      await blind.getByRole('button', { name: 'Previous', exact: true }).click();
+      await expect(blind.locator('.diary-page.mobile-page-current .diary-entry.from-reader')).toContainText('What did you tell Professor Dippet?');
       await expect(blind.locator('.diary-entry.from-diary').last()).toContainText('I expected the matter to be resolved');
       expect((await blind.request.get('/api/diary/latest')).status()).toBe(401);
     } finally { await blindContext.close(); }
@@ -339,7 +409,112 @@ test.describe('Riddle diary scene', () => {
     await expect(page.getByLabel('Ask the diary')).toHaveValue(edited);
     await expect(page.locator('.diary-ink-word.is-writing')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Show entire reply' })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Full conversation', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Full conversation' })).toContainText(/I expected the matter to be resolved before the night was over/i);
+    await page.getByRole('button', { name: 'Return to the book' }).click();
+    const visibleEntries = await page.locator('.diary-page.mobile-page-current .diary-entry').evaluateAll(entries => entries.map(entry => {
+      const entryBounds = entry.getBoundingClientRect();
+      const pageBounds = entry.closest('.diary-page-scroll')!.getBoundingClientRect();
+      return { bottom: entryBounds.bottom, pageBottom: pageBounds.bottom, left: entryBounds.left, pageLeft: pageBounds.left, right: entryBounds.right, pageRight: pageBounds.right };
+    }));
+    expect(visibleEntries.length).toBeGreaterThan(0);
+    expect(visibleEntries.every(entry => entry.bottom <= entry.pageBottom + 1 && entry.left >= entry.pageLeft - 1 && entry.right <= entry.pageRight + 1), JSON.stringify(visibleEntries)).toBe(true);
     expect(attempts).toBe(2);
     expect(firstPayload?.content).toBe(original);
+  });
+
+  test('prints a dense saved conversation exactly once across desktop spreads and mobile pages', async ({ page }) => {
+    await signInOwner(page.request);
+    const startedResponse = await page.request.post('/api/diary/start', { data: { profileId: 'story' } });
+    expect(startedResponse.ok()).toBe(true);
+    const session = await startedResponse.json();
+    session.state.diaryOpen = true;
+    session.round.deadline = Date.now() + 60 * 60 * 1000;
+    const original = [session.round.messages[0]];
+    for (let index = 1; index <= 6; index++) {
+      original.push({
+        id: `pagination-question-${index}`, role: 'user',
+        content: `Question ${index}: what happened before the letter arrived?\n\n${'I want to keep the sequence precise. '.repeat(5)}café, 校, 𠀀, and e\u0301.`, timestamp: Date.now(),
+      });
+      original.push({
+        id: `pagination-reply-${index}`, role: 'assistant',
+        content: `Reply ${index}. The meeting took place before the letter was opened.\n\n${'The account in the diary follows the evidence presented to the school. '.repeat(index === 3 ? 18 : 7)}\n\nA long word must still wrap: ${'校𠀀'.repeat(index === 4 ? 80 : 9)}.\n\nThe final sentence of reply ${index}.`, timestamp: Date.now(),
+      });
+    }
+    session.round.messages = original;
+    await page.route('**/api/diary/active', route => route.fulfill({ json: session }));
+    let modelRequests = 0;
+    const pageErrors: string[] = [];
+    page.on('request', request => { if (request.method() === 'POST' && /\/rounds\/[^/]+\/(messages|review)$/.test(new URL(request.url()).pathname)) modelRequests++; });
+    page.on('pageerror', error => pageErrors.push(error.message));
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await page.goto('/diary');
+    await expect(page.getByLabel('Ask the diary')).toBeVisible();
+    await page.getByLabel('Ask the diary').fill('Keep this draft while reading.');
+
+    for (const [width, height] of [[1366, 768], [390, 600]] as const) {
+      await page.setViewportSize({ width, height });
+      const navigation = page.getByRole('navigation', { name: 'Book pages' });
+      await navigation.getByRole('button', { name: 'First page', exact: true }).click();
+      await expect(navigation.locator('span')).toHaveText(width <= 640 ? /^Page 1 of / : /^Pages 1[–-]/);
+      const collected = new Map(original.map(message => [message.id, [] as Array<{ start: number; end: number; text: string }>]));
+      let pageCount = 0;
+      let priorMessageIndex = 0;
+      for (;;) {
+        const visibleSelector = width <= 640 ? '.diary-page.mobile-page-current .diary-entry' : '.diary-page .diary-entry';
+        await expect(page.locator(visibleSelector).first()).toBeVisible();
+        const segments = await page.locator(visibleSelector).evaluateAll(nodes => nodes.filter(node => {
+          const bounds = node.getBoundingClientRect();
+          return bounds.width > 0 && bounds.height > 0 && getComputedStyle(node).visibility !== 'hidden';
+        }).map(node => {
+          const text = node.querySelector<HTMLElement>('p[aria-hidden="true"], p.diary-reader-text, p.diary-ink-text')!;
+          const bounds = node.getBoundingClientRect();
+          const pageBounds = node.closest('.diary-page-scroll')!.getBoundingClientRect();
+          return {
+            id: node.getAttribute('data-message-id')!,
+            start: Number(node.getAttribute('data-offset-start')),
+            end: Number(node.getAttribute('data-offset-end')),
+            text: text.textContent ?? '',
+            bottom: bounds.bottom,
+            pageBottom: pageBounds.bottom,
+            right: text.getBoundingClientRect().right,
+            pageRight: pageBounds.right,
+            scrollWidth: text.scrollWidth,
+            width: text.clientWidth,
+          };
+        }));
+        expect(segments.length, `visible content on page ${pageCount + 1} at ${width}x${height}`).toBeGreaterThan(0);
+        for (const segment of segments) {
+          const source = original.find(message => message.id === segment.id);
+          expect(source, `known saved message ${segment.id}`).toBeTruthy();
+          const sourceIndex = original.indexOf(source!);
+          expect(sourceIndex).toBeGreaterThanOrEqual(priorMessageIndex);
+          priorMessageIndex = sourceIndex;
+          expect(segment.text).toBe(source!.content.slice(segment.start, segment.end));
+          expect(segment.bottom).toBeLessThanOrEqual(segment.pageBottom + 2);
+          expect(segment.right).toBeLessThanOrEqual(segment.pageRight + 2);
+          expect(segment.scrollWidth).toBeLessThanOrEqual(segment.width + 2);
+          collected.get(segment.id)!.push({ start: segment.start, end: segment.end, text: segment.text });
+        }
+        const next = navigation.getByRole('button', { name: 'Next', exact: true });
+        if (await next.isDisabled()) break;
+        await next.click();
+        expect(++pageCount).toBeLessThan(160);
+      }
+      for (const message of original) {
+        const pieces = collected.get(message.id)!;
+        expect(pieces.length, `all of ${message.id} is printed`).toBeGreaterThan(0);
+        let nextOffset = 0;
+        for (const piece of pieces) {
+          expect(piece.start, `continuous offsets for ${message.id}`).toBe(nextOffset);
+          nextOffset = piece.end;
+        }
+        expect(nextOffset).toBe(message.content.length);
+        expect(pieces.map(piece => piece.text).join('')).toBe(message.content);
+      }
+      await expect(page.getByLabel('Ask the diary')).toHaveValue('Keep this draft while reading.');
+    }
+    expect(modelRequests).toBe(0);
+    expect(pageErrors).toEqual([]);
   });
 });
