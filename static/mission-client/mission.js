@@ -233,12 +233,12 @@ async function finishFilm() {
   const video = $('#mission-film'); clearTimeout(video.watchdog); clearTimeout(video.bufferWatchdog); video.pause();
   $('#mission-roomtone').pause();
   $('#film-message').hidden = true; $('#enter-archive').hidden = true;
-  $('#film-caption').textContent = 'Opening the archive…';
+  $('#film-caption').textContent = 'Connecting to Langley…';
   if (video.duration) video.currentTime = Math.max(0, video.duration - 0.08);
   if (replayingBrief && current) { replayingBrief = false; filmTransitionInFlight = false; showScreen('archive'); renderState(); updateClock(); trackPhase('read_think', true); return; }
   if (!await startMission()) {
     filmTransitionInFlight = false;
-    $('#film-caption').textContent = 'The archive is waiting. The final film frame will remain on screen.';
+    $('#film-caption').textContent = 'The field link is waiting. The final film frame will remain on screen.';
     $('#enter-archive').hidden = false;
   }
 }
@@ -324,7 +324,7 @@ function updateClock() {
 function setFocused(value, manual = false) {
   if (manual) focusManuallySet = true;
   screens.archive.classList.toggle('focused', value);
-  $('#focus-screen').textContent = value ? 'Back to bench' : 'Focus CRT';
+  $('#focus-screen').textContent = value ? 'Back to rig' : 'Focus terminal';
   if (value) setTimeout(() => $('#terminal-input').focus({ preventScroll: true }), 80);
   requestAnimationFrame(() => scrollToLatestMessageStart());
 }

@@ -80,7 +80,7 @@ h2 { margin: 0 0 12px; font: 400 30px/1.1 Georgia, 'Times New Roman', serif; col
 .mission-clock { min-width: 58px; color: var(--amber); font-size: 14px; text-align: center; }
 .bench { position: absolute; top: 50%; left: 50%; width: min(100vw, calc(100dvh * 1.7778969)); height: min(100dvh, calc(100vw * .5624625)); margin: 0; aspect-ratio: 1672 / 941; overflow: hidden; transform: translate(-50%, -50%); }
 .workstation-art { display: block; width: 100%; height: 100%; object-fit: contain; transition: opacity .42s ease; }
-.terminal-window { position: absolute; left: 34.75%; top: 21.57%; width: 32.42%; height: 36.98%; overflow: hidden; border-radius: 1.1% / 2.2%; background: #100c06; box-shadow: inset 0 0 30px #dfad5b22, 0 0 20px #daac6635; transform: perspective(900px) rotateX(.3deg); transition: left .42s ease, top .42s ease, width .42s ease, height .42s ease, border-radius .42s ease, box-shadow .42s ease, transform .42s ease; }
+.terminal-window { position: absolute; left: 37.56%; top: 19.13%; width: 27.87%; height: 32.41%; overflow: hidden; border-radius: 1.1% / 2.2%; background: #100c06; box-shadow: inset 0 0 30px #dfad5b22, 0 0 20px #daac6635; transform: perspective(900px) rotateX(.3deg); transition: left .42s ease, top .42s ease, width .42s ease, height .42s ease, border-radius .42s ease, box-shadow .42s ease, transform .42s ease; }
 .terminal-screen { position: absolute; inset: 0; display: grid; grid-template-rows: auto 1fr auto auto; padding: clamp(4px, .63vw, 11px) clamp(5px, .77vw, 13px); color: var(--phosphor); background: radial-gradient(ellipse at 50% 48%, #2a2114 0%, #171108 68%, #0b0804 100%); text-shadow: 0 0 2px #f3cd88, 0 0 8px #dfad5b52; }
 .crt-effect { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; opacity: .55; pointer-events: none; image-rendering: pixelated; }
 .terminal-screen::before { content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: .44; background: repeating-linear-gradient(to bottom, #fff0 0, #fff0 2px, #0005 3px, #0005 4px); border-radius: inherit; }
@@ -101,22 +101,22 @@ h2 { margin: 0 0 12px; font: 400 30px/1.1 Georgia, 'Times New Roman', serif; col
 .terminal-receipt { position: relative; z-index: 2; color: #e7c78f; font-size: clamp(6px, .62vw, 10px); line-height: 1.35; }
 .terminal-log, .terminal-composer, .terminal-topline, .terminal-receipt { position: relative; z-index: 2; }
 .machine-shade { position: absolute; inset: 14% 30% 42% 30%; z-index: 0; pointer-events: none; border-radius: 50%; background: radial-gradient(ellipse, #d6a14a17, #d6a14a00 68%); }
-.equipment { position: absolute; z-index: 2; display: block; height: auto; object-fit: contain; pointer-events: none; filter: drop-shadow(0 10px 12px #0008); }
-.equipment-service { left: 8.37%; top: 80.77%; width: 8.97%; max-height: 16%; }
-.equipment-extraction { left: 83.73%; top: 80.77%; width: 8.97%; max-height: 15%; }
+.equipment { position: absolute; z-index: 2; display: block; height: auto; object-fit: contain; pointer-events: none; }
+.equipment-service { left: 11.06%; top: 69.08%; width: 6.70%; max-height: 14%; }
+.equipment-extraction { left: 62.20%; top: 78.53%; width: 6.70%; max-height: 12%; }
 .hotspot { position: absolute; z-index: 3; min-height: 32px; padding: 0; border: 0; background: transparent; cursor: pointer; }
 .hotspot span { position: absolute; left: 50%; bottom: -22px; transform: translateX(-50%); color: #ded2b9; text-shadow: 0 1px 5px #000; font-size: clamp(8px, .7vw, 11px); white-space: nowrap; opacity: .82; }
 .hotspot:hover, .hotspot:focus-visible { outline: 1px solid #dfbd82; background: #e3bd6717; }
-.service-hotspot { left: 7.5%; bottom: 2%; width: 12%; height: 19%; }
-.extraction-hotspot { left: 82.5%; bottom: 2%; width: 12%; height: 19%; }
-.recorder-hotspot { left: 2.87%; top: 69.6%; width: 13.2%; height: 4.6%; }
+.service-hotspot { left: 9.5%; top: 65%; width: 12%; height: 15%; }
+.extraction-hotspot { left: 60.5%; top: 76%; width: 11%; height: 14%; }
+.recorder-hotspot { left: 5.38%; top: 46.76%; width: 16.45%; height: 11.69%; }
 .bench-actions { position: absolute; z-index: 5; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; transform: translateX(-50%); }
 .mission-footer { position: absolute; z-index: 5; left: 50%; bottom: max(62px, calc(env(safe-area-inset-bottom) + 48px)); margin: 0; padding: 5px 9px; background: #090c09ad; text-align: center; transform: translateX(-50%); }
 .object-button { min-height: 36px; padding: 8px 12px; border: 1px solid #565a4b; background: #171b15; color: #c9caba; font-size: 11px; cursor: pointer; }
 .object-button:hover { border-color: #a68b59; color: #f0e4c8; }
 .object-button span { margin-left: 6px; color: #d9b976; }
 .eject-button { border-color: #8c7047; color: #e6cca0; }
-.archive-screen.focused .bench { width: 225vw; height: 126.78vw; top: calc(50% + 12.6vw); left: calc(50% - 2.2vw); }
+.archive-screen.focused .bench { width: 225vw; height: 126.63vw; top: calc(50% + 18.57vw); left: calc(50% - 3.36vw); }
 .archive-screen.focused .workstation-art { filter: brightness(.72) saturate(.88); }
 .archive-screen.focused .terminal-window { z-index: 2; }
 .archive-screen.focused .terminal-screen { padding: 17px 21px; }
@@ -160,10 +160,10 @@ h2 { margin: 0 0 12px; font: 400 30px/1.1 Georgia, 'Times New Roman', serif; col
   .mission-clock { font-size: 12px; }
   .small-button { padding: 6px 7px; font-size: 9px; }
   .bench { position: absolute; top: 50%; left: 50%; width: min(100vw, calc(100dvh * 1.7778969)); height: min(100dvh, calc(100vw * .5624625)); transform: translate(-50%, -50%); }
-  .terminal-window { left: 34.75%; top: 21.57%; width: 32.42%; height: 36.98%; }
+  .terminal-window { left: 37.56%; top: 19.13%; width: 27.87%; height: 32.41%; }
   .terminal-screen { padding: 2px 3px; }
   .terminal-topline { font-size: clamp(4px, 1.1vw, 7px); }
-  .terminal-log { font-size: clamp(5px, 1.35vw, 9px); line-height: 1.42; padding: 2px 1px; }
+  .terminal-log { font-size: clamp(5px, 1.35vw, 9px); line-height: 1.42; padding: 4px 1px 2px; }
   .terminal-log .message { margin-bottom: 5px; }
   .terminal-log .message-label { font-size: .76em; }
   .terminal-composer { grid-template-columns: 1fr auto; gap: 2px; padding-top: 2px; }
@@ -171,19 +171,16 @@ h2 { margin: 0 0 12px; font: 400 30px/1.1 Georgia, 'Times New Roman', serif; col
   .send-button { min-height: 16px; padding: 1px 3px; font-size: 5px; }
   .terminal-receipt { font-size: 5px; }
   .hotspot span { display: none; }
-  .equipment { display: none; }
-  .service-hotspot { left: 8%; bottom: 7%; width: 17%; height: 30%; }
-  .extraction-hotspot { right: 2%; bottom: 7%; width: 30%; height: 27%; }
   .bench-actions { left: 0; right: 0; bottom: max(10px, env(safe-area-inset-bottom)); gap: 5px; width: auto; transform: none; }
   .object-button { min-height: 34px; padding: 7px 8px; font-size: 9px; }
   .mission-footer { left: 12px; right: 12px; bottom: max(52px, calc(env(safe-area-inset-bottom) + 40px)); width: auto; transform: none; font-size: 9px; }
-  .archive-screen.focused .bench { top: calc(50dvh - 59.3vw); left: calc(50vw - 134vw); width: 263vw; height: 148vw; aspect-ratio: auto; transform: none; }
+  .archive-screen.focused .bench { top: calc(50dvh - 64.24vw); left: calc(50vw - 166.33vw); width: 323vw; height: 181.78vw; aspect-ratio: auto; transform: none; }
   .archive-screen.focused .terminal-screen { padding: 8px; }
   .archive-screen.focused .terminal-log { font-size: 13px; line-height: 1.42; }
   .archive-screen.focused .terminal-topline { font-size: 8px; }
   .archive-screen.focused .terminal-composer textarea { min-height: 32px; max-height: 96px; font-size: 13px; }
   .archive-screen.focused .send-button { min-height: 30px; font-size: 10px; }
-  .archive-screen.focused .hotspot, .archive-screen.focused .machine-shade { display: none; }
+  .archive-screen.focused .hotspot, .archive-screen.focused .machine-shade, .archive-screen.focused .equipment { display: none; }
   .film-top { top: max(9px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right)); gap: 5px; }
   .film-control { padding: 7px 8px; font-size: 9px; }
 }
