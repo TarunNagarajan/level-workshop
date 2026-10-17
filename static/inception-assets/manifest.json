@@ -41,7 +41,7 @@
     "captions": {
       "kind": "scene-summary captions for the edited film excerpt",
       "durationSeconds": 35,
-      "sha256": "dd46ebbf0cdb93817db88f32c96693a9f4009e68544b9c0b7c0f6c28fa7a3346"
+      "sha256": "bfa6789a856fe6f0b19619c7a7b5d04809414828fd27f49c36f595f507bcd261"
     },
     "successVideo": {
       "kind": "versioned win-only film ending; source audio retained; immutable after publication",
