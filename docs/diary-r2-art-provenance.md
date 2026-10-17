@@ -39,5 +39,3 @@ https://www.harrypotter.com/features/what-if-ginny-had-never-possessed-tom-riddl
 https://www.harrypotter.com/features/analysing-tom-riddles-choices
 
 Official film excerpt https://www.youtube.com/watch?v=AhefV0t5wSA from Harry Potter official channel. Verified publisher quality tops out at 1080p, not 4K. Selected intervals 43-63 and 289-304 seconds, Originally verified through an official embed; latest user instruction supersedes that delivery. Only the two short excerpts are now served locally. See diary-r2-film-provenance.md for files, hashes and actual source resolution. Surrounding interface is checked at 3840 by 2160 independently of source resolution.
-
-
