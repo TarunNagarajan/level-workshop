@@ -4,8 +4,12 @@
   "openFrame": "/inception-assets/strongroom-open-v1.webp",
   "bridgeFrame": "/inception-assets/strongroom-closed-v1.webp",
   "bridgeVideo": null,
-  "introVideo": "/inception-assets/strongroom-intro-v2.mp4",
-  "captions": "/inception-assets/strongroom-intro-v2.vtt",
+  "introVideo": "/inception-assets/strongroom-intro-v3.mp4",
+  "introDurationSeconds": 35,
+  "captions": "/inception-assets/strongroom-intro-v3.vtt",
+  "successVideo": "/inception-assets/strongroom-success-v1.mp4",
+  "successCaptions": "/inception-assets/strongroom-success-v1.vtt",
+  "successDurationSeconds": 29.17,
   "approvedTrack": null,
   "roomTone": "/inception-assets/strongroom-roomtone-v1.mp3",
   "provenance": {
@@ -27,13 +31,28 @@
       "sha256": "86773ee4252cd6c3ca1b1f65b0d1cf5dfe1773dcdac6c17fc76b2fa66b55a961"
     },
     "introVideo": {
-      "kind": "versioned edited film excerpt with no-radio generated bridge; immutable after publication",
-      "durationSeconds": 20,
-      "sha256": "fd4b3ba924eba2bc4b2a05abc39b7f66caabff7f751b5a369d9831e64a1756ef"
+      "kind": "versioned edited film excerpt with generated safe bridge; immutable after publication",
+      "durationSeconds": 35,
+      "actualFilmExcerptSeconds": 28,
+      "generatedBridgeSeconds": 7.6,
+      "sourceSegmentsSeconds": [[65.8, 68.65], [14, 20], [42, 49.65], [20, 27.5], [54, 58]],
+      "sha256": "44926f49dbf8249bac352b251718df4b9a3d8feb7383edd1430e3123e9197bbc"
     },
     "captions": {
       "kind": "scene-summary captions for the edited film excerpt",
-      "sha256": "c64804b4793173c12030d66d7b647393fc75dd5d2f2daa73b963589cb9b6a0db"
+      "durationSeconds": 35,
+      "sha256": "dd46ebbf0cdb93817db88f32c96693a9f4009e68544b9c0b7c0f6c28fa7a3346"
+    },
+    "successVideo": {
+      "kind": "versioned win-only film ending; source audio retained; immutable after publication",
+      "sourceSeconds": [39.5, 68.65],
+      "durationSeconds": 29.17,
+      "sha256": "8f387fdbcad3bffd9c1bee6666ed02f37d583966fb8ea70dd1d4cb1e0bea0bf8"
+    },
+    "successCaptions": {
+      "kind": "scene-summary captions for the edited film ending",
+      "durationSeconds": 29.17,
+      "sha256": "d2d637e7a36ec244fb3ea4d1606ffa2b149bc5cba8051a33d2b89eb89d3dfb24"
     }
   }
 }
