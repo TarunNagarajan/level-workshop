@@ -17,6 +17,7 @@ public/reference-assets/
 public/diary-assets/
 public/mission-assets/
 public/mission-client/
+public/inception-assets/
 work/migration-*.json
 work/
 *.log

@@ -13,4 +13,7 @@ drizzle
 dist
 node_modules
 public/assets
+public/inception-assets
+public/mission-assets
+public/mission-client
 public/index.html

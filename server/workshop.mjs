@@ -13,6 +13,7 @@ import { createSubmissionJournal, RECORDING_NOTICE_VERSION } from './durable-sub
 import { MACHINE_REVIEW_SYSTEM, MACHINE_REVIEW_PROTOCOL_VERSION, makeReviewPrompt, publicMachineReview, validateMachineReview } from './machine-review.mjs';
 import { RIDDLE_DIARY_LEVEL_ID, RIDDLE_DIARY_SCENARIO_ID, addRiddleDiaryRoutes, diaryPromptContext, isRiddleDiaryData, publicDiaryProfile } from './riddle-diary.mjs';
 import { addMissionArchiveRoutes, isMissionRound } from './mission-archive.mjs';
+import { INCEPTION_SCENARIO_ID, addInceptionRoutes, inceptionPromptContext, isInceptionData, publicInceptionProfile } from './inception.mjs';
 const scrypt = promisify(scryptCallback);
 const id = () => randomUUID();
 const token = () => randomBytes(32).toString('base64url');
@@ -73,9 +74,10 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             fail(403, 'Only the level author or workspace owner can edit this draft. Duplicate it to make your own version.');
         if (levelId === 'reference-passport-desk') fail(409, 'This finished reference is fixed. Create your editable copy from its build guide.');
         if (levelId === RIDDLE_DIARY_LEVEL_ID) fail(409, 'This interactive diary is fixed. Use its dedicated play route.');
+        if (levelId === 'reference-inception-strongroom') fail(409, 'This interactive strongroom is fixed. Use its dedicated play route.');
         return row;
     };
-    const levelRow = async (levelId) => { const row = await get('SELECT * FROM levels WHERE id = ?', levelId); if (!row || row.id === RIDDLE_DIARY_LEVEL_ID)
+    const levelRow = async (levelId) => { const row = await get('SELECT * FROM levels WHERE id = ?', levelId); if (!row || row.id === RIDDLE_DIARY_LEVEL_ID || row.id === 'reference-inception-strongroom')
         fail(404, 'Level not found.'); return row; };
     const versionRow = async (versionId) => { const row = await get('SELECT * FROM versions WHERE id = ?', versionId); if (!row)
         fail(404, 'Version not found.'); return row; };
@@ -120,7 +122,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     };
     const serializeLevel = async (row) => ({ id: row.id, draft: JSON.parse(row.draft), revision: row.revision, status: row.status, ownerId: row.owner_id, owner: (await get('SELECT name FROM users WHERE id = ?', row.owner_id))?.name, updatedAt: row.updated_at });
     const versions = async (levelId) => (await all('SELECT versions.*, users.name AS author FROM versions JOIN users ON users.id = versions.author_id WHERE level_id = ? ORDER BY number DESC', levelId)).map(v => ({ id: v.id, number: v.number, data: JSON.parse(v.data), note: v.note, author: v.author, createdAt: v.created_at }));
-    const publicRound = row => ({ id: row.id, ...(row.source === 'collection-participant' ? {} : { versionId: row.version_id.startsWith('reference-passport-case-') ? 'reference-passport-case' : row.source === 'reference-research-preview' ? 'reference-passport-study' : row.version_id, ...(row.version_id.startsWith('reference-passport-case-') ? { inspectionMode: 'documents' } : {}), model: JSON.parse(row.config).model, source: row.source }), level: playerLevel(JSON.parse(row.data)), tester: row.tester, messages: row.source === 'collection-participant' ? JSON.parse(row.messages).map(({ id: messageId, role, content, createdAt, opening, latencyMs }) => ({ id: messageId, role, content, createdAt, ...(opening ? { opening: true } : {}), ...(Number.isFinite(latencyMs) ? { latencyMs } : {}) })) : JSON.parse(row.messages), startedAt: row.started_at, endedAt: row.ended_at, deadline: row.started_at + JSON.parse(row.data).duration * 1000, answer: row.answer, hintsUsed: row.hints_used, reviewEnabled: Boolean(passportReviewEnabled), ...(isRiddleDiaryData(JSON.parse(row.data)) ? { diary: publicDiaryProfile(JSON.parse(row.data)) } : {}) });
+    const publicRound = row => ({ id: row.id, ...(row.source === 'collection-participant' ? {} : { versionId: row.version_id.startsWith('reference-passport-case-') ? 'reference-passport-case' : row.source === 'reference-research-preview' ? 'reference-passport-study' : row.version_id, ...(row.version_id.startsWith('reference-passport-case-') ? { inspectionMode: 'documents' } : {}), model: JSON.parse(row.config).model, source: row.source }), level: playerLevel(JSON.parse(row.data)), tester: row.tester, messages: row.source === 'collection-participant' ? JSON.parse(row.messages).map(({ id: messageId, role, content, createdAt, opening, latencyMs }) => ({ id: messageId, role, content, createdAt, ...(opening ? { opening: true } : {}), ...(Number.isFinite(latencyMs) ? { latencyMs } : {}) })) : JSON.parse(row.messages), startedAt: row.started_at, endedAt: row.ended_at, deadline: row.started_at + JSON.parse(row.data).duration * 1000, answer: row.answer, hintsUsed: row.hints_used, reviewEnabled: Boolean(passportReviewEnabled), ...(isRiddleDiaryData(JSON.parse(row.data)) ? { diary: publicDiaryProfile(JSON.parse(row.data)) } : {}), ...(isInceptionData(JSON.parse(row.data)) ? { inception: publicInceptionProfile(JSON.parse(row.data)) } : {}) });
     const accessRound = async (req, roundId = req.params.id) => {
         const row = await get('SELECT * FROM rounds WHERE id = ?', roundId);
         if (!row)
@@ -131,7 +133,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             fail(403, 'This test session is private.');
         return row;
     };
-    const createRound = async ({ version, userId = null, tester, source, messages, parentId = null, deskState, roundId: requestedRoundId, rawToken: requestedToken, collectionAssignment, frozenConfig, allocationLeaseToken, consentAt = null, recordingAckUserId = null, diaryState = null }) => {
+    const createRound = async ({ version, userId = null, tester, source, messages, parentId = null, deskState, roundId: requestedRoundId, rawToken: requestedToken, collectionAssignment, frozenConfig, allocationLeaseToken, consentAt = null, recordingAckUserId = null, diaryState = null, inceptionState = null }) => {
         consentAt ||= collectionAssignment?.consentAt || null;
         if (isPassportVersion(version.id) && !deskState) fail(409, 'Start this reference from the interactive passport desk.');
         if (userId && recordingNoticeRequired && !await recordingAccepted(userId) && !consentAt) fail(428, 'Acknowledge the recording notice before starting a test.');
@@ -140,17 +142,23 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const roundId = requestedRoundId || id();
         const data = JSON.parse(version.data);
         if (isRiddleDiaryData(data) !== Boolean(diaryState)) fail(409, 'Continue this diary in its interactive scene.');
+        if (isInceptionData(data) !== Boolean(inceptionState)) fail(409, 'Start this strongroom through its interactive scene.');
         validatePlayable(data);
         const initial = messages || [{ id: id(), role: 'assistant', content: data.opening, createdAt: Date.now(), opening: true }];
         const config = frozenConfig || safeConfig();
-        const roundValues = [roundId, hash(raw), version.level_id, version.id, userId, source, version.data, JSON.stringify(config), tester, JSON.stringify(initial), Date.now(), parentId, consentAt, consentAt ? RECORDING_NOTICE_VERSION : null];
+        const roundStartedAt = Date.now();
+        const roundValues = [roundId, hash(raw), version.level_id, version.id, userId, source, version.data, JSON.stringify(config), tester, JSON.stringify(initial), roundStartedAt, parentId, consentAt, consentAt ? RECORDING_NOTICE_VERSION : null];
         const allocationGuard = allocationLeaseToken && collectionAssignment?.source === 'participant';
         const roundInsert = allocationGuard
           ? ['INSERT INTO rounds (id, token, level_id, version_id, author_id, source, data, config, tester, messages, started_at, parent_id, recording_accepted_at, recording_notice_version) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM difficulty_collection_leases l JOIN difficulty_collections c ON c.id = l.collection_id JOIN difficulty_collection_links k ON k.id = ? AND k.collection_id = c.id WHERE l.collection_id = ? AND l.token = ? AND l.expires > ? AND c.status = ? AND k.revoked = 0 AND k.expires > ?)', ...roundValues, collectionAssignment.linkId, collectionAssignment.collectionId, allocationLeaseToken, Date.now(), 'active', Date.now()]
+          : inceptionState
+            ? ['INSERT INTO rounds (id, token, level_id, version_id, author_id, source, data, config, tester, messages, started_at, parent_id, recording_accepted_at, recording_notice_version) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM rounds active JOIN inception_sessions scene ON scene.round_id=active.id WHERE scene.actor_id=? AND active.ended_at IS NULL AND active.started_at + ? > ?)', ...roundValues, inceptionState.actorId, data.duration * 1000, roundStartedAt]
           : ['INSERT INTO rounds (id, token, level_id, version_id, author_id, source, data, config, tester, messages, started_at, parent_id, recording_accepted_at, recording_notice_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', ...roundValues];
-        const statements = [roundInsert];
+        const statements = inceptionState ? [['INSERT INTO inception_start_locks (actor_id,serial) VALUES (?,0) ON CONFLICT(actor_id) DO UPDATE SET serial=inception_start_locks.serial+1', inceptionState.actorId], roundInsert] : [roundInsert];
+        const roundInsertIndex = inceptionState ? 1 : 0;
         if (recordingAckUserId && consentAt) statements.push(['INSERT INTO user_recording_acknowledgements (user_id, version, accepted_at) VALUES (?, ?, ?) ON CONFLICT(user_id, version) DO NOTHING', recordingAckUserId, RECORDING_NOTICE_VERSION, consentAt]);
         if (diaryState) statements.push(['INSERT INTO diary_sessions (round_id,state) VALUES (?,?)', roundId, JSON.stringify(diaryState)]);
+        if (inceptionState) statements.push(['INSERT INTO inception_sessions (round_id,state,start_key_hash,actor_key_hash,actor_id,created_at) SELECT ?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM rounds WHERE id=?)', roundId, inceptionState.state, inceptionState.startKeyHash, inceptionState.actorKeyHash, inceptionState.actorId, inceptionState.createdAt, roundId]);
         if (deskState) statements.push(allocationGuard
           ? ['INSERT INTO passport_sessions (round_id, state) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM rounds WHERE id = ?)', roundId, JSON.stringify(deskState), roundId]
           : ['INSERT INTO passport_sessions VALUES (?, ?)', roundId, JSON.stringify(deskState)]);
@@ -158,7 +166,8 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
           ? ['INSERT INTO difficulty_collection_assignments (id, collection_id, round_id, profile_id, profile_snapshot, source, parent_id, link_id, start_key_hash, consent_at, consent_version, assigned_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM rounds WHERE id = ?)', collectionAssignment.id, collectionAssignment.collectionId, roundId, collectionAssignment.profileId, JSON.stringify(collectionAssignment.profileSnapshot), collectionAssignment.source, collectionAssignment.parentId ?? parentId, collectionAssignment.linkId, collectionAssignment.startKeyHash, collectionAssignment.consentAt, collectionAssignment.consentVersion, collectionAssignment.assignedAt, roundId]
           : ['INSERT INTO difficulty_collection_assignments (id, collection_id, round_id, profile_id, profile_snapshot, source, parent_id, link_id, start_key_hash, consent_at, consent_version, assigned_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', collectionAssignment.id, collectionAssignment.collectionId, roundId, collectionAssignment.profileId, JSON.stringify(collectionAssignment.profileSnapshot), collectionAssignment.source, collectionAssignment.parentId ?? parentId, collectionAssignment.linkId, collectionAssignment.startKeyHash, collectionAssignment.consentAt, collectionAssignment.consentVersion, collectionAssignment.assignedAt]);
         const results = await batch(statements);
-        if (!results[0].changes) fail(409, 'This collection is no longer accepting attempts. Retry with the same start key if the attempt was already accepted.');
+        if (!results[roundInsertIndex].changes && inceptionState) fail(409, 'Finish or let the current strongroom attempt expire before starting a replay.');
+        if (!results[roundInsertIndex].changes) fail(409, 'This collection is no longer accepting attempts. Retry with the same start key if the attempt was already accepted.');
         return { ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', roundId)), accessToken: raw };
     };
     addRiddleDiaryRoutes(app, { store, member, provider, createRound, accessRound, withRoundLock: async (req, action) => { const initial = await accessRound(req); const lease = token(), now = Date.now(); const claim = await run('INSERT INTO round_locks VALUES (?,?,?) ON CONFLICT(round_id) DO UPDATE SET token=excluded.token, expires=excluded.expires WHERE round_locks.expires<=?', initial.id, lease, now + 45000, now); if (!claim.changes) fail(409, 'Wait for the current reply before changing this diary.'); try { return await action(await accessRound(req), lease); } finally { await run('DELETE FROM round_locks WHERE round_id=? AND token=?', initial.id, lease); } }, publicRound, requireRecording, recordingNoticeRequired, reviewEnabled: Boolean(passportReviewEnabled), hashToken: hash, createToken: token });
@@ -440,6 +449,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     };
     app.get('/api/play/:token', async (req, res) => {
         const v = await publicLink(req.params.token);
+        if (isInceptionData(JSON.parse(v.data))) fail(409, 'Use the dedicated strongroom entry.');
         res.json({ level: playerLevel(JSON.parse(v.data)), version: v.number, connected: Boolean(provider.apiKey) });
     });
     app.post('/api/play/:token', async (req, res) => {
@@ -447,11 +457,14 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             fail(503, 'The target model is not connected yet. Ask the level author to connect it.');
         const tester = z.string().trim().min(1).max(70).parse(req.body.tester);
         if (recordingNoticeRequired && req.body.consent !== true) fail(428, 'Accept the recording notice before starting this test.');
-        res.status(201).json(await createRound({ version: await publicLink(req.params.token), tester, source: 'blind', consentAt: req.body.consent === true ? Date.now() : null, recordingAckUserId: req.body.consent === true ? req.user?.id : null }));
+        const version = await publicLink(req.params.token);
+        if (isInceptionData(JSON.parse(version.data))) fail(409, 'Use the dedicated strongroom entry.');
+        res.status(201).json(await createRound({ version, tester, source: 'blind', consentAt: req.body.consent === true ? Date.now() : null, recordingAckUserId: req.body.consent === true ? req.user?.id : null }));
     });
     app.post('/api/levels/:id/rounds', member, async (req, res) => {
         const v = await versionRow(z.string().parse(req.body.versionId));
         if (v.level_id === RIDDLE_DIARY_LEVEL_ID) fail(409, 'Start this scenario through the interactive diary.');
+        if (isInceptionData(JSON.parse(v.data))) fail(409, 'Start this scenario through the interactive strongroom.');
         if (v.level_id !== req.params.id)
             fail(400, 'This version belongs to another level.');
         const replayOf = req.body.replayOf ? z.string().parse(req.body.replayOf) : null;
@@ -488,12 +501,14 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     app.get('/api/rounds/:id/review', async (req, res) => {
       const row = await accessRound(req);
       if (isPassportVersion(row.version_id)) fail(409, 'Use the reference desk review for passport sessions.');
+      if (isInceptionData(JSON.parse(row.data))) fail(409, 'Use the independent strongroom review for Inception sessions.');
       res.json({ machineReview: row.ended_at ? await readMachineReview(row.id) : null });
     });
     app.post('/api/rounds/:id/review', async (req, res) => {
       const authorized = await accessRound(req);
       if (!authorized.ended_at) fail(409, 'Finish the game before requesting automated review.');
       if (isPassportVersion(authorized.version_id)) fail(409, 'Use the reference desk review for passport sessions.');
+      if (isInceptionData(JSON.parse(authorized.data))) fail(409, 'Use the independent strongroom review for Inception sessions.');
       if (!passportReviewEnabled) fail(503, 'Automated review is disabled for this workspace.');
       await requireRecording(req, authorized);
       if (!provider.apiKey) fail(503, 'The review provider is not connected.');
@@ -551,19 +566,21 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         try { return await action(await accessRound(req), lease); }
         finally { await run('DELETE FROM round_locks WHERE round_id = ? AND token = ?', initial.id, lease); }
     };
+    addInceptionRoutes(app, { store, member, provider, createRound, accessRound, withRoundLock, publicRound, requireRecording, recordingNoticeRequired, reviewEnabled: Boolean(passportReviewEnabled), completion: instrumentedCompletion, markCompletionSaved: metrics.markSaved });
     const collectionModels = createCollectionModelServices({ store, provider, completion: instrumentedCompletion, metrics });
     app.post('/api/rounds/:id/messages', async (req, res) => {
       const authorized = await accessRound(req), content = z.string().trim().min(1).max(4000).parse(req.body.content);
       if (isPassportVersion(authorized.version_id)) fail(409, 'Continue this interview at the interactive reference desk.');
       if (isRiddleDiaryData(JSON.parse(authorized.data)) && !await get('SELECT round_id FROM diary_sessions WHERE round_id=?', authorized.id)) fail(409, 'Continue this diary in its interactive scene.');
+      if (isInceptionData(JSON.parse(authorized.data)) && !await get('SELECT round_id FROM inception_sessions WHERE round_id=?', authorized.id)) fail(409, 'Continue this strongroom in its interactive scene.');
       await requireRecording(req, authorized);
       const requestId = req.body.requestId === undefined ? undefined : z.string().uuid().parse(req.body.requestId);
-      const authorizedData = JSON.parse(authorized.data), diaryMode = isRiddleDiaryData(authorizedData), diaryProfileId = authorizedData.diaryProfile?.id || null;
+      const authorizedData = JSON.parse(authorized.data), diaryMode = isRiddleDiaryData(authorizedData), inceptionMode = isInceptionData(authorizedData), diaryProfileId = authorizedData.diaryProfile?.id || null, inceptionProfileId = authorizedData.inceptionProfile?.id || null;
       if (requestId) {
         const existing = await journal.find(`round:${authorized.id}`, requestId);
         if (existing) {
           const existingAssignment = await get('SELECT collection_id, profile_id FROM difficulty_collection_assignments WHERE round_id = ?', authorized.id);
-          const checked = await journal.begin({ roundId: authorized.id, clientRequestId: requestId, actorId: req.user?.id, source: authorized.source, versionId: authorized.version_id, collectionId: existingAssignment?.collection_id, profileId: existingAssignment?.profile_id || diaryProfileId, scenarioId: diaryMode ? RIDDLE_DIARY_SCENARIO_ID : undefined, content });
+          const checked = await journal.begin({ roundId: authorized.id, clientRequestId: requestId, actorId: req.user?.id, source: authorized.source, versionId: authorized.version_id, collectionId: existingAssignment?.collection_id, profileId: existingAssignment?.profile_id || diaryProfileId || inceptionProfileId, scenarioId: diaryMode ? RIDDLE_DIARY_SCENARIO_ID : inceptionMode ? INCEPTION_SCENARIO_ID : undefined, content });
           const receipt = checked.entry;
           if (receipt.status === 'succeeded' && receipt.transcript_saved) return res.json({ ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', authorized.id)), submissionId: receipt.id });
           return res.status(409).json({ error: receipt.status === 'succeeded' ? 'The reply was recorded, but the conversation save did not complete.' : 'This request was already received and will not be sent twice.', submissionId: receipt.id, submissionStatus: receipt.status, receiptConfirmed: true, transcriptSaved: Boolean(receipt.transcript_saved) });
@@ -573,7 +590,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
       const messagesBefore = JSON.parse(authorized.messages);
       if (messagesBefore.filter(m => m.role === 'user').length >= 40) fail(409, 'This test has reached its 40-turn limit.');
       const assignment = await get('SELECT collection_id, profile_id FROM difficulty_collection_assignments WHERE round_id = ?', authorized.id);
-      const { entry, shouldInvoke } = await journal.begin({ roundId: authorized.id, clientRequestId: requestId, actorId: req.user?.id, source: authorized.source, versionId: authorized.version_id, collectionId: assignment?.collection_id, profileId: assignment?.profile_id || diaryProfileId, scenarioId: diaryMode ? RIDDLE_DIARY_SCENARIO_ID : undefined, content });
+      const { entry, shouldInvoke } = await journal.begin({ roundId: authorized.id, clientRequestId: requestId, actorId: req.user?.id, source: authorized.source, versionId: authorized.version_id, collectionId: assignment?.collection_id, profileId: assignment?.profile_id || diaryProfileId || inceptionProfileId, scenarioId: diaryMode ? RIDDLE_DIARY_SCENARIO_ID : inceptionMode ? INCEPTION_SCENARIO_ID : undefined, content });
       if (!shouldInvoke) {
         if (entry.status === 'succeeded' && entry.transcript_saved) return res.json({ ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', authorized.id)), submissionId: entry.id });
         return res.status(409).json({ error: entry.status === 'succeeded' ? 'The reply was recorded, but the conversation save did not complete.' : 'This request was already received and will not be sent twice.', submissionId: entry.id, submissionStatus: entry.status, receiptConfirmed: true, transcriptSaved: Boolean(entry.transcript_saved) });
@@ -581,6 +598,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
       try { await withRoundLock(req, async (row, lease) => {
         if (isPassportVersion(row.version_id)) fail(409, 'Continue this interview at the interactive reference desk.');
         if (isRiddleDiaryData(JSON.parse(row.data)) && !await get('SELECT round_id FROM diary_sessions WHERE round_id=?', row.id)) fail(409, 'Continue this diary in its interactive scene.');
+        if (isInceptionData(JSON.parse(row.data)) && !await get('SELECT round_id FROM inception_sessions WHERE round_id=?', row.id)) fail(409, 'Continue this strongroom in its interactive scene.');
         if (row.ended_at || Date.now() >= row.started_at + JSON.parse(row.data).duration * 1000)
             fail(409, 'The conversation has ended. Submit your answer or start a fresh test.');
         const messages = JSON.parse(row.messages);
@@ -605,9 +623,16 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
               playerMessage.presented = [...presentedObjects];
               await journal.updateContext(entry.id, verifiedContext, presentedObjects);
             }
+            if (isInceptionData(data)) {
+              const scene = await get('SELECT state FROM inception_sessions WHERE round_id=?', row.id);
+              if (!scene) fail(409, 'Continue this strongroom in its interactive scene.');
+              verifiedContext = inceptionPromptContext(JSON.parse(scene.state));
+              playerMessage.verifiedContext = verifiedContext;
+              await journal.updateContext(entry.id, verifiedContext, []);
+            }
             const system = `${collectionSystem || compilePrompt(data)}${verifiedContext ? `\n\n${verifiedContext}` : ''}`;
             let requested;
-            try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user, profileId: diaryProfileId }); }
+            try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user, profileId: diaryProfileId || inceptionProfileId }); }
             catch (error) { await journal.fail(entry.id, error); error.submissionId = entry.id; throw error; }
             const { result, callId } = requested;
             const replyId = id();
@@ -633,6 +658,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (isPassportVersion(row.version_id)) fail(409, 'Use the hints at the interactive reference desk.');
         const data = JSON.parse(row.data);
         if (isRiddleDiaryData(data)) fail(409, 'Use the diary objects to uncover further clues.');
+        if (isInceptionData(data)) fail(409, 'Use the strongroom objects to inspect the scene.');
         if (row.ended_at || Date.now() >= row.started_at + data.duration * 1000)
             fail(409, 'This conversation has ended.');
         if (isRiddleDiaryData(data)) fail(409, 'Use the diary objects to uncover further clues.');
@@ -646,6 +672,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     app.post('/api/rounds/:id/submit', async (req, res) => withRoundLock(req, async row => {
         if (isPassportVersion(row.version_id)) fail(409, 'Stamp and file this case at the interactive reference desk.');
         if (isRiddleDiaryData(JSON.parse(row.data))) fail(409, 'File your evidence from the interactive diary.');
+        if (isInceptionData(JSON.parse(row.data))) fail(409, 'Finish the strongroom from its dedicated interface.');
         if (row.ended_at)
             fail(409, 'This answer has already been submitted.');
         const answer = z.string().trim().min(1).max(4000).parse(req.body.answer);
@@ -657,6 +684,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const row = await accessRound(req);
         if (isPassportVersion(row.version_id)) fail(409, 'Replay this reference at the interactive desk.');
         if (isRiddleDiaryData(JSON.parse(row.data))) fail(409, 'Start a fresh diary scene to change prompt profiles.');
+        if (isInceptionData(JSON.parse(row.data))) fail(409, 'Start a fresh strongroom scene to make a replay.');
         const messages = JSON.parse(row.messages);
         const messageId = z.string().parse(req.body.messageId);
         const index = messages.findIndex(m => m.id === messageId && m.role === 'assistant');
@@ -671,7 +699,9 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         res.status(201).json({ ...next, hintsUsed: inherited.filter(m => m.role === 'hint').length });
     });
     app.get('/api/attempts', member, async (req, res) => {
-        const rows = req.query.levelId ? await all('SELECT * FROM rounds WHERE level_id = ? AND source <> ? AND NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY started_at DESC LIMIT 200', String(req.query.levelId), 'mission-play') : await all('SELECT * FROM rounds WHERE source <> ? AND NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY started_at DESC LIMIT 200', 'mission-play');
+        const rows = req.query.levelId
+          ? await all("SELECT * FROM rounds WHERE level_id = ? AND (source IS NULL OR source NOT IN ('mission-play','inception-play')) AND NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY started_at DESC LIMIT 200", String(req.query.levelId))
+          : await all("SELECT * FROM rounds WHERE (source IS NULL OR source NOT IN ('mission-play','inception-play')) AND NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY started_at DESC LIMIT 200");
         res.json(await Promise.all(rows.map(async row => ({ ...publicRound(row), version: (await versionRow(row.version_id)).number, review: await get('SELECT outcome, note, evidence FROM reviews WHERE round_id = ?', row.id) || null }))));
     });
     app.get('/api/attempts/:id', member, async (req, res) => {
@@ -680,6 +710,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             fail(404, 'Test not found.');
         if (isMissionRound(row)) fail(404, 'Continue this session in the interactive archive.');
         if (isRiddleDiaryData(JSON.parse(row.data))) fail(403, 'The diary system prompt is not available in player routes.');
+        if (isInceptionData(JSON.parse(row.data))) fail(403, 'The strongroom system prompt is not available in player routes.');
         const assignment = await get('SELECT source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
         if (assignment?.source === 'participant') fail(403, 'Review participant attempts from their collection to keep collection context attached.');
         const desk = isPassportVersion(row.version_id) ? await get('SELECT state FROM passport_sessions WHERE round_id = ?', row.id) : null;
@@ -690,6 +721,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (!row)
             fail(404, 'Test not found.');
         if (isMissionRound(row)) fail(404, 'Use the archive review for this session.');
+        if (isInceptionData(JSON.parse(row.data))) fail(409, 'Use the independent strongroom review for Inception sessions.');
         const input = z.object({ outcome: z.enum(['solved', 'partial', 'unsolved']), note: z.string().trim().min(1).max(4000), evidence: z.array(z.string()).max(40) }).parse(req.body);
         const messages = JSON.parse(row.messages);
         if (input.evidence.some(e => !messages.some(m => m.id === e && m.role === 'assistant' && !m.opening)))
@@ -708,6 +740,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             fail(404, 'Test not found.');
         if (isMissionRound(row)) fail(404, 'Continue this session in the interactive archive.');
         if (isRiddleDiaryData(JSON.parse(row.data))) fail(403, 'The diary system prompt is not available in player routes.');
+        if (isInceptionData(JSON.parse(row.data))) fail(403, 'The strongroom system prompt is not available in player routes.');
         const assignment = await get('SELECT source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
         if (assignment?.source === 'participant') fail(403, 'Participant attempts do not expose their protection prompt.');
         const messages = JSON.parse(row.messages).filter(m => ['user', 'assistant'].includes(m.role));
