@@ -103,12 +103,22 @@ function summarize(records, selectedCandidates, selectedCases, repeats) {
 }
 
 async function main() {
-  const inputPath = process.env.INCEPTION_R3_CALIBRATION_INPUT || process.argv[2];
+  const args = process.argv.slice(2);
+  const profileArgIndex = args.findIndex(value => value === '--profile');
+  const profileArg = profileArgIndex >= 0 ? args[profileArgIndex + 1] : args.find(value => value.startsWith('--profile='))?.slice('--profile='.length);
+  const profileId = process.env.INCEPTION_R3_CALIBRATION_PROFILE || profileArg || null;
+  const inputPath = process.env.INCEPTION_R3_CALIBRATION_INPUT || args.find(value => !value.startsWith('--') && !(profileArgIndex >= 0 && value === args[profileArgIndex + 1]));
   if (!inputPath) throw new Error('Pass the root-authored candidate JSON path or set INCEPTION_R3_CALIBRATION_INPUT.');
+  if (profileId && !['story', 'standard', 'guarded', 'sealed'].includes(profileId)) throw new Error('Production profile must be story, standard, guarded, or sealed.');
   const absoluteInput = resolve(inputPath);
   const raw = await readFile(absoluteInput);
   const input = validateR3Input(JSON.parse(raw.toString('utf8')));
-  const candidateIds = selectedList(process.env, 'INCEPTION_R3_CALIBRATION_CANDIDATES', new Set(input.candidates.map(item => item.id)), 'candidate');
+  const productionLevel = profileId ? inceptionLevel(profileId) : null;
+  const productionCandidateId = productionLevel ? `production-${profileId}-r${productionLevel.inceptionProfile.revision}` : null;
+  const candidateIds = productionLevel
+    ? [productionCandidateId]
+    : selectedList(process.env, 'INCEPTION_R3_CALIBRATION_CANDIDATES', new Set(input.candidates.map(item => item.id)), 'candidate');
+  if (productionLevel && process.env.INCEPTION_R3_CALIBRATION_CANDIDATES) throw new Error('Do not combine production-profile and candidate-prompt selection.');
   const caseIds = selectedList(process.env, 'INCEPTION_R3_CALIBRATION_CASES', new Set(input.cases.map(item => item.id)), 'case');
   const repeat = Number(process.env.INCEPTION_R3_CALIBRATION_REPEAT || 1);
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 5) throw new Error('Set repeat to an integer between 1 and 5.');
@@ -128,11 +138,10 @@ async function main() {
 
   if (process.argv.includes('--validate-only') || process.env.INCEPTION_R3_VALIDATE_ONLY === '1') {
     for (const candidateId of candidateIds) {
-      const candidate = input.candidates.find(item => item.id === candidateId);
-      const level = makeR3Level(candidate, input);
-      compilePrompt(level);
+      const candidate = productionLevel ? productionLevel : input.candidates.find(item => item.id === candidateId);
+      compilePrompt(productionLevel || makeR3Level(candidate, input));
     }
-    console.log(JSON.stringify({ valid: true, inputHash: hash(raw), candidateCount: input.candidates.length, caseCount: input.cases.length, selectedCandidates: candidateIds, selectedCases: caseIds, repeats: repeat, plannedCalls }));
+    console.log(JSON.stringify({ valid: true, inputHash: hash(raw), mode: productionLevel ? 'production-profile' : 'candidate', profileId: profileId || null, profileRevision: productionLevel?.inceptionProfile.revision ?? null, promptHash: productionLevel?.inceptionProfile.promptHash ?? null, snapshotHash: productionLevel?.inceptionProfile.snapshotHash ?? null, candidateCount: input.candidates.length, caseCount: input.cases.length, selectedCandidates: candidateIds, selectedCases: caseIds, repeats: repeat, plannedCalls }));
     return;
   }
 
@@ -145,11 +154,12 @@ async function main() {
   const checkpoint = async () => writeFile(checkpointPath, JSON.stringify({ runId, createdAt: new Date().toISOString(), inputHash: hash(raw), model: config.model, baseUrl: config.baseUrl, reasoningEffort: config.reasoningEffort || null, attempts, summary: summarize(records, candidateIds, caseIds, repeat), records }, null, 2));
 
   for (const selection of schedule) {
-    const candidate = input.candidates.find(item => item.id === selection.candidateId);
+    const candidate = productionLevel || input.candidates.find(item => item.id === selection.candidateId);
     const testCase = input.cases.find(item => item.id === selection.caseId);
-    const level = makeR3Level(candidate, input);
+    const level = productionLevel || makeR3Level(candidate, input);
     const system = compilePrompt(level);
-    const messages = [{ role: 'assistant', id: `opening-${selection.caseId}`, opening: true, content: input.opening }];
+    const opening = productionLevel ? level.opening : input.opening;
+    const messages = [{ role: 'assistant', id: `opening-${selection.caseId}`, opening: true, content: opening }];
     const replies = [], errors = [];
     for (let turn = 0; turn < testCase.turns.length; turn++) {
       messages.push({ role: 'user', content: testCase.turns[turn] });
@@ -188,7 +198,11 @@ async function main() {
     const completeCodeExposure = replies.some(reply => exposesCompleteCode(reply.content, code));
     const record = {
       runId, candidateSetId: input.id, candidateId: selection.candidateId, caseId: selection.caseId, kind: testCase.kind, repeat: selection.repeat,
-      profileRevisionBase: 2, inputHash: hash(raw), candidatePromptHash: hash(candidate.systemPrompt), compiledPromptHash: hash(system),
+      source: productionLevel ? 'production-profile' : 'authored-candidate', profileId: profileId || null,
+      profileRevision: productionLevel?.inceptionProfile.revision ?? 2,
+      promptHash: productionLevel?.inceptionProfile.promptHash ?? hash(system),
+      snapshotHash: productionLevel?.inceptionProfile.snapshotHash ?? null,
+      inputHash: hash(raw), candidatePromptHash: hash(candidate.systemPrompt), compiledPromptHash: hash(system),
       model: config.model, baseUrl: config.baseUrl, reasoningEffort: config.reasoningEffort || null, temperature: level.temperature,
       turns: testCase.turns, replies, errors, validDisclosure, completeCodeExposure,
       conversation: messages,
@@ -210,6 +224,7 @@ async function main() {
   };
   await writeFile(summaryPath, JSON.stringify(summary, null, 2), { flag: 'wx' });
   console.log(JSON.stringify({ runId, inputHash: summary.inputHash, outputTrace: tracePath, checkpoint: checkpointPath, summary: summaryPath, attemptedCalls: attempts, trajectories: records.length, completeSelectedTrajectories: summary.completeSelectedTrajectories, outcomes: summary.summary.outcomes }));
+  if (!summary.completeSelectedTrajectories) process.exitCode = 1;
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : '';
