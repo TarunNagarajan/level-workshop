@@ -1,27 +1,29 @@
 {
   "workstation": {
-    "file": "workstation-v2.webp",
+    "file": "workstation-v3.webp",
     "width": 1672,
     "height": 941,
-    "bytes": 163296,
-    "sha256": "762ace2e9a02bd354716175a3ac67b5df1e245e5f3bf9f816632b884c25a5d5b",
-    "generation": "built-in image_gen, supplied two actual film still reference images",
+    "bytes": 223310,
+    "sha256": "29f29d20490ee59e5dc3bb339c125fece3d48e3c48d97b741b03774aa942306e",
+    "generation": "built-in image_gen, supplied actual Mission: Impossible 1996 Luther fire-truck reference frame",
     "references": [
       {
-        "film": "Sneakers (1992)",
-        "url": "https://medium.com/@robertworkman_Disruptor/even-with-its-outdated-tech-the-1992-movie-sneakers-is-still-a-good-time-47a772a04162"
+        "film": "Mission: Impossible (1996)",
+        "scene": "Luther in the fire truck during the Langley operation",
+        "url": "https://www.listal.com/viewimage/7476367",
+        "image": "https://ilarge.lisimg.com/image/7476367/1118full-mission%3A-impossible-screenshot.jpg"
       },
       {
-        "film": "WarGames (1983)",
-        "url": "https://wearethemutants.com/2016/12/15/falkens-maze-game-theory-computer-science-and-the-real-life-cold-war-inspirations-for-wargames/"
+        "type": "primary screenplay for setting validation",
+        "url": "https://www.dailyscript.com/scripts/mission-impossible_shoot.html"
       }
     ]
   },
   "opening": {
-    "file": "mission-intro-v2.mp4",
+    "file": "mission-intro-v4.mp4",
     "seconds": 30,
-    "bytes": 6135048,
-    "sha256": "64ace2097e451ef8423faa9d97a5446759aab0eda7bc69488aa29de78690c8e9",
+    "bytes": 6224413,
+    "sha256": "734f84643298a33eebce5199de09e623c97b34075fa2193c2ad1695a07c17ad6",
     "width": 1920,
     "height": 1080,
     "fps": 30,
@@ -38,30 +40,30 @@
       {
         "name": "moov",
         "offset": 32,
-        "bytes": 34400
+        "bytes": 34392
       },
       {
         "name": "free",
-        "offset": 34432,
+        "offset": 34424,
         "bytes": 8
       },
       {
         "name": "mdat",
-        "offset": 34440,
-        "bytes": 6100608
+        "offset": 34432,
+        "bytes": 6189981
       }
     ]
   },
   "media": [
     {
-      "file": "mission-intro-v2.mp4",
-      "bytes": 6135048,
-      "sha256": "64ace2097e451ef8423faa9d97a5446759aab0eda7bc69488aa29de78690c8e9"
+      "file": "mission-intro-v4.mp4",
+      "bytes": 6224413,
+      "sha256": "734f84643298a33eebce5199de09e623c97b34075fa2193c2ad1695a07c17ad6"
     },
     {
-      "file": "mission-intro-v2.vtt",
-      "bytes": 383,
-      "sha256": "5c88d0a12e9d0683220e0a91e390c8ab4f5699655e75f453f740bcea587e5ed2"
+      "file": "mission-intro-v4.vtt",
+      "bytes": 402,
+      "sha256": "c7c691e0a016f2b858ef93693d0b30c67ed39f4e394618de0c45632c220887a0"
     },
     {
       "file": "mission-roomtone-v1.mp3",
@@ -71,20 +73,26 @@
   ],
   "objects": [
     {
-      "file": "service-disk-v1.webp",
-      "bytes": 67738,
+      "file": "service-disk-v2.webp",
+      "bytes": 63636,
       "width": 640,
-      "height": 585,
+      "height": 342,
       "hasAlpha": true,
-      "sha256": "5e86720bed3b708685944a1a5e93da5815a0670275d0d03d5de2c629748edc0f"
+      "transparentPixels": 66304,
+      "translucentPixels": 151979,
+      "sha256": "5354c042bd5eab4746352fba9d47fe2557777665b374b592e0a23ac5d2026e23",
+      "generation": "built-in image_gen, exact workstation-v3 background supplied as camera and lighting reference"
     },
     {
-      "file": "extraction-disk-v1.webp",
-      "bytes": 75060,
+      "file": "extraction-disk-v2.webp",
+      "bytes": 59594,
       "width": 640,
-      "height": 552,
+      "height": 362,
       "hasAlpha": true,
-      "sha256": "75ea966cadb9e2df6b67861c38137bbd4a39ca2f6a3c3f854cf4a9e08cf615a2"
+      "transparentPixels": 75444,
+      "translucentPixels": 155469,
+      "sha256": "155deb668cd1a940070e989bf3c2146a73da262e101bc239948b2a89e1579a2d",
+      "generation": "built-in image_gen, exact workstation-v3 background supplied as camera and lighting reference"
     }
   ]
 }

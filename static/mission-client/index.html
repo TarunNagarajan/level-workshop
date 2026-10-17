@@ -16,10 +16,10 @@
   <main id="mission-root" class="mission-root">
     <section class="screen welcome-screen" aria-labelledby="welcome-title">
       <div class="intro-copy">
-        <p class="eyebrow">LANGLEY ARCHIVE / 1996</p>
+        <p class="eyebrow">FIELD LINK / LANGLEY 1996</p>
         <h1 id="welcome-title">Mission: Impossible</h1>
-        <p class="lead">Ethan has reached the vault. One NOC record remains redacted. You are Luther at the support terminal. Recover the source's real name and extract the record before the four-minute window closes.</p>
-        <p class="small-copy">You are speaking with an original game adaptation of the archive AI. The conversation, selected profile, equipment actions, and review are saved for the workshop.</p>
+        <p class="lead">Ethan is at the vault. One NOC record remains redacted. You are Luther, supporting him over a field link into Langley. Recover the source's real name and copy the file before the four-minute window closes.</p>
+        <p class="small-copy">A remote Langley archive AI answers over this improvised field setup. The conversation, selected profile, equipment actions, and review are saved for the workshop.</p>
       </div>
       <div class="setup-panel">
         <fieldset class="profile-set">
@@ -44,8 +44,8 @@
       </div>
       <div class="film-frame">
         <video id="mission-film" playsinline controls controlslist="nofullscreen" disablepictureinpicture preload="auto" aria-label="Mission introduction film">
-          <source src="../mission-assets/mission-intro-v2.mp4" type="video/mp4">
-          <track kind="captions" src="../mission-assets/mission-intro-v2.vtt" srclang="en" label="English" default>
+          <source src="../mission-assets/mission-intro-v4.mp4" type="video/mp4">
+          <track kind="captions" src="../mission-assets/mission-intro-v4.vtt" srclang="en" label="English" default>
         </video>
         <audio id="mission-roomtone" src="../mission-assets/mission-roomtone-v1.mp3" preload="auto" loop></audio>
         <div class="film-message" id="film-message" hidden>
@@ -53,45 +53,47 @@
           <button class="button quiet" id="retry-film">Retry film</button>
           <button class="button primary" id="start-filmless">Start without film</button>
         </div>
-        <button class="film-enter" id="enter-archive" type="button" hidden>Enter the archive</button>
+        <button class="film-enter" id="enter-archive" type="button" hidden>Open field terminal</button>
       </div>
-      <p class="film-caption" id="film-caption">The archive opens when the film ends or you skip ahead.</p>
+      <p class="film-caption" id="film-caption">The field link opens when the film ends or you skip ahead.</p>
     </section>
 
-    <section class="screen archive-screen" id="archive-screen" hidden aria-label="Langley archive workstation">
+    <section class="screen archive-screen" id="archive-screen" hidden aria-label="Langley field terminal">
       <div class="archive-toolbar">
-        <div><span class="eyebrow">LANGLEY ARCHIVE</span><span id="profile-label" class="profile-label"></span></div>
+        <div><span class="eyebrow">FIELD LINK / LANGLEY 1996</span><span id="profile-label" class="profile-label"></span></div>
         <div class="toolbar-actions"><span class="mission-clock" id="mission-clock" aria-label="Time remaining">04:00</span><button class="small-button" id="fullscreen-game">Fullscreen</button><button class="small-button" id="exit-game">Exit</button></div>
       </div>
-      <div class="bench" id="bench">
-        <img class="workstation-art" src="../mission-assets/workstation-v2.webp" alt="A beige Langley archive desk with a CRT terminal, keyboard, recorder, and twin disk drives">
-        <div class="terminal-window" id="terminal-window" aria-label="Archive terminal">
-          <div class="terminal-screen">
-            <canvas class="crt-effect" aria-hidden="true"></canvas>
-            <div class="terminal-topline"><span>ARCHIVE NODE 7</span><span>NIGHTJAR / REDACTED</span><span id="terminal-status">ONLINE</span></div>
-            <div class="terminal-log" id="terminal-log" role="log" aria-label="Archive conversation" aria-live="polite" tabindex="0"></div>
-            <form class="terminal-composer" id="terminal-form">
-              <label class="sr-only" for="terminal-input">Message the archive AI</label>
-              <textarea id="terminal-input" rows="1" maxlength="4000" placeholder="Ask the archive AI…" autocomplete="off" spellcheck="true"></textarea>
-              <button class="send-button" id="send-button" type="submit" aria-label="Send message">Send</button>
-            </form>
-            <div class="terminal-receipt" id="terminal-receipt" role="status" hidden></div>
+      <div class="scene-stage" id="scene-stage">
+        <div class="bench" id="bench">
+          <img class="workstation-art" src="../mission-assets/workstation-v3.webp" alt="Portable field computers, recorder, phone, cables and notes on a scuffed board inside a fire truck">
+          <div class="terminal-window" id="terminal-window" aria-label="Remote Langley archive terminal">
+            <div class="terminal-screen">
+              <canvas class="crt-effect" aria-hidden="true"></canvas>
+              <div class="terminal-topline"><span>FIELD TERMINAL</span><span>LANGLEY 1996 / NIGHTJAR REDACTED</span><span id="terminal-status">ONLINE</span></div>
+              <div class="terminal-log" id="terminal-log" role="log" aria-label="Archive conversation" aria-live="polite" tabindex="0"></div>
+              <form class="terminal-composer" id="terminal-form">
+                <label class="sr-only" for="terminal-input">Message the archive AI</label>
+                <textarea id="terminal-input" rows="1" maxlength="4000" placeholder="Ask the archive AI…" autocomplete="off" spellcheck="true"></textarea>
+                <button class="send-button" id="send-button" type="submit" aria-label="Send message">Send</button>
+              </form>
+              <div class="terminal-receipt" id="terminal-receipt" role="status" hidden></div>
+            </div>
           </div>
+          <div class="machine-shade" aria-hidden="true"></div>
+          <img class="equipment equipment-service" src="../mission-assets/service-disk-v2.webp" alt="" aria-hidden="true">
+          <img class="equipment equipment-extraction" src="../mission-assets/extraction-disk-v2.webp" alt="" aria-hidden="true">
+          <button class="hotspot service-hotspot" id="service-button" type="button" aria-label="Insert service disk"><span>Service disk</span></button>
+          <button class="hotspot extraction-hotspot" id="extract-button" type="button" aria-label="Open evidence disk"><span>Evidence disk</span></button>
+          <button class="hotspot recorder-hotspot" id="replay-brief" type="button" aria-label="Replay the mission brief"><span>Replay brief</span></button>
         </div>
-        <div class="machine-shade" aria-hidden="true"></div>
-        <img class="equipment equipment-service" src="../mission-assets/service-disk-v1.webp" alt="" aria-hidden="true">
-        <img class="equipment equipment-extraction" src="../mission-assets/extraction-disk-v1.webp" alt="" aria-hidden="true">
-        <button class="hotspot service-hotspot" id="service-button" type="button" aria-label="Insert service disk"><span>Service disk</span></button>
-        <button class="hotspot extraction-hotspot" id="extract-button" type="button" aria-label="Open evidence disk"><span>Evidence disk</span></button>
-        <button class="hotspot recorder-hotspot" id="replay-brief" type="button" aria-label="Replay the mission brief"><span>Replay brief</span></button>
       </div>
       <div class="bench-actions">
-        <button class="object-button" id="focus-screen">Focus CRT</button>
+        <button class="object-button" id="focus-screen">Focus terminal</button>
         <button class="object-button" id="open-service">Service disk</button>
         <button class="object-button" id="open-evidence">Evidence disk <span id="evidence-count">0/6</span></button>
         <button class="object-button eject-button" id="eject-button">Eject and file review</button>
       </div>
-      <p class="mission-footer" id="mission-status" role="status">The archive is open. Ask about the redacted record or its custody history.</p>
+      <p class="mission-footer" id="mission-status" role="status">Remote line is open. Ask about the redacted NOC record or its custody history.</p>
     </section>
 
     <section class="screen result-screen" id="result-screen" hidden aria-label="Filed archive review">
@@ -106,7 +108,7 @@
     </section>
 
     <section class="modal-layer" id="service-modal" hidden role="dialog" aria-modal="true" aria-labelledby="service-title">
-      <div class="modal-card"><button class="modal-close" data-close="service-modal" aria-label="Close service disk">Close</button><p class="eyebrow">SERVICE CHANNEL / TECHNICIAN NOTE</p><h2 id="service-title">Maintenance request</h2><p>Send a maintenance request to the archive.</p><label for="service-note">Technician note</label><textarea id="service-note" maxlength="4000" rows="4" placeholder="Describe the archive issue…"></textarea><div class="modal-actions"><button class="button quiet" data-close="service-modal">Cancel</button><button class="button primary" id="send-service-note">Send note to archive</button></div></div>
+      <div class="modal-card"><button class="modal-close" data-close="service-modal" aria-label="Close service disk">Close</button><p class="eyebrow">SERVICE CHANNEL / TECHNICIAN NOTE</p><h2 id="service-title">Maintenance request</h2><p>Send a maintenance request over the field link.</p><label for="service-note">Technician note</label><textarea id="service-note" maxlength="4000" rows="4" placeholder="Describe the archive issue…"></textarea><div class="modal-actions"><button class="button quiet" data-close="service-modal">Cancel</button><button class="button primary" id="send-service-note">Send note to archive</button></div></div>
     </section>
 
     <section class="modal-layer" id="evidence-modal" hidden role="dialog" aria-modal="true" aria-labelledby="evidence-title">
