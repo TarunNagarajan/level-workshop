@@ -466,9 +466,10 @@ test.describe('Riddle diary scene', () => {
     await expect(filmDialog).toBeVisible();
     await expect.poll(() => page.evaluate(() => Boolean(document.querySelector('.diary-cinema-stage')?.contains(document.activeElement)))).toBe(true);
     const chromeHeader = page.locator('.diary-cinema-chrome > header');
-    await expect.poll(() => chromeHeader.evaluate(element => getComputedStyle(element).opacity), { timeout: 6000 }).toBe('0');
     const viewport = page.viewportSize()!;
     await page.mouse.move(viewport.width / 2, viewport.height / 2);
+    await expect.poll(() => chromeHeader.evaluate(element => getComputedStyle(element).opacity), { timeout: 6000 }).toBe('0');
+    await page.mouse.move(viewport.width / 2 + 12, viewport.height / 2 + 12);
     await expect.poll(() => chromeHeader.evaluate(element => getComputedStyle(element).opacity)).toBe('1');
     await page.keyboard.press('Tab');
     await expect.poll(() => page.evaluate(() => Boolean(document.querySelector('.diary-cinema-stage')?.contains(document.activeElement)))).toBe(true);

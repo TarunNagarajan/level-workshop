@@ -915,7 +915,7 @@ const CinemaPlayer = forwardRef<CinemaPlayerHandle, CinemaPlayerProps>(function 
     setControlsVisible(true);
   }
   function onPlaying() {
-    clearStallTimer(); setMediaState('ready');
+    clearStallTimer(); mediaStateRef.current = 'ready'; setMediaState('ready');
     scheduleChromeHide();
   }
 
