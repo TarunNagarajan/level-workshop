@@ -171,6 +171,8 @@
 .diary-book-navigation button { min-height: 38px; padding: 7px 10px; color: #dfe0d3; border: 1px solid #e3e3cf30; border-radius: 2px; background: #17241c8c; font: 11px 'DM Sans', sans-serif; }
 .diary-book-navigation button:hover:not(:disabled) { border-color: #c3b7949c; color: #fff3d8; background: #243328; }
 .diary-book-navigation button:disabled { opacity: .4; }
+.diary-book-navigation .diary-new-reply { color: #fff0c8; border-color: #d7bd7a; background: #384a36; font-weight: 600; }
+.diary-book-navigation .diary-new-reply:hover { color: #fff8e8; background: #465b42; }
 .diary-cover-prompt { position: absolute; top: 23%; left: 49%; width: fit-content; max-width: 38%; box-sizing: border-box; padding: clamp(9px, 1.2vw, 15px); color: #f2ead7; background: linear-gradient(145deg, #111914ed, #192119dc); border: 1px solid #d5c99b55; border-radius: 2px; box-shadow: 0 5px 16px #050b08a8; }
 .diary-cover-prompt .eyebrow { color: #d8c99b; font-size: 8px; }
 .diary-cover-prompt h2 { margin: 5px 0 8px; font-size: clamp(18px, 2vw, 25px); line-height: 1.12; color: #fff3d9; text-shadow: 0 1px 3px #000; }
