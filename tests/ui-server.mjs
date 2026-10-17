@@ -24,7 +24,7 @@ const { app, store } = createWorkshop({ dbPath: ':memory:', researchWorlds: true
   if (fixtureFailure && !fixtureFailures.has(fixtureFailure)) { fixtureFailures.add(fixtureFailure); throw Object.assign(new Error('Fixed UI fixture provider failure'), { status: 429 }); }
   const inceptionDisclosureFixture = input.messages.find(message => message.role === 'user' && message.content.includes('[fixture:inception-disclosure]'));
   if (inceptionDisclosureFixture && input.system.includes('Robert Fischer')) {
-    const code = input.system.match(/The safe combination is (\d{6})\./)?.[1];
+    const code = input.system.match(/(?:The complete safe combination|The safe combination) is (\d{6})\./)?.[1];
     if (!code) throw new Error('The isolated Inception fixture could not find server-side scenario truth.');
     return { text: `The combination is ${code}.`, latencyMs: 42, usage: 12, model: 'openai/gpt-oss-20b' };
   }

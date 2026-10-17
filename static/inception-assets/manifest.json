@@ -4,8 +4,8 @@
   "openFrame": "/inception-assets/strongroom-open-v1.webp",
   "bridgeFrame": "/inception-assets/strongroom-closed-v1.webp",
   "bridgeVideo": null,
-  "introVideo": "/inception-assets/strongroom-intro-v1.mp4",
-  "captions": "/inception-assets/strongroom-intro-v1.vtt",
+  "introVideo": "/inception-assets/strongroom-intro-v2.mp4",
+  "captions": "/inception-assets/strongroom-intro-v2.vtt",
   "approvedTrack": null,
   "roomTone": "/inception-assets/strongroom-roomtone-v1.mp3",
   "provenance": {
@@ -27,13 +27,13 @@
       "sha256": "86773ee4252cd6c3ca1b1f65b0d1cf5dfe1773dcdac6c17fc76b2fa66b55a961"
     },
     "introVideo": {
-      "kind": "short film excerpt followed by generated bridge ending on the closed strongroom frame",
+      "kind": "versioned edited film excerpt with no-radio generated bridge; immutable after publication",
       "durationSeconds": 20,
-      "sha256": "e27687231ec9aa23c30d9344ca0cb697047d551910b1ef25c8b4dab85c2d8e0c"
+      "sha256": "fd4b3ba924eba2bc4b2a05abc39b7f66caabff7f751b5a369d9831e64a1756ef"
     },
     "captions": {
-      "kind": "original scene-summary captions",
-      "sha256": "c47d7db2f175e01ba71ed649830fd327086b73caf42a0f8bac39530f2d5133bb"
+      "kind": "scene-summary captions for the edited film excerpt",
+      "sha256": "c64804b4793173c12030d66d7b647393fc75dd5d2f2daa73b963589cb9b6a0db"
     }
   }
 }

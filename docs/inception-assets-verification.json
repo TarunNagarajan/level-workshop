@@ -23,5 +23,15 @@
     "file": "strongroom-roomtone-v1.mp3",
     "bytes": 360700,
     "sha256": "86773ee4252cd6c3ca1b1f65b0d1cf5dfe1773dcdac6c17fc76b2fa66b55a961"
+  },
+  {
+    "file": "strongroom-intro-v2.mp4",
+    "bytes": 3413795,
+    "sha256": "fd4b3ba924eba2bc4b2a05abc39b7f66caabff7f751b5a369d9831e64a1756ef"
+  },
+  {
+    "file": "strongroom-intro-v2.vtt",
+    "bytes": 365,
+    "sha256": "c64804b4793173c12030d66d7b647393fc75dd5d2f2daa73b963589cb9b6a0db"
   }
 ]

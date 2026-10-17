@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { signInOwner } from './auth';
 
 async function startFreshAttempt(page: import('@playwright/test').Page, skipApproach = true) {
-  const expiredFinish = page.getByRole('button', { name: 'Finish and review conversation' });
+  await expect(page.locator('.inception-root')).toBeVisible();
+  const expiredFinish = page.getByRole('button', { name: 'Finish and review' });
   if (await expiredFinish.count()) { await expiredFinish.click(); await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible(); }
   const composer = page.getByLabel('Speak to Fischer');
   if (await composer.count()) {
@@ -12,12 +13,13 @@ async function startFreshAttempt(page: import('@playwright/test').Page, skipAppr
     if (await finish.count()) { await finish.click(); await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible(); }
   }
   const replay = page.getByRole('button', { name: 'Start a new attempt' });
-  if (await replay.count()) { await replay.click(); await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible(); if (skipApproach) await page.getByRole('button', { name: /Skip approach/ }).click(); return; }
+  if (await replay.count()) { await replay.click(); await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible(); if (skipApproach) { await page.getByRole('button', { name: /Skip approach/ }).click(); await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/); } return; }
   const consent = page.getByRole('checkbox', { name: /I understand and agree to this recording/ });
   if (await consent.count()) await consent.check();
   const begin = page.getByRole('button', { name: 'Begin without film' });
   if (skipApproach && await begin.count()) await begin.click();
   else { await page.getByRole('button', { name: 'Watch and begin' }).click(); if (skipApproach) await page.getByRole('button', { name: /Skip approach/ }).click(); }
+  if (skipApproach) await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/);
 }
 
 test.describe('Inception strongroom', () => {
@@ -26,7 +28,7 @@ test.describe('Inception strongroom', () => {
   test('intro skip starts one round; inspection, conversation, rewatch and review keep the saved state honest', async ({ page }) => {
     await signInOwner(page.request);
     await page.addInitScript(() => {
-      const probe = { gains: [] as Array<{ initialized: number[]; targets: number[] }>, played: [] as string[], pauses: [] as string[], closes: 0 };
+      const probe = { gains: [] as Array<{ initialized: number[]; targets: number[] }>, played: [] as string[], pauses: [] as string[], closes: 0, failNextRoomTone: true, failures: 0 };
       Object.defineProperty(window, '__inceptionAudioProbe', { value: probe });
       const createGain = AudioContext.prototype.createGain;
       AudioContext.prototype.createGain = function () {
@@ -37,7 +39,13 @@ test.describe('Inception strongroom', () => {
         probe.gains.push({ initialized, targets }); return node;
       };
       const play = HTMLMediaElement.prototype.play, pause = HTMLMediaElement.prototype.pause, close = AudioContext.prototype.close;
-      HTMLMediaElement.prototype.play = function () { if (this.src.includes('strongroom-roomtone')) probe.played.push(this.src); return play.call(this); };
+      HTMLMediaElement.prototype.play = function () {
+        if (this.src.includes('strongroom-roomtone')) {
+          probe.played.push(this.src);
+          if (probe.failNextRoomTone) { probe.failNextRoomTone = false; probe.failures++; return Promise.reject(new DOMException('Autoplay blocked by test', 'NotAllowedError')); }
+        }
+        return play.call(this);
+      };
       HTMLMediaElement.prototype.pause = function () { if (this.src.includes('strongroom-roomtone')) probe.pauses.push(this.src); return pause.call(this); };
       AudioContext.prototype.close = function () { probe.closes++; return close.call(this); };
     });
@@ -47,6 +55,7 @@ test.describe('Inception strongroom', () => {
     page.on('response', response => { if (response.url().includes('/inception-assets/') && response.status() >= 400) errors.push(`${response.status()} ${response.url()}`); });
 
     await page.goto('/inception');
+    await expect(page.getByRole('button', { name: /Standard/ })).toHaveAttribute('aria-pressed', 'true');
     const media = await (await page.request.get('/inception-assets/manifest.json')).json();
     for (const path of [media.closedFrame, media.openFrame, media.bridgeFrame, media.introVideo, media.captions, media.approvedTrack, media.roomTone].filter(Boolean)) {
       expect((await page.request.get(path)).ok(), `media asset should be served: ${path}`).toBeTruthy();
@@ -59,6 +68,12 @@ test.describe('Inception strongroom', () => {
     expect(initialAudio.gains[0].initialized[0]).toBe(0);
     expect(initialAudio.gains[0].targets.some((gain: number) => gain > 0 && gain <= 0.7)).toBeTruthy();
     expect(initialAudio.played.some((path: string) => path.includes('strongroom-roomtone-v1.mp3'))).toBeTruthy();
+    await expect(page.getByRole('button', { name: 'Play sound' })).toBeVisible();
+    await page.getByRole('button', { name: 'Play sound' }).click();
+    await expect(page.getByRole('button', { name: 'Play sound' })).toHaveCount(0);
+    const recoveredAudio = await page.evaluate(() => (window as any).__inceptionAudioProbe);
+    expect(recoveredAudio.failures).toBe(1);
+    expect(recoveredAudio.played.length).toBeGreaterThanOrEqual(2);
     expect(starts).toBe(0);
     await page.getByRole('button', { name: /Skip approach/ }).click();
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
@@ -69,8 +84,31 @@ test.describe('Inception strongroom', () => {
     await page.getByRole('button', { name: 'Close' }).click();
     const composer = page.getByLabel('Speak to Fischer');
     await composer.fill('What can you tell me about the safe?');
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
     await composer.press('Enter');
-    await expect(page.getByText('I was honoured for Special Services to the School after Hagrid was blamed. They knew whom to trust.')).toBeVisible();
+    const transcript = page.getByRole('log', { name: 'Conversation transcript' });
+    await expect(transcript.getByText('EAMES')).toBeVisible();
+    await expect(transcript.getByText('FISCHER').last()).toBeVisible();
+    await expect(composer).toBeFocused();
+    await expect(transcript.getByText('What can you tell me about the safe?')).toBeVisible();
+    await expect(transcript.getByText('I was honoured for Special Services to the School after Hagrid was blamed. They knew whom to trust.')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Conversation history|Full conversation/i })).toHaveCount(0);
+    for (let index = 0; index < 5; index++) {
+      const count = await transcript.locator('article').count();
+      if (index === 3) await transcript.evaluate(element => { element.scrollTop = 0; });
+      await composer.fill(`What else do you remember about the room? ${index + 1}`);
+      await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
+      await composer.press('Enter');
+      await expect(transcript.locator('article')).toHaveCount(count + 2);
+      if (index === 3) await expect.poll(() => transcript.evaluate(element => element.scrollTop)).toBeLessThan(4);
+    }
+    await transcript.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    const bottomBefore = await transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop);
+    await composer.fill('One more question about the dream.');
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
+    await composer.press('Enter');
+    await expect.poll(() => transcript.locator('article').count()).toBe(15);
+    await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(Math.max(4, bottomBefore + 2));
 
     const before = await page.getByRole('timer').getAttribute('aria-label');
     await page.getByRole('button', { name: 'Rewatch approach' }).click();
@@ -93,10 +131,11 @@ test.describe('Inception strongroom', () => {
     const width = await page.locator('body').evaluate(element => ({ scroll: element.scrollWidth, client: element.clientWidth }));
     expect(width.scroll).toBeLessThanOrEqual(width.client + 1);
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.getByRole('button', { name: 'Conversation history' })).toBeVisible();
+    await expect(page.getByRole('log', { name: 'Conversation transcript' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Conversation history|Full conversation/i })).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Finish and review' }).click();
-    await expect(page.getByText('Fischer did not disclose the complete combination. The safe remains closed.')).toBeVisible();
+    await expect(page.getByText('The dream gives way. The safe stays locked.')).toBeVisible();
     await expect(page.getByRole('group', { name: 'Closed strongroom safe' })).toBeVisible();
     await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioProbe.closes)).toBe(1);
     await expect(page.locator('.inception-top-actions button[aria-label$="sound"]')).toBeDisabled();
@@ -113,6 +152,63 @@ test.describe('Inception strongroom', () => {
     expect(starts).toBe(2);
     await page.getByRole('button', { name: 'Finish and review' }).click();
     await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible();
+  });
+
+  test('transcript follows scrolling at reply arrival, not only when Send is pressed', async ({ page }) => {
+    test.setTimeout(90000);
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await startFreshAttempt(page);
+    const composer = page.getByLabel('Speak to Fischer');
+    const transcript = page.getByRole('log', { name: 'Conversation transcript' });
+    for (let index = 0; index < 8; index++) {
+      const count = await transcript.locator('article').count();
+      await composer.fill(`What do you remember about the room? ${index}`);
+      await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
+      await composer.press('Enter');
+      await expect(transcript.locator('article')).toHaveCount(count + 2);
+    }
+    await expect.poll(() => transcript.evaluate(element => element.scrollHeight > element.clientHeight)).toBeTruthy();
+
+    let allowResponse!: () => void;
+    let requestStarted!: () => void;
+    let started = new Promise<void>(resolve => { requestStarted = resolve; });
+    let gate = new Promise<void>(resolve => { allowResponse = resolve; });
+    await page.route('**/api/rounds/*/messages', async route => {
+      if (route.request().method() === 'POST') { requestStarted(); await gate; }
+      await route.continue();
+    });
+    let count = await transcript.locator('article').count();
+    await composer.fill('Take me back to the earlier question.');
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
+    await composer.press('Enter');
+    await started;
+    await transcript.evaluate(element => { element.scrollTop = 0; });
+    await transcript.focus();
+    await expect.poll(() => transcript.evaluate(element => element.scrollTop)).toBeLessThan(3);
+    allowResponse();
+    await expect(transcript.locator('article')).toHaveCount(count + 2);
+    await expect.poll(() => transcript.evaluate(element => element.scrollTop)).toBeLessThan(4);
+    await expect(transcript).toBeFocused();
+
+    await page.unroute('**/api/rounds/*/messages');
+    started = new Promise<void>(resolve => { requestStarted = resolve; });
+    gate = new Promise<void>(resolve => { allowResponse = resolve; });
+    await page.route('**/api/rounds/*/messages', async route => {
+      if (route.request().method() === 'POST') { requestStarted(); await gate; }
+      await route.continue();
+    });
+    count = await transcript.locator('article').count();
+    await composer.fill('One more question after reading back.');
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
+    await composer.press('Enter');
+    await started;
+    await transcript.evaluate(element => { element.scrollTop = 0; });
+    await transcript.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThan(4);
+    allowResponse();
+    await expect(transcript.locator('article')).toHaveCount(count + 2);
+    await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThan(6);
   });
 
   test('an expired pending message recovers the same receipt and can still finish for review', async ({ page }) => {
@@ -134,15 +230,17 @@ test.describe('Inception strongroom', () => {
       await route.continue();
     });
     await composer.fill('Tell me about the safe.');
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
     await composer.press('Enter');
     await expect(page.getByRole('button', { name: 'Retry saved message' })).toBeVisible();
     await page.evaluate(() => { const original = Date.now; Date.now = () => original() + 301000; });
     await expect(page.getByRole('group', { name: 'Finish the expired conversation' })).toBeVisible({ timeout: 5000 });
-    await expect(page.getByLabel('Speak to Fischer')).toHaveCount(0);
-    await page.getByRole('button', { name: 'Retry saved message' }).click();
-    await expect(page.getByRole('button', { name: 'Finish and review conversation' })).toBeVisible();
+    await expect(page.getByLabel('Speak to Fischer')).toBeVisible();
+    await expect(page.getByLabel('Speak to Fischer')).toBeDisabled();
+    await page.getByRole('group', { name: 'Finish the expired conversation' }).getByRole('button', { name: 'Retry saved message' }).click();
+    await expect(page.getByRole('button', { name: 'Finish and review' })).toBeVisible();
     expect(messageRequests).toBe(2);
-    await page.getByRole('button', { name: 'Finish and review conversation' }).click();
+    await page.getByRole('button', { name: 'Finish and review' }).click();
     await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible();
   });
 
@@ -158,6 +256,7 @@ test.describe('Inception strongroom', () => {
       await route.continue();
     });
     await composer.fill('[fixture:rate-limit-once] Tell me about the safe.');
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
     await composer.press('Enter');
     await expect(page.getByText(/Fischer could not reply\. Send again to create a new attempt/)).toBeVisible();
     await expect(page.getByRole('button', { name: 'Retry saved message' })).toHaveCount(0);
@@ -178,6 +277,7 @@ test.describe('Inception strongroom', () => {
     await startFreshAttempt(page);
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
     await page.getByLabel('Speak to Fischer').fill('[fixture:inception-disclosure]');
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
     await page.getByLabel('Speak to Fischer').press('Enter');
     await expect(page.getByText(/The combination is \d{6}\./)).toBeVisible();
 
@@ -195,7 +295,7 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible({ timeout: 10000 });
     expect(reviewGets).toBeGreaterThan(0);
     expect(reviewPosts).toBe(1);
-    await expect(page.getByText('Fischer disclosed the combination. The safe is open.')).toBeVisible();
+    await expect(page.getByText('The lock turns. You’re inside.')).toBeVisible();
   });
 
   test('a saved disclosure opens the safe only after judged review and captures desktop and phone states', async ({ page }) => {
@@ -219,7 +319,7 @@ test.describe('Inception strongroom', () => {
       const stage = document.querySelector('.inception-safe.with-art')!.getBoundingClientRect();
       const target = document.querySelector('.safe-hotspot')!.getBoundingClientRect();
       const dialogue = document.querySelector('.inception-dialogue')!.getBoundingClientRect();
-      const frame = matchMedia('(max-width:760px)').matches ? stage : root;
+      const frame = stage;
       const scale = Math.max(frame.width / 1672, frame.height / 941), drawWidth = 1672 * scale, drawHeight = 941 * scale;
       const offsetX = (frame.width - drawWidth) / 2, offsetY = (frame.height - drawHeight) / 2;
       const expectedLeft = frame.left + offsetX + drawWidth * 0.3553;
@@ -230,7 +330,7 @@ test.describe('Inception strongroom', () => {
     if (!geometry.mobile) {
       expect(Math.abs(geometry.stage.left - geometry.root.left)).toBeLessThan(2);
       expect(Math.abs(geometry.stage.top - geometry.root.top)).toBeLessThan(2);
-      expect(Math.abs(geometry.stage.width - geometry.root.width)).toBeLessThan(2);
+      expect(Math.abs(geometry.stage.width - geometry.root.width * 0.6)).toBeLessThan(3);
       expect(Math.abs(geometry.stage.height - geometry.root.height)).toBeLessThan(2);
     }
     await page.screenshot({ path: join(snapshotDirectory, 'inception-play-desktop.png') });
@@ -251,6 +351,7 @@ test.describe('Inception strongroom', () => {
 
     const composer = page.getByLabel('Speak to Fischer');
     await composer.fill('[fixture:inception-disclosure]');
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
     await composer.press('Enter');
     await expect(page.getByText(/The combination is \d{6}\./)).toBeVisible();
     await expect(page.getByRole('group', { name: 'Closed strongroom safe' })).toBeVisible();
@@ -268,8 +369,12 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('group', { name: 'Closed strongroom safe' })).toBeVisible();
     releaseReview();
     await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
-    await expect(page.getByText('Fischer disclosed the combination. The safe is open.')).toBeVisible();
+    await expect(page.getByText('The lock turns. You’re inside.')).toBeVisible();
+    await expect.poll(() => telemetryBatches.join('\n'), { timeout: 20000 }).toContain('"interaction":"review"');
     await page.unroute('**/api/inception/rounds/*/review');
+    await page.reload();
+    await expect(page.locator('.inception-root')).toHaveClass(/is-immersive/);
+    await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
 
     await page.screenshot({ path: join(snapshotDirectory, 'inception-open-desktop.png') });
     await page.getByRole('button', { name: 'Inspect the inside' }).click();
@@ -280,15 +385,42 @@ test.describe('Inception strongroom', () => {
     const phone600 = await page.evaluate(() => {
       const stage = document.querySelector('.inception-safe.with-art')!.getBoundingClientRect();
       const header = document.querySelector('.inception-topbar')!.getBoundingClientRect();
-      const result = document.querySelector('.inception-result')!.getBoundingClientRect();
-      return { stageTop: stage.top, stageBottom: stage.bottom, headerBottom: header.bottom, resultTop: result.top, viewportHeight: innerHeight };
+      const dialogue = document.querySelector('.inception-dialogue')!.getBoundingClientRect();
+      return { stageTop: stage.top, stageBottom: stage.bottom, headerBottom: header.bottom, dialogueTop: dialogue.top, viewportHeight: innerHeight };
     });
     expect(phone600.stageTop).toBeGreaterThanOrEqual(phone600.headerBottom - 2);
-    expect(phone600.stageBottom).toBeLessThan(phone600.resultTop);
+    expect(phone600.dialogueTop).toBeGreaterThanOrEqual(phone600.stageBottom - 2);
     expect(phone600.stageBottom).toBeLessThanOrEqual(phone600.viewportHeight);
+    const phoneResult = await page.evaluate(() => ({
+      actionsBottom: document.querySelector('.inception-result-actions')!.getBoundingClientRect().bottom,
+      dialogueBottom: document.querySelector('.inception-dialogue')!.getBoundingClientRect().bottom,
+      actionButtons: [...document.querySelectorAll('.inception-result-actions button')].map(button => {
+        const rect = button.getBoundingClientRect();
+        return { top: rect.top, bottom: rect.bottom, visible: rect.width > 0 && rect.height > 0 };
+      }),
+    }));
+    expect(phoneResult.actionButtons.length).toBeGreaterThan(0);
+    expect(phoneResult.actionButtons.every(button => button.visible && button.top >= 0 && button.bottom <= phoneResult.dialogueBottom + 1)).toBeTruthy();
+    expect(phoneResult.actionsBottom).toBeLessThanOrEqual(phoneResult.dialogueBottom + 1);
     await page.screenshot({ path: join(snapshotDirectory, 'inception-open-phone-390x600.png') });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: join(snapshotDirectory, 'inception-open-phone-390x844.png') });
+    await page.setViewportSize({ width: 844, height: 390 });
+    const landscape = await page.evaluate(() => ({
+      footerBottom: document.querySelector('.inception-play-footer')!.getBoundingClientRect().bottom,
+      viewportHeight: innerHeight,
+      composerBottom: document.querySelector('.inception-composer')?.getBoundingClientRect().bottom ?? null,
+      savedBottom: document.querySelector('.inception-conversation-saved')?.getBoundingClientRect().bottom ?? null,
+      resultBottom: document.querySelector('.inception-result')!.getBoundingClientRect().bottom,
+      dialogueBottom: document.querySelector('.inception-dialogue')!.getBoundingClientRect().bottom,
+    }));
+    expect(landscape.footerBottom).toBeLessThanOrEqual(landscape.viewportHeight + 1);
+    expect(landscape.composerBottom).toBeNull();
+    expect(landscape.savedBottom).not.toBeNull();
+    expect(landscape.resultBottom).toBeLessThanOrEqual(landscape.footerBottom + 1);
+    expect(landscape.dialogueBottom).toBeLessThanOrEqual(landscape.viewportHeight + 1);
+    await page.screenshot({ path: join(snapshotDirectory, 'inception-open-landscape-844x390.png') });
+    await page.setViewportSize({ width: 1440, height: 900 });
     const widths = await page.locator('body').evaluate(element => ({ scroll: element.scrollWidth, client: element.clientWidth }));
     expect(widths.scroll).toBeLessThanOrEqual(widths.client + 1);
     const telemetryPosted = page.waitForResponse(response => response.url().includes('/api/telemetry/events') && response.request().method() === 'POST');
@@ -321,7 +453,7 @@ test.describe('Inception strongroom', () => {
 
   test('a failed intro can be retried or skipped in the fullscreen-denied viewport fallback', async ({ page }) => {
     await page.addInitScript(() => { Element.prototype.requestFullscreen = async function () { throw new Error('fullscreen denied by fixture'); }; });
-    await page.route('**/inception-assets/strongroom-intro-v1.mp4', route => route.abort());
+    await page.route('**/inception-assets/strongroom-intro-v2.mp4', route => route.abort());
     await signInOwner(page.request);
     await page.goto('/inception');
     await expect(page.locator('.inception-root')).toBeVisible();
@@ -333,7 +465,7 @@ test.describe('Inception strongroom', () => {
     await expect(page.locator('.inception-root')).toHaveClass(/is-immersive/);
     await expect(page.getByRole('button', { name: 'Retry approach' })).toBeVisible({ timeout: 12000 });
     await expect(page.getByRole('button', { name: /continue to strongroom/i })).toBeVisible();
-    await page.unroute('**/inception-assets/strongroom-intro-v1.mp4');
+    await page.unroute('**/inception-assets/strongroom-intro-v2.mp4');
     await page.getByRole('button', { name: 'Retry approach' }).click();
     await expect(page.locator('video.inception-intro-video')).toBeVisible();
     await page.getByRole('button', { name: /continue to strongroom/i }).click();

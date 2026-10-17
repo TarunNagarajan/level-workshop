@@ -56,3 +56,42 @@ test('provider adapter classifies timeout, unavailable, rate limit, and credenti
     await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'provider_unavailable');
   } finally { globalThis.fetch = priorFetch; }
 });
+
+test('calibration can observe only the allowlisted rate-limit response headers', async () => {
+  const priorFetch = globalThis.fetch;
+  const observed = [];
+  const config = { model: 'fixture-model', baseUrl: 'https://example.test/v1', apiKey: 'fixture-key' };
+  const headers = new Headers({
+    'x-ratelimit-limit-requests': '30',
+    'x-ratelimit-remaining-requests': '4',
+    'x-ratelimit-reset-requests': '2.5s',
+    'x-ratelimit-limit-tokens': '8000',
+    'x-ratelimit-remaining-tokens': '6400',
+    'x-ratelimit-reset-tokens': '7s',
+    'x-request-id': 'must-not-be-exposed',
+    'set-cookie': 'secret-cookie=never-read',
+  });
+  try {
+    globalThis.fetch = async () => ({ ok: true, headers, json: async () => ({ choices: [{ message: { content: 'visible answer' } }] }) });
+    const result = await complete({ config, system: 'System', messages: [], temperature: 0.2, onRateLimitHeaders: value => observed.push(value) });
+    assert.equal(result.text, 'visible answer');
+    assert.deepEqual(observed, [{
+      'x-ratelimit-limit-requests': '30',
+      'x-ratelimit-remaining-requests': '4',
+      'x-ratelimit-reset-requests': '2.5s',
+      'x-ratelimit-limit-tokens': '8000',
+      'x-ratelimit-remaining-tokens': '6400',
+      'x-ratelimit-reset-tokens': '7s',
+    }]);
+
+    globalThis.fetch = async () => ({ ok: false, status: 429, headers });
+    await assert.rejects(complete({ config, system: 'System', messages: [], temperature: 0.2, onRateLimitHeaders: value => observed.push(value) }), error => {
+      assert.equal(error.providerCode, 'rate_limited');
+      assert.deepEqual(error.providerLimits, observed[0]);
+      assert.equal(JSON.stringify(error).includes('must-not-be-exposed'), false);
+      return true;
+    });
+    assert.equal(observed.length, 2);
+    assert.deepEqual(Object.keys(observed[1]).sort(), Object.keys(observed[0]).sort());
+  } finally { globalThis.fetch = priorFetch; }
+});
