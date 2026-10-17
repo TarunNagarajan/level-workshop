@@ -142,6 +142,7 @@ serialTest('mission iframe owns its timing and the workshop starts a fresh inter
   try {
     h.start('/collections'); await h.tick();
     h.advance(3000); h.api.navigateMetrics('/mission'); await h.tick();
+    h.api.setMetricsPhase('compose');
     const beforeMission = events(h).length;
     h.advance(63000); await h.tick();
     assert.equal(events(h).length, beforeMission);
@@ -151,6 +152,7 @@ serialTest('mission iframe owns its timing and the workshop starts a fresh inter
     const all = events(h);
     assert.ok(all.some(event => event.kind === 'page_enter' && event.view === 'workshop' && event.pageId));
     assert.equal(all.some(event => event.view === 'mission'), false);
+    assert.equal(all.some(event => event.composeMs > 0), false);
     assert.ok(all.filter(event => ['heartbeat', 'page_exit'].includes(event.kind) && event.elapsedMs !== undefined).every(event => event.elapsedMs < 30000));
   } finally { h.restore(); }
 });

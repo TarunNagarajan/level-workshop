@@ -137,7 +137,7 @@ function tell(message) {
 }
 function setStatus(message, terminal = false) {
   $('#mission-status').textContent = message;
-  if (terminal) { $('#terminal-receipt').textContent = message; $('#terminal-receipt').hidden = false; }
+  if (terminal && !currentRequest) { $('#terminal-receipt').textContent = message; $('#terminal-receipt').hidden = false; }
 }
 function setReceiptAction(message, label, action) {
   const receipt = $('#terminal-receipt'); receipt.replaceChildren(document.createTextNode(message));
@@ -302,8 +302,10 @@ function updateControls() {
   const active = current && !current.endedAt && !current.state?.ejected && Date.now() < current.deadline;
   $('#terminal-input').disabled = !active || currentRequest !== null;
   $('#send-button').disabled = !active || currentRequest !== null;
+  $('#service-note').disabled = !active || currentRequest !== null;
+  $('#send-service-note').disabled = !active || currentRequest !== null;
   $('#service-button').disabled = !active || Boolean(current?.state?.inserted || current?.state?.ejected);
-  $('#open-service').disabled = !active;
+  $('#open-service').disabled = !active || currentRequest !== null;
   $('#extract-button').disabled = !current;
   $('#open-evidence').disabled = !current;
   const filing = Boolean(current?.state?.ejected && !current?.endedAt && current?.state?.review?.status !== 'pending');
@@ -357,12 +359,19 @@ function openModal(id) {
 }
 function closeModal(id) { document.getElementById(id).hidden = true; if (dialogRestore instanceof HTMLElement) dialogRestore.focus({ preventScroll: true }); dialogRestore = null; }
 async function startService() {
+  if (currentRequest) {
+    openModal('service-modal');
+    setStatus('The archive is still processing the previous request. Check its receipt before sending a technician note.', true);
+    updateControls();
+    return;
+  }
   try {
     if (!current.state.inserted) await sendAction('insert_service_disk');
     openModal('service-modal');
   } catch (error) { tell(error.message); }
 }
 async function sendNote() {
+  if (currentRequest) { const message = 'The archive is still processing the previous request. Check its receipt before sending this note.'; setStatus(message, true); tell(message); return; }
   const box = $('#service-note'), note = box.value.trim();
   if (!note) { box.focus(); return; }
   closeModal('service-modal');
@@ -397,7 +406,13 @@ async function checkReceipt(requestId, roundId = current?.id) {
   catch (error) { if (error.status === 404) return { status: 'not_found' }; throw error; }
 }
 async function sendMessage(content, existingRequest = null, surface = 'terminal') {
-  const trimmed = content.trim(); if (!trimmed || (currentRequest && currentRequest.requestId !== existingRequest?.requestId)) return;
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+  if (currentRequest && currentRequest.requestId !== existingRequest?.requestId) {
+    const message = 'The archive is still processing the previous request. Check its receipt before sending another message.';
+    setStatus(message, true); tell(message);
+    return false;
+  }
   const request = existingRequest || { requestId: randomId(), content: trimmed, surface };
   surface = request.surface || surface;
   const { requestId } = request, key = pendingMessageKey();
@@ -406,16 +421,17 @@ async function sendMessage(content, existingRequest = null, surface = 'terminal'
   $('#terminal-receipt').hidden = false; $('#terminal-receipt').textContent = 'Sending to archive…';
   try {
     const snapshot = await api(`/mission/rounds/${roundId}/messages`, { method: 'POST', body: { content: trimmed, requestId, surface }, timeout: true });
-    if (current?.id !== roundId) return;
+    if (current?.id !== roundId) return false;
     sessionStorage.removeItem(key); currentRequest = null; updateRound(snapshot); $('#terminal-receipt').hidden = true; clearSubmittedDraft(trimmed, surface); trackPhase('read_think', true);
+    return true;
   } catch (error) {
     if (current?.id !== roundId) return;
     let receipt = null;
     if (error.unknown || error.receiptConfirmed || error.status === 409 || !error.status) {
       try { receipt = await checkReceipt(requestId, roundId); } catch { /* keep unknown state and same request id */ }
-      if (current?.id !== roundId) return;
+      if (current?.id !== roundId) return false;
       if (receipt?.snapshot) {
-        sessionStorage.removeItem(key); currentRequest = null; updateRound(receipt.snapshot); $('#terminal-receipt').hidden = true; clearSubmittedDraft(trimmed, surface); trackPhase('read_think', true); return;
+        sessionStorage.removeItem(key); currentRequest = null; updateRound(receipt.snapshot); $('#terminal-receipt').hidden = true; clearSubmittedDraft(trimmed, surface); trackPhase('read_think', true); return true;
       }
     }
     const knownFailed = ['failed', 'interrupted', 'rejected'].includes(receipt?.status) || ['failed', 'interrupted', 'rejected'].includes(error.submissionStatus);
@@ -427,12 +443,12 @@ async function sendMessage(content, existingRequest = null, surface = 'terminal'
       : 'The request status is unknown. Check or retry this same receipt before sending another message.';
     setStatus(error.message);
     setReceiptAction(receiptMessage, knownFailed ? 'Send again' : 'Check or retry this receipt', () => void sendMessage(trimmed, knownFailed ? null : { requestId, content: trimmed, surface }, surface)); updateControls();
+    return false;
   }
 }
 function clearSubmittedDraft(content, surface) {
   const field = surface === 'service' ? 'service' : 'terminal', input = field === 'service' ? $('#service-note') : $('#terminal-input');
-  if (input.value.trim() === content) { input.value = ''; input.style.height = ''; }
-  sessionStorage.removeItem(draftKey(field));
+  if (input.value.trim() === content) { input.value = ''; input.style.height = ''; sessionStorage.removeItem(draftKey(field)); }
 }
 async function recoverPendingMessage() {
   const pending = currentRequest;

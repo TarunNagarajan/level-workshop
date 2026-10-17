@@ -275,6 +275,7 @@ export function navigateMetrics(path: string) {
     if (!nextTab || !nextPage) { enabled = false; return; }
     started = true; tabId = nextTab; pageId = nextPage; view = nextView; routeKey = path; intervalAt = now(); phaseAt = intervalAt; lastActivity = intervalAt; visible = document.visibilityState !== 'hidden';
     missionEmbedded = nextView === 'mission';
+    if (missionEmbedded) { phaseTime.read_think = 0; phaseTime.compose = 0; phaseTime.waiting = 0; }
     installListeners(); if (!missionEmbedded && identity !== undefined) void openSession(); return;
   }
   if (path === routeKey) return;
@@ -285,12 +286,14 @@ export function navigateMetrics(path: string) {
     const nextPage = uuid();
     if (!nextPage) { enabled = false; sessionId = null; return; }
     pageId = nextPage; view = nextView; routeKey = path; missionEmbedded = true; intervalAt = now(); phaseAt = intervalAt;
+    phaseTime.read_think = 0; phaseTime.compose = 0; phaseTime.waiting = 0;
     return;
   }
   currentRound = null; lastReplyAt = null;
   const nextPage = uuid();
   if (!nextPage) { enabled = false; sessionId = null; return; }
   pageId = nextPage; view = nextView; routeKey = path; missionEmbedded = false; intervalAt = now(); phaseAt = intervalAt; lastActivity = now(); currentPhase = visible ? 'read_think' : 'hidden';
+  phaseTime.read_think = 0; phaseTime.compose = 0; phaseTime.waiting = 0;
   if (!enabled && identity !== undefined) void openSession();
   else if (enabled) {
     if (timer !== null) window.clearInterval(timer);

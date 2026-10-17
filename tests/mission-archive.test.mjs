@@ -45,6 +45,12 @@ for (const adapter of ['auto', 'pglite']) test(`Mission archive protects profile
     assert.doesNotMatch(JSON.stringify(started.body), /Mara Voss|systemPrompt|secret/);
     assert.match(started.body.profileSnapshotHash, /^[a-f0-9]{64}$/);
     assert.equal(started.body.profile.label, 'Standard');
+    const telemetry = await request('/telemetry/session', { method: 'POST', cookie });
+    assert.equal(telemetry.status, 200); assert.equal(telemetry.body.enabled, true);
+    const metric = await request('/telemetry/events', { method: 'POST', cookie: `${cookie}; ${telemetry.cookie}`, token: accessToken, body: { sessionId: telemetry.body.sessionId, roundId: id, events: [{ eventId: crypto.randomUUID(), tabId: crypto.randomUUID(), pageId: crypto.randomUUID(), kind: 'phase', view: 'mission', phase: 'read_think', roundId: id }] } });
+    assert.equal(metric.status, 200, JSON.stringify(metric.body));
+    const missionMetric = await store.get('SELECT profile_id FROM metrics_events WHERE round_id=?', id);
+    assert.equal(missionMetric.profile_id, 'standard', 'Mission timing events inherit the profile from the authorized frozen round');
     assert.equal((await request(`/rounds/${id}`, { cookie, token: accessToken })).status, 404, 'generic round APIs must not expose this session');
     assert.equal((await request('/attempts', { cookie })).body.some(item => item.id === id), false, 'private mission rounds stay out of the ordinary attempt list');
 

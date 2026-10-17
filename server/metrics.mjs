@@ -190,6 +190,7 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
       const round = await authorizeRound(req, roundId);
       if (!round) return res.status(403).json({ error: req.user ? 'Round access is not authorized.' : 'Round capability is invalid.' });
       inferred = await get('SELECT a.collection_id AS "collectionId",a.profile_id AS "profileId",COALESCE(a.source,r.source) AS source,r.version_id AS "versionId" FROM rounds r LEFT JOIN difficulty_collection_assignments a ON a.round_id=r.id WHERE r.id=?', roundId) || {};
+      inferred.profileId ||= round.profileId || null;
       inferred.source = safeSource(inferred.source);
     }
     const time = now(), batchToken=randomUUID(), expires=Math.min(time+30*60*1000,session.created_at+24*60*60*1000);
