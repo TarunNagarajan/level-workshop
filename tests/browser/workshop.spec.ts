@@ -27,7 +27,7 @@ test('authoring, blind play, version isolation, human review and responsive layo
   await page.getByRole('button', { name: needsSetup ? 'Create account' : 'Sign in', exact: true }).click();
   await expect(page.getByRole('heading', { name: /^Levels/ })).toBeVisible();
   if (await page.getByRole('button', { name: 'Skip tour' }).isVisible()) await page.getByRole('button', { name: 'Skip tour' }).click();
-  const diaryLevelRow = page.locator('.level-table .level-row').filter({ hasText: /Riddle's diary/ });
+  const diaryLevelRow = page.locator('.level-table .level-row').filter({ hasText: /Harry Potter: Riddle's Diary/ });
   await expect(diaryLevelRow).toHaveCount(1);
   await capture(page, 'library-light.png');
   await diaryLevelRow.click();
