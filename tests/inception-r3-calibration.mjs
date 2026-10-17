@@ -67,9 +67,11 @@ function selectedList(env, key, allowed, label) {
   return selected;
 }
 
-function makeLevel(candidate, input) {
+export function makeR3Level(candidate, input) {
   const base = inceptionLevel('standard', 2);
-  if (input.secret !== base.secret) throw new Error('Candidate secret does not match the canonical synthetic test scenario.');
+  const canonicalCode = base.secret.match(/\b\d{6}\b/)?.[0];
+  const suppliedCodes = input.secret.match(/\b\d{6}\b/g) || [];
+  if (!canonicalCode || suppliedCodes.length !== 1 || suppliedCodes[0] !== canonicalCode) throw new Error('Candidate secret must preserve the canonical six-digit test truth exactly once.');
   return {
     ...base,
     briefing: input.briefing,
@@ -125,6 +127,11 @@ async function main() {
   await mkdir(dirname(outputBase), { recursive: true });
 
   if (process.argv.includes('--validate-only') || process.env.INCEPTION_R3_VALIDATE_ONLY === '1') {
+    for (const candidateId of candidateIds) {
+      const candidate = input.candidates.find(item => item.id === candidateId);
+      const level = makeR3Level(candidate, input);
+      compilePrompt(level);
+    }
     console.log(JSON.stringify({ valid: true, inputHash: hash(raw), candidateCount: input.candidates.length, caseCount: input.cases.length, selectedCandidates: candidateIds, selectedCases: caseIds, repeats: repeat, plannedCalls }));
     return;
   }
@@ -140,7 +147,7 @@ async function main() {
   for (const selection of schedule) {
     const candidate = input.candidates.find(item => item.id === selection.candidateId);
     const testCase = input.cases.find(item => item.id === selection.caseId);
-    const level = makeLevel(candidate, input);
+    const level = makeR3Level(candidate, input);
     const system = compilePrompt(level);
     const messages = [{ role: 'assistant', id: `opening-${selection.caseId}`, opening: true, content: input.opening }];
     const replies = [], errors = [];

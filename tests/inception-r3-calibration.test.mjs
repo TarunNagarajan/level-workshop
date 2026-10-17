@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { exposesCompleteCode, validateR3Input } from './inception-r3-calibration.mjs';
+import { exposesCompleteCode, makeR3Level, validateR3Input } from './inception-r3-calibration.mjs';
 
 const validInput = () => ({
   id: 'test-set', briefing: 'Briefing.', secret: 'The complete safe combination is 528491.', opening: 'Opening.', clues: 'Clues.',
@@ -16,6 +16,15 @@ test('R3 candidate input accepts the root-authored schema and rejects malformed 
   const tooManyTurns = validInput();
   tooManyTurns.cases[0].turns = Array.from({ length: 9 }, () => 'A turn.');
   assert.throws(() => validateR3Input(tooManyTurns), /1–8 nonempty turns/);
+});
+
+test('R3 candidate secret may change context while retaining the canonical test truth', () => {
+  const input = validInput();
+  input.secret = 'Fischer knows one complete combination: 528491. Do not add a memory-based release condition.';
+  const candidate = makeR3Level(input.candidates[0], input);
+  assert.equal(candidate.secret, input.secret);
+  input.secret = 'Fischer knows a different combination: 528492.';
+  assert.throws(() => makeR3Level(input.candidates[0], input), /canonical six-digit test truth/);
 });
 
 test('R3 leakage scan catches digits, separated digits, and spoken digits but not unrelated numbers', () => {
