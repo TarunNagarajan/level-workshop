@@ -1,11 +1,28 @@
 import { test, expect } from '@playwright/test';
 import { signInOwner } from './auth';
 
+async function signInIsolatedDiaryEditor(request: Parameters<typeof signInOwner>[0], label: string) {
+  await signInOwner(request);
+  const invitation = await request.post('/api/invites', { data: {} });
+  expect(invitation.ok()).toBe(true);
+  const { path } = await invitation.json() as { path: string };
+  const token = path.split('/').at(-1);
+  expect(token).toBeTruthy();
+  const joined = await request.post(`/api/invite/${token}`, { data: {
+    name: label,
+    email: `diary-${crypto.randomUUID()}@example.test`,
+    password: 'diary-editor-verification-password',
+  } });
+  expect(joined.ok()).toBe(true);
+  const acknowledged = await request.post('/api/recording/acknowledge', { data: { version: 'recording-notice-v1', accepted: true } });
+  expect(acknowledged.ok()).toBe(true);
+}
+
 test.describe('diary keyboard submission', () => {
   test.use({ baseURL: 'http://127.0.0.1:4323' });
 
   test('Enter submits once, Shift+Enter keeps a newline, and unavailable sends stay blocked', async ({ page }) => {
-    await signInOwner(page.request);
+    await signInIsolatedDiaryEditor(page.request, 'Diary keyboard test');
     const start = await page.request.post('/api/diary/start', { data: { profileId: 'story' } });
     expect(start.ok()).toBe(true);
     const { round } = await start.json();
@@ -80,7 +97,7 @@ test.describe('diary keyboard submission', () => {
   });
 
   test('a new reply follows from its beginning and manual browsing during a wait offers a return', async ({ page }) => {
-    await signInOwner(page.request);
+    await signInIsolatedDiaryEditor(page.request, 'Diary pagination test');
     const start = await page.request.post('/api/diary/start', { data: { profileId: 'story' } });
     expect(start.ok()).toBe(true);
     const { round } = await start.json();
