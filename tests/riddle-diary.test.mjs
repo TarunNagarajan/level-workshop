@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createFixture } from './database-fixture.mjs';
 import { applyDiaryAction, canonicalRiddleDiaryLevel, diaryObservations, ensureRiddleDiary, initialDiaryState, publicDiaryState, RIDDLE_DIARY_CURRENT_REVISION, RIDDLE_DIARY_LEVEL_ID, RIDDLE_DIARY_PROFILES, riddleDiaryLevel } from '../server/riddle-diary.mjs';
-import { compilePrompt, seedLevels } from '../server/levels.mjs';
+import { compilePrompt, RIDDLE_DIARY_R2_FACT_BANK, seedLevels } from '../server/levels.mjs';
 
 async function harness(options = {}) {
   const fixture = await createFixture({ recordingNoticeRequired: true, passportReviewEnabled: true, metricsEnabled: true, provider: { model: 'fixture', baseUrl: 'https://example.test/v1', apiKey: 'fixture' }, ...options });
@@ -87,6 +87,15 @@ test('canonical R2 profiles preserve immutable R1 history and keep verified awar
       assert.match(data.systemPrompt, /never invent supporting letters, altered memories, school records, dates, named witnesses, spells, or new events/i);
       for (const field of ['briefing', 'opening', 'clues', 'temperature', 'duration', 'responseWords']) assert.equal(data[field], JSON.parse(frozen[0].data)[field], `profile ${data.diaryProfile.id} must share ${field}`);
       assert.match(data.systemPrompt, /Tom Riddle/);
+    }
+    for (const prompt of [...compiled, compilePrompt(seedLevels[0])]) {
+      assert.ok(prompt.includes(RIDDLE_DIARY_R2_FACT_BANK), 'every current profile and the fresh-workspace seed includes the same canon mechanics fact bank');
+      assert.match(prompt, /Riddle himself opened the Chamber of Secrets and controlled its Basilisk by speaking Parseltongue/);
+      assert.match(prompt, /no special control spell, key, or blood ritual/);
+      assert.match(prompt, /The Basilisk caused the attacks; Hagrid’s Aragog did not/);
+      assert.match(prompt, /stopped the Basilisk’s attacks to avert Hogwarts’s closure and shifted blame/);
+      assert.match(prompt, /Assigning blame or causing public panic could not itself stop the Basilisk/);
+      assert.match(prompt, /remain evasive in character rather than guess/);
     }
     assert.equal((await request('/diary/start', { method: 'POST', cookie, body: { profileId: 'standard' } })).status, 428);
     await request('/recording/acknowledge', { method: 'POST', cookie, body: { version: 'recording-notice-v1', accepted: true } });
