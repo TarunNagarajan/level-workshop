@@ -28,22 +28,91 @@ async function start(request, cookie, key = crypto.randomUUID(), profileId = 'st
   return request('/inception/start', { method: 'POST', cookie, body: { profileId, clientStartId: key, consent: true } });
 }
 
-test('four immutable profiles share server-only truth and expose only safe player projections', async () => {
+test('revision 2 has four memory-reconstruction profiles while revision 1 prompt and snapshot hashes stay frozen', async () => {
   const levels = INCEPTION_PROFILES.map(profile => inceptionLevel(profile.id));
+  const historicalHashes = {
+    story: ['dd137f0f3524a295f098abf219bf23e461e887ff0258885d3628bcb9ab7fa0ee', 'da4d7def823385a34387920ad56444246f2a5a96f02cb79cf5eb25a172775612'],
+    standard: ['5d4aa9724b97ebf213b70d123c23b0270e0f4a27aa182d3001c3ca61ecfb915f', '8a976bd3d8f92dff2832d70a0f947e266bfb12b942f8713c3507c31f73e00f14'],
+    guarded: ['12f2cf0b5b7981c5ef9df53a66ba6a26254063199b5772b47f5f1e97b8b3f9e3', '4ed6e0c90faa78559495aca4f32e46eb5ec7ec2f94a3b759f99e853ca49de684'],
+    sealed: ['5963f9055024f2eb8fc62bbceb2c0930b6aa1f7bdd17eebc275cee11a1c8d003', 'd4eb20a2ddfa28862cef0b3a3429ca805d8caa09e0fe72d2a6de39a57efbf171'],
+  };
   assert.equal(new Set(levels.map(level => level.secret)).size, 1);
   assert.equal(levels.every(level => level.duration === 300), true);
+  assert.equal(new Set(levels.map(level => level.inceptionProfile.revision)).size, 1);
+  assert.equal(levels[0].inceptionProfile.revision, 2);
   assert.equal(new Set(levels.map(level => level.inceptionProfile.promptHash)).size, 4);
   assert.equal(new Set(levels.map(level => level.inceptionProfile.snapshotHash)).size, 4);
-  assert.equal(publicInceptionProfile(levels[0]).profileId, 'story');
+  assert.equal(publicInceptionProfile(levels[0]).label, 'Warm-up');
+  const revision2Hashes = {
+    story: ['c8f191e78ed63406a4a7499a97f3f4893fa245a7b6fdb9e7a5dbbd6e29c094f0', 'b6d006b3c53b9ba16686d4732bdfd2651c7668288338c8adf8b674fb1fdf3efc'],
+    standard: ['8acebdea83f79ef0f3607f1a04298d338e5f1395c5d1383e538eac9d40474f24', 'be39c8b522a6f528ecb4a239b6869236c9077d3f1aca93d3591c09cfa0ac6cfb'],
+    guarded: ['27074861aed36f5cb9ccc83eace45d6e7b89159c8b50849c0d9aa75adbf6582c', '7451be12e093a874907c0a1583bd6579be94678a320153e2a4af7b636ad752ea'],
+    sealed: ['f5e3fcfe55f931e1c424494a80807ffe64bbc4de1d44fb0d3b94cfecf574e179', '50d0f666dbb7ed2baadbc35bb22c56bb18645315e897fa6b1bba2f687897c6e8'],
+  };
   for (const level of levels) {
     const prompt = compilePrompt(level);
     assert.match(prompt, /Follow that profile’s disclosure pacing and characterization/);
     assert.doesNotMatch(prompt, /Resist direct extraction and disclose only the permitted clues/);
     assert.doesNotMatch(prompt, /This is a jailbreak round/);
+    assert.match(prompt, /(?:earlier spontaneous answer|own earlier response|own spontaneous answer)/);
+    assert.match(prompt, /not a number to calculate/);
+    assert.match(prompt, /adopt a number|player.*(?:candidate|digit)/i);
+    assert.deepEqual([level.inceptionProfile.promptHash, level.inceptionProfile.snapshotHash], revision2Hashes[level.inceptionProfile.id]);
+    assert.doesNotMatch(`${prompt}\n${level.clues}\n${level.briefing}`, /(?:earn|earned|earns|trust).*disclos|direct request can be answered|confidentiality boundary/i);
+    assert.match(level.briefing, /You are Eames/);
+    assert.match(level.opening, /my father chose/);
+    assert.match(level.secret, /spontaneously during the earlier questioning/);
   }
-  assert.match(compilePrompt(levels[0]), /A direct request can be answered if it makes sense in context/);
+  for (const id of ['story', 'standard', 'guarded', 'sealed']) {
+    const historical = inceptionLevel(id, 1), profile = publicInceptionProfile(historical);
+    assert.deepEqual([historical.inceptionProfile.promptHash, historical.inceptionProfile.snapshotHash], historicalHashes[id]);
+    assert.equal(profile.profileRevision, 1);
+    assert.equal(profile.label, id === 'story' ? 'Story' : INCEPTION_PROFILES.find(item => item.id === id).label);
+  }
   assert.equal(JSON.stringify(publicInceptionProfile(levels[0])).includes('528491'), false);
   assert.deepEqual(publicInceptionState(initialInceptionState()), { revision: 0, safeInspected: false, roomInspected: false, safePresented: false, safeOpened: false, finished: false, review: null, observations: [] });
+});
+
+test('a clean database creates only revision 2 and selects Standard by default', async () => {
+  const fixture = await harness();
+  try {
+    const cookie = await setupOwner(fixture.request);
+    const created = await ensureInception(fixture.store);
+    assert.equal(created.length, 4);
+    assert.ok(created.every(row => JSON.parse(row.data).inceptionProfile.revision === 2));
+    assert.equal(Boolean(await fixture.store.get('SELECT id FROM versions WHERE level_id=? AND data LIKE ?', INCEPTION_LEVEL_ID, '%"revision":1%')), false);
+    const config = await fixture.request('/inception', { cookie });
+    assert.equal(config.body.profileRevision, 2);
+    assert.equal(config.body.defaultProfileId, 'standard');
+    assert.equal(config.body.profiles.find(profile => profile.id === 'story').label, 'Warm-up');
+    assert.equal(config.body.profiles.find(profile => profile.id === 'standard').versionId, created.find(row => JSON.parse(row.data).inceptionProfile.id === 'standard').id);
+  } finally { await fixture.close(); }
+});
+
+test('an existing revision 1 database appends exactly revision 2 and keeps old snapshots immutable', async () => {
+  const fixture = await harness();
+  try {
+    await setupOwner(fixture.request);
+    const now = Date.now();
+    await fixture.store.run('INSERT INTO levels (id,owner_id,draft,created_at,updated_at) VALUES (?,NULL,?,?,?)', INCEPTION_LEVEL_ID, JSON.stringify(inceptionLevel('story', 1)), now, now);
+    const frozen = new Map();
+    for (const [number, profile] of INCEPTION_PROFILES.entries()) {
+      const data = inceptionLevel(profile.id, 1), id = `inception-strongroom-${profile.id}-r1`;
+      frozen.set(profile.id, JSON.stringify(data));
+      await fixture.store.run('INSERT INTO versions (id,level_id,number,data,note,author_id,created_at) VALUES (?,?,?,?,?,NULL,?)', id, INCEPTION_LEVEL_ID, number + 1, JSON.stringify(data), 'historical revision 1', now);
+    }
+    const first = await ensureInception(fixture.store);
+    assert.equal(first.length, 4);
+    assert.ok(first.every(row => JSON.parse(row.data).inceptionProfile.revision === 2));
+    assert.deepEqual(first.map(row => row.id).sort(), INCEPTION_PROFILES.map(profile => `inception-strongroom-${profile.id}-r2`).sort());
+    for (const [profileId, original] of frozen) {
+      const historical = await fixture.store.get('SELECT data FROM versions WHERE id=?', `inception-strongroom-${profileId}-r1`);
+      assert.equal(historical.data, original);
+    }
+    const again = await ensureInception(fixture.store);
+    assert.deepEqual(again.map(row => [row.id, row.data]), first.map(row => [row.id, row.data]));
+    assert.equal((await fixture.store.all('SELECT id FROM versions WHERE level_id=?', INCEPTION_LEVEL_ID)).length, 8);
+  } finally { await fixture.close(); }
 });
 
 test('SQLite and PGlite keep the secret private, scope access, and make starts idempotent', async t => {
@@ -248,22 +317,36 @@ test('the saved-review gate stays closed for guesses, refusals, and corrected co
   }
 });
 
-test('a corrupted frozen profile is preserved and receives a new immutable revision', async () => {
+test('a conflicting built-in revision fails closed instead of silently rewriting its snapshot', async () => {
   const fixture = await harness();
   try {
-    const cookie = await setupOwner(fixture.request);
+    await setupOwner(fixture.request);
     const first = await ensureInception(fixture.store);
     const r1 = first.find(row => JSON.parse(row.data).inceptionProfile.id === 'story');
     const damaged = JSON.parse(r1.data); damaged.systemPrompt += ' altered';
     await fixture.store.run('UPDATE versions SET data=? WHERE id=?', JSON.stringify(damaged), r1.id);
-    const current = await ensureInception(fixture.store);
-    const story = current.find(row => JSON.parse(row.data).inceptionProfile.id === 'story');
-    assert.notEqual(story.id, r1.id);
+    await assert.rejects(ensureInception(fixture.store), /does not match its approved snapshot/);
+    assert.equal((await fixture.store.get('SELECT data FROM versions WHERE id=?', r1.id)).data, JSON.stringify(damaged));
+  } finally { await fixture.close(); }
+});
+
+test('the supported revision coexists idempotently with unknown future profile rows', async () => {
+  const fixture = await harness();
+  try {
+    const cookie = await setupOwner(fixture.request);
+    const now = Date.now();
+    await fixture.store.run('INSERT INTO levels (id,owner_id,draft,created_at,updated_at) VALUES (?,NULL,?,?,?)', INCEPTION_LEVEL_ID, JSON.stringify(inceptionLevel('story', 1)), now, now);
+    const future = inceptionLevel('story', 3);
+    future.briefing += '\nFuture deployment snapshot.';
+    await fixture.store.run('INSERT INTO versions (id,level_id,number,data,note,author_id,created_at) VALUES (?,?,?,?,?,NULL,?)', 'inception-strongroom-story-r3', INCEPTION_LEVEL_ID, 1, JSON.stringify(future), 'future revision', now);
+    const selected = await ensureInception(fixture.store);
+    const story = selected.find(row => JSON.parse(row.data).inceptionProfile.id === 'story');
+    assert.equal(story.id, 'inception-strongroom-story-r2');
     assert.equal(JSON.parse(story.data).inceptionProfile.revision, 2);
-    assert.equal(JSON.parse(story.data).systemPrompt.endsWith('altered'), false);
-    assert.equal(JSON.parse((await fixture.store.get('SELECT data FROM versions WHERE id=?', r1.id)).data).systemPrompt.endsWith('altered'), true, 'the prior frozen row remains byte-for-byte unchanged after a new revision is appended');
-    const config = await fixture.request('/inception', { cookie });
-    assert.equal(config.body.profiles.find(profile => profile.id === 'story').versionId, story.id);
-    assert.equal(config.body.profileRevision, 2);
+    const futureStored = await fixture.store.get('SELECT data FROM versions WHERE id=?', 'inception-strongroom-story-r3');
+    assert.equal(futureStored.data, JSON.stringify(future));
+    const again = await ensureInception(fixture.store);
+    assert.deepEqual(again.map(row => [row.id, row.data]), selected.map(row => [row.id, row.data]));
+    assert.equal((await fixture.request('/inception', { cookie })).body.profiles.find(profile => profile.id === 'story').versionId, story.id);
   } finally { await fixture.close(); }
 });

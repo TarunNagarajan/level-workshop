@@ -10,7 +10,18 @@ export function buildCompletionBody({ config, system, messages, temperature }) {
   };
 }
 
-export async function complete({ config, system, messages, temperature }) {
+const RATE_LIMIT_RESPONSE_HEADERS = ['x-ratelimit-limit-requests', 'x-ratelimit-remaining-requests', 'x-ratelimit-reset-requests', 'x-ratelimit-limit-tokens', 'x-ratelimit-remaining-tokens', 'x-ratelimit-reset-tokens'];
+
+function readRateLimitResponseHeaders(headers) {
+  const values = {};
+  for (const name of RATE_LIMIT_RESPONSE_HEADERS) {
+    const value = headers?.get?.(name);
+    if (typeof value === 'string' && value.length <= 80) values[name] = value;
+  }
+  return values;
+}
+
+export async function complete({ config, system, messages, temperature, onRateLimitHeaders }) {
   if (!config.apiKey) throw Object.assign(new Error('The target is not connected. Add GROQ_API_KEY to the server environment and restart.'), { status: 503 });
   const body = buildCompletionBody({ config, system, messages, temperature });
   const start = performance.now();
@@ -24,11 +35,15 @@ export async function complete({ config, system, messages, temperature }) {
     const timeout = error?.name === 'TimeoutError' || error?.name === 'AbortError';
     throw Object.assign(new Error(timeout ? 'The target did not respond in time. Retry the request.' : 'The provider is temporarily unavailable. Retry the request.'), { status: 502, providerCode: timeout ? 'timeout' : 'provider_unavailable' });
   }
+  const providerLimits = readRateLimitResponseHeaders(response.headers);
+  if (typeof onRateLimitHeaders === 'function' && Object.keys(providerLimits).length) {
+    try { onRateLimitHeaders(providerLimits); } catch { /* Calibration instrumentation must not change completion behavior. */ }
+  }
   if (!response.ok) {
     const message = response.status === 429 ? 'The provider limit was reached. Wait briefly and retry.'
       : [401, 403].includes(response.status) ? 'The provider rejected the server API key. Check its access and restart.'
       : `The provider could not complete this turn (${response.status}).`;
-    throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : 502, providerCode: response.status === 429 ? 'rate_limited' : [401, 403].includes(response.status) ? 'provider_auth' : response.status >= 500 ? 'provider_unavailable' : 'provider_rejected' });
+    throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : 502, providerCode: response.status === 429 ? 'rate_limited' : [401, 403].includes(response.status) ? 'provider_auth' : response.status >= 500 ? 'provider_unavailable' : 'provider_rejected', ...(Object.keys(providerLimits).length ? { providerLimits } : {}) });
   }
   const result = await response.json();
   const text = result.choices?.[0]?.message?.content?.trim();

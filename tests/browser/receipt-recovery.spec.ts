@@ -4,7 +4,13 @@ import { signInOwner } from './auth';
 test('unknown receipt recovery reuses the original content and keeps the edited draft', async ({ page }) => {
   await signInOwner(page.request);
   await page.goto('/');
-  if (await page.getByRole('button', { name: 'Skip tour' }).count()) await page.getByRole('button', { name: 'Skip tour' }).click();
+  const bootstrap = await (await page.request.get('/api/bootstrap')).json() as { tutorialDone?: boolean };
+  const tour = page.locator('.tour-dialog');
+  if (!bootstrap.tutorialDone) {
+    await expect(tour).toBeVisible();
+    await tour.getByRole('button', { name: 'Skip tour' }).click();
+    await expect(tour).toHaveCount(0);
+  } else await expect(tour).toHaveCount(0);
   await page.getByRole('button', { name: 'Levels', exact: true }).click();
   await page.locator('.level-table .level-row').filter({ hasText: "Riddle's diary" }).click();
   await page.getByRole('button', { name: 'Start test', exact: true }).click();
