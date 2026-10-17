@@ -26,6 +26,10 @@ let toastTimer = 0;
 let filmControlsTimer = 0;
 let replayingBrief = false;
 let actionInFlight = false;
+let actionPromise = null;
+let actionKind = null;
+let finishInProgress = false;
+let finishPromise = null;
 let filmTransitionInFlight = false;
 let focusManuallySet = false;
 let dialogRestore = null;
@@ -158,12 +162,14 @@ function attachRound(round) {
   $('#terminal-input').value = sessionStorage.getItem(draftKey('terminal')) || '';
   $('#service-note').value = sessionStorage.getItem(draftKey('service')) || '';
   $('#evidence-count').textContent = `${current.state?.capturedReplyIds?.length || 0}/6`;
-  showScreen(current.endedAt || current.state?.ejected && current.state?.review?.status !== 'pending' ? 'result' : 'archive');
+  const finalizedReview = current.state?.review?.status === 'complete' || current.state?.review?.status === 'unavailable';
+  showScreen(current.endedAt || finalizedReview ? 'result' : 'archive');
   renderMessages();
   renderState();
-  if (current.endedAt || current.state?.review?.status === 'complete' || current.state?.review?.status === 'unavailable') showResult();
+  if (current.endedAt || finalizedReview) showResult();
   else startClock();
   if (currentRequest) void recoverPendingMessage();
+  if (current.state?.review?.status === 'pending') setTimeout(() => void reloadCurrent(), 2500);
   if (matchMedia('(max-width: 760px)').matches && !reducedMotion) {
     requestAnimationFrame(() => setTimeout(() => setFocused(true), 700));
   } else if (matchMedia('(max-width: 760px)').matches) setFocused(true);
@@ -274,7 +280,7 @@ function renderMessages() {
     entry.append(label, body);
     if (message.role === 'assistant' && !message.opening) {
       const tools = document.createElement('div'); tools.className = 'message-tools';
-      const capture = document.createElement('button'); capture.className = 'capture-button'; capture.type = 'button'; capture.textContent = isCaptured(message.id) ? 'Remove from disk' : 'Capture reply'; capture.disabled = Boolean(current.endedAt || current.state?.ejected) || (!isCaptured(message.id) && (current.state?.capturedReplyIds?.length || 0) >= 6);
+      const capture = document.createElement('button'); capture.className = 'capture-button'; capture.type = 'button'; capture.textContent = isCaptured(message.id) ? 'Remove from disk' : 'Capture reply'; capture.disabled = Boolean(current.endedAt || current.state?.ejected || actionInFlight || finishInProgress || currentRequest) || (!isCaptured(message.id) && (current.state?.capturedReplyIds?.length || 0) >= 6);
       capture.addEventListener('click', () => isCaptured(message.id) ? removeCapturedReply(message.id) : captureReply(message.id)); tools.append(capture); entry.append(tools);
     }
     fragment.append(entry);
@@ -294,23 +300,42 @@ function renderState() {
   $('#eject-button').disabled = Boolean(current.endedAt || state.ejected) || state.review?.status === 'pending';
   if (state.review?.status === 'pending') setStatus('Archive review is checking the saved replies…', true);
   else if (state.review?.status === 'unavailable') setStatus('The review is unavailable. Your filed transcript is saved.', true);
-  else if (state.ejected) setStatus('The archive disks are ejected. The review is filed.', true);
+  else if (state.review?.status === 'complete') setStatus('The archive disks are ejected. The review is filed.', true);
+  else if (state.ejected) setStatus('The archive disks are ejected. File the saved replies to request the archive review.', true);
   else if (state.inserted) setStatus('Service disk inserted. Add a technician note to open the maintenance channel.');
   updateControls();
 }
 function updateControls() {
   const active = current && !current.endedAt && !current.state?.ejected && Date.now() < current.deadline;
-  $('#terminal-input').disabled = !active || currentRequest !== null;
-  $('#send-button').disabled = !active || currentRequest !== null;
-  $('#service-note').disabled = !active || currentRequest !== null;
-  $('#send-service-note').disabled = !active || currentRequest !== null;
-  $('#service-button').disabled = !active || Boolean(current?.state?.inserted || current?.state?.ejected);
-  $('#open-service').disabled = !active || currentRequest !== null;
+  const mutationBusy = actionInFlight || finishInProgress;
+  $('#terminal-input').disabled = !active || currentRequest !== null || mutationBusy;
+  $('#send-button').disabled = !active || currentRequest !== null || mutationBusy;
+  $('#service-note').disabled = !active || currentRequest !== null || mutationBusy;
+  $('#send-service-note').disabled = !active || currentRequest !== null || mutationBusy;
+  $('#service-button').disabled = !active || Boolean(current?.state?.inserted || current?.state?.ejected) || currentRequest !== null || mutationBusy;
+  $('#open-service').disabled = !active || currentRequest !== null || mutationBusy;
   $('#extract-button').disabled = !current;
   $('#open-evidence').disabled = !current;
   const filing = Boolean(current?.state?.ejected && !current?.endedAt && current?.state?.review?.status !== 'pending');
   $('#eject-button').textContent = filing ? 'File saved replies' : 'Eject and file review';
-  $('#eject-button').disabled = Boolean(current?.endedAt) || current?.state?.review?.status === 'pending' || Boolean(currentRequest) || actionInFlight;
+  $('#eject-button').disabled = Boolean(current?.endedAt) || current?.state?.review?.status === 'pending' || Boolean(currentRequest) || mutationBusy;
+  updateActionControls();
+}
+function updateActionControls() {
+  const locked = Boolean(!current || current.endedAt || current.state?.ejected || Date.now() >= current.deadline || currentRequest || actionInFlight || finishInProgress);
+  const captured = current?.state?.capturedReplyIds || [];
+  for (const entry of $('#terminal-log').querySelectorAll('.message[data-message-id]')) {
+    const button = entry.querySelector('.capture-button');
+    if (!button) continue;
+    const saved = captured.includes(entry.dataset.messageId);
+    if (!actionInFlight) button.textContent = saved ? 'Remove from disk' : 'Capture reply';
+    button.disabled = locked || (!saved && captured.length >= 6);
+  }
+  for (const checkbox of $('#evidence-list').querySelectorAll('input[type="checkbox"][data-reply-id]')) {
+    const saved = captured.includes(checkbox.dataset.replyId);
+    if (!actionInFlight) checkbox.checked = saved;
+    checkbox.disabled = locked || (!saved && captured.length >= 6);
+  }
 }
 function startClock() {
   clearInterval(timerId); updateClock(); timerId = setInterval(updateClock, 1000);
@@ -333,25 +358,71 @@ function updateRound(snapshot) {
   current = { ...current, ...snapshot, accessToken: current.accessToken };
   renderMessages(); renderState(); updateClock();
 }
+function actionConfirmedBySnapshot(state, type, properties, before) {
+  if (!state || state.revision <= before.revision) return false;
+  if (type === 'insert_service_disk') return !before.inserted && state.inserted;
+  if (type === 'eject_disks') return !before.ejected && state.ejected;
+  if (type === 'capture_reply') return !before.capturedReplyIds.includes(properties.replyId) && state.capturedReplyIds.includes(properties.replyId);
+  if (type === 'remove_capture') return before.capturedReplyIds.includes(properties.replyId) && !state.capturedReplyIds.includes(properties.replyId);
+  return false;
+}
 async function sendAction(type, properties = {}) {
-  if (!current || actionInFlight || (currentRequest && type === 'eject_disks')) return;
-  actionInFlight = true; const actionRoundId = current.id;
+  if (!current) throw new Error('The archive session is not available. Reload it before changing the disks.');
+  if (type !== 'eject_disks' && (current.endedAt || current.state?.ejected || Date.now() >= current.deadline)) throw new Error('The archive window has closed. Eject the disks to file the saved replies.');
+  if (finishInProgress && type !== 'eject_disks') throw new Error('The archive is being filed. Wait for the filing to finish before changing the disks.');
+  if (currentRequest) throw new Error('The archive is still processing a message. Wait for its receipt before changing the disks.');
+  if (actionInFlight) throw new Error(`The ${actionKind === 'capture_reply' || actionKind === 'remove_capture' ? 'evidence disk' : 'service disk'} is still being saved. Wait for it to finish before trying another action.`);
+  actionInFlight = true; actionKind = type;
+  const actionRoundId = current.id;
   const pendingKey = `${sessionKey}:${current.id}:action:${type}:${properties.replyId || ''}`;
   let actionId = sessionStorage.getItem(pendingKey);
   if (!actionId) { actionId = randomId(); sessionStorage.setItem(pendingKey, actionId); }
+  const before = { ...current.state, capturedReplyIds: [...(current.state.capturedReplyIds || [])] };
   const body = { type, actionId, revision: current.state.revision, ...properties };
-  try {
-    const result = await api(`/mission/rounds/${actionRoundId}/action`, { method: 'POST', body });
-    if (current?.id !== actionRoundId) return result;
-    if (result.state) current.state = result.state;
-    sessionStorage.removeItem(pendingKey); renderState(); renderMessages();
-    return result;
-  } catch (error) {
-    if (current?.id !== actionRoundId) throw error;
-    if (error.state) current.state = error.state;
-    if (error.status === 409 && error.state) { sessionStorage.removeItem(pendingKey); renderState(); }
-    throw error;
-  } finally { actionInFlight = false; }
+  const progress = {
+    capture_reply: 'Saving the selected reply to the evidence disk…',
+    remove_capture: 'Updating the evidence disk…',
+    insert_service_disk: 'Inserting the service disk…',
+    eject_disks: 'Ejecting the archive disks…',
+  }[type] || 'Saving the archive action…';
+  setStatus(progress, true);
+  updateControls();
+  for (const checkbox of $('#evidence-list').querySelectorAll('input[type="checkbox"]')) checkbox.disabled = true;
+  const work = (async () => {
+    try {
+      const result = await api(`/mission/rounds/${actionRoundId}/action`, { method: 'POST', body });
+      if (current?.id !== actionRoundId) return result;
+      if (result.state) current.state = result.state;
+      sessionStorage.removeItem(pendingKey); renderState();
+      return result;
+    } catch (error) {
+      if (current?.id !== actionRoundId) throw error;
+      if (error.state) current.state = error.state;
+      if (error.status === 409 && error.state) sessionStorage.removeItem(pendingKey);
+      if (!error.status || error.unknown) {
+        try {
+          const saved = await api(`/mission/rounds/${actionRoundId}`);
+          if (current?.id !== actionRoundId) throw error;
+          if (actionConfirmedBySnapshot(saved.state, type, properties, before)) {
+            current = { ...current, ...saved, accessToken: current.accessToken };
+            sessionStorage.removeItem(pendingKey);
+            renderState();
+            return { state: current.state, recovered: true };
+          }
+          if (saved.state) current.state = saved.state;
+        } catch { /* keep the original uncertain-action result and retain its action ID */ }
+      }
+      renderState();
+      throw error;
+    } finally {
+      actionInFlight = false;
+      actionKind = null;
+      if (actionPromise === work) actionPromise = null;
+      updateControls();
+    }
+  })();
+  actionPromise = work;
+  return work;
 }
 function openModal(id) {
   const modal = document.getElementById(id); dialogRestore = document.activeElement; modal.hidden = false;
@@ -359,19 +430,20 @@ function openModal(id) {
 }
 function closeModal(id) { document.getElementById(id).hidden = true; if (dialogRestore instanceof HTMLElement) dialogRestore.focus({ preventScroll: true }); dialogRestore = null; }
 async function startService() {
-  if (currentRequest) {
-    openModal('service-modal');
-    setStatus('The archive is still processing the previous request. Check its receipt before sending a technician note.', true);
-    updateControls();
+  if (!current || finishInProgress || actionInFlight || currentRequest) {
+    const message = currentRequest ? 'The archive is processing a message. Wait for its receipt before opening the service channel.' : 'The archive is saving a disk action. The service channel will be available when it finishes.';
+    setStatus(message, true); tell(message); updateControls();
     return;
   }
   try {
     if (!current.state.inserted) await sendAction('insert_service_disk');
+    if (finishInProgress || !current || current.state?.ejected) return;
     openModal('service-modal');
   } catch (error) { tell(error.message); }
 }
 async function sendNote() {
   if (currentRequest) { const message = 'The archive is still processing the previous request. Check its receipt before sending this note.'; setStatus(message, true); tell(message); return; }
+  if (actionInFlight || finishInProgress) { const message = 'The archive is saving a disk action. Your technician note is still here; send it when the action finishes.'; setStatus(message, true); tell(message); updateControls(); return; }
   const box = $('#service-note'), note = box.value.trim();
   if (!note) { box.focus(); return; }
   closeModal('service-modal');
@@ -391,10 +463,10 @@ function renderEvidenceChoices() {
   if (!messages.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = 'No archive replies are available to capture yet.'; host.append(empty); return; }
   for (const message of messages) {
     const label = document.createElement('label'); label.className = 'evidence-row';
-    const check = document.createElement('input'); check.type = 'checkbox'; check.checked = isCaptured(message.id); check.disabled = Boolean(current.endedAt || current.state.ejected) || (!check.checked && current.state.capturedReplyIds.length >= 6);
+    const check = document.createElement('input'); check.type = 'checkbox'; check.dataset.replyId = message.id; check.checked = isCaptured(message.id); check.disabled = Boolean(current.endedAt || current.state.ejected || actionInFlight || finishInProgress || currentRequest) || (!check.checked && current.state.capturedReplyIds.length >= 6);
     check.addEventListener('change', async () => {
-      try { await sendAction(check.checked ? 'capture_reply' : 'remove_capture', { replyId: message.id }); renderEvidenceChoices(); }
-      catch (error) { check.checked = !check.checked; tell(error.message); }
+      try { await sendAction(check.checked ? 'capture_reply' : 'remove_capture', { replyId: message.id }); }
+      catch (error) { updateActionControls(); tell(error.message); }
     });
     const text = document.createElement('span'); text.textContent = message.content;
     label.append(check, text); host.append(label);
@@ -408,6 +480,11 @@ async function checkReceipt(requestId, roundId = current?.id) {
 async function sendMessage(content, existingRequest = null, surface = 'terminal') {
   const trimmed = content.trim();
   if (!trimmed) return false;
+  if (actionInFlight || finishInProgress) {
+    const message = 'The archive is saving a disk action. Your message is still here; send it when the action finishes.';
+    setStatus(message, true); tell(message); updateControls();
+    return false;
+  }
   if (currentRequest && currentRequest.requestId !== existingRequest?.requestId) {
     const message = 'The archive is still processing the previous request. Check its receipt before sending another message.';
     setStatus(message, true); tell(message);
@@ -472,22 +549,55 @@ async function recoverPendingMessage() {
   updateControls();
 }
 async function ejectAndFile() {
-  if (!current || currentRequest) { if (currentRequest) setStatus('Check or retry the pending archive receipt before filing.'); return; }
-  $('#eject-button').disabled = true; setStatus('Ejecting disks and reviewing saved archive replies…', true);
-  try {
-    if (current.state.ejected) {
-      const saved = await api(`/mission/rounds/${current.id}`);
-      current = { ...current, ...saved, accessToken: current.accessToken };
-      if (saved.endedAt || saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') { showResult(); return; }
-      if (saved.state?.review?.status === 'pending') { renderState(); setTimeout(() => void reloadCurrent(), 2500); return; }
-    } else await sendAction('eject_disks');
-    await trackInteraction('finish');
-    const filed = await api(`/mission/rounds/${current.id}/finish`, { method: 'POST', body: {} });
-    current = { ...current, ...filed, accessToken: current.accessToken };
-    renderState();
-    if (filed.state?.review?.status === 'pending') { setTimeout(() => void reloadCurrent(), 2500); return; }
-    showResult();
-  } catch (error) { setStatus(error.message, true); tell(error.message); updateControls(); }
+  if (finishInProgress) return finishPromise;
+  if (!current || currentRequest) {
+    if (currentRequest) { const message = 'Check or retry the pending archive receipt before filing.'; setStatus(message, true); tell(message); }
+    return false;
+  }
+  const filingRoundId = current.id;
+  const actionToWaitFor = actionPromise;
+  finishInProgress = true;
+  updateControls();
+  setStatus(actionToWaitFor ? 'Saving the current disk action. Ejection will follow when it is confirmed…' : 'Ejecting disks and reviewing saved archive replies…', true);
+  finishPromise = (async () => {
+    try {
+      if (actionToWaitFor) await actionToWaitFor;
+      if (current?.id !== filingRoundId) return false;
+      if (currentRequest) throw new Error('The archive is processing a message. Check its receipt before filing.');
+      if (current.state.ejected) {
+        const saved = await api(`/mission/rounds/${filingRoundId}`);
+        current = { ...current, ...saved, accessToken: current.accessToken };
+        if (saved.endedAt || saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') { showResult(); return true; }
+        if (saved.state?.review?.status === 'pending') { renderState(); setTimeout(() => void reloadCurrent(), 2500); return true; }
+      } else {
+        try { await sendAction('eject_disks'); }
+        catch (actionError) {
+          const saved = await api(`/mission/rounds/${filingRoundId}`);
+          if (current?.id !== filingRoundId) return false;
+          current = { ...current, ...saved, accessToken: current.accessToken };
+          if (!saved.state?.ejected) throw actionError;
+          sessionStorage.removeItem(`${sessionKey}:${filingRoundId}:action:eject_disks:`);
+        }
+      }
+      if (current?.id !== filingRoundId || !current.state?.ejected) throw new Error('The archive has not confirmed that the disks were ejected. The saved transcript is unchanged; try filing again.');
+      await trackInteraction('finish');
+      const filed = await api(`/mission/rounds/${filingRoundId}/finish`, { method: 'POST', body: {} });
+      if (current?.id !== filingRoundId) return false;
+      current = { ...current, ...filed, accessToken: current.accessToken };
+      renderState();
+      if (filed.state?.review?.status === 'pending') { setTimeout(() => void reloadCurrent(), 2500); return true; }
+      showResult();
+      return true;
+    } catch (error) {
+      if (current?.id === filingRoundId) { setStatus(error.message, true); tell(error.message); }
+      return false;
+    } finally {
+      finishInProgress = false;
+      finishPromise = null;
+      updateControls();
+    }
+  })();
+  return finishPromise;
 }
 async function reloadCurrent() {
   if (!current) return;
