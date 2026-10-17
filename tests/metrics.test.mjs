@@ -57,6 +57,8 @@ for (const adapter of ['sqlite','pglite']) test(`${adapter}: workshop completion
     assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:metricsSession.cookie,headers:{'x-round-token':started.body.accessToken},body:{sessionId:metricsSession.body.sessionId,roundId:started.body.id,...scopedEvent()}})).status,200);
     assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:metricsSession.cookie,headers:{'x-round-token':started.body.accessToken},body:{sessionId:metricsSession.body.sessionId,roundId:started.body.id,...scopedEvent('diary','inspect')}})).status,200,'the diary route and inspect interaction categories are accepted for scoped telemetry');
     assert.equal((await fixture.store.get("SELECT interaction FROM metrics_events WHERE round_id=? AND view_category='diary'",started.body.id)).interaction,'inspect');
+    assert.equal((await fixture.request('/telemetry/events',{method:'POST',cookie:metricsSession.cookie,headers:{'x-round-token':started.body.accessToken},body:{sessionId:metricsSession.body.sessionId,roundId:started.body.id,...scopedEvent('inception','review')}})).status,200,'Inception review interactions are accepted as route-scoped telemetry');
+    assert.equal((await fixture.store.get("SELECT interaction FROM metrics_events WHERE round_id=? AND view_category='inception'",started.body.id)).interaction,'review');
     const scopedRow=await fixture.store.get('SELECT collection_id,profile_id,source,version_id FROM metrics_events WHERE round_id=?',started.body.id);
     assert.equal(scopedRow.source,'participant');
     assert.equal(scopedRow.version_id,detail.versions[0].id,'Postgres preserves camelCase DTO aliases during round inference');

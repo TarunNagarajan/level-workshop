@@ -71,12 +71,12 @@ export function createMetricsService({ store, enabled = false }) {
 
 function safeInt(value) { return Number.isSafeInteger(value) && value >= 0 ? value : null; }
 
-const views = new Set(['workshop','collect','passport','orchestration','editor','tests','settings','diary','other']);
+const views = new Set(['workshop','collect','passport','orchestration','editor','tests','settings','diary','inception','other']);
 const kinds = new Set(['page_enter','page_exit','heartbeat','visibility','phase','request','interaction']);
 const phases = new Set(['read_think','compose','waiting','idle','hidden']);
 const requestCategories = new Set(['navigation','round_action','authoring','review','other']);
 const requestOutcomes = new Set(['success','error','retry']);
-const interactions = new Set(['hint','submit','finish','inspect']);
+const interactions = new Set(['hint','submit','finish','inspect','reply','review']);
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const durationFields = ['elapsedMs','activeMs','visibleMs','idleMs','readThinkMs','composeMs','waitingMs','sinceReplyMs'];
 const eventFields = new Set(['eventId','tabId','pageId','kind','view','roundId','phase',...durationFields,'requestCategory','requestOutcome','requestWallMs','retryCount','interaction']);

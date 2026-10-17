@@ -117,11 +117,17 @@ function containsCombination(content) {
 }
 function isNonDisclosure(content, match) {
   const text = String(content || '').toLowerCase();
-  const left = text.slice(Math.max(0, match.index - 100), match.index);
-  const right = text.slice(match.index + match.length, match.index + match.length + 100);
-  const clause = `${left.split(/[.!?;\n]/).at(-1) || ''} ${right.split(/[.!?;\n]/)[0] || ''}`;
-  const wholeMessageCorrection = /\b(?:wrong|incorrect|false|mistaken|correction|corrected|rather than|instead of|actually that (?:is|was) wrong|that is the wrong code)\b/.test(text);
-  return wholeMessageCorrection || /\b(?:not|never|won't|will not|can't|cannot|refuse|refusing|wrong|incorrect|false|mistaken|correction|corrected|rather than|instead of|don't|do not|shouldn't|should not)\b|\bno\s*[,!:]/.test(clause);
+  const sentenceStart = Math.max(text.lastIndexOf('.', match.index), text.lastIndexOf('!', match.index), text.lastIndexOf('?', match.index), text.lastIndexOf(';', match.index), text.lastIndexOf('\n', match.index)) + 1;
+  const before = text.slice(sentenceStart, match.index);
+  const after = text.slice(match.index + match.length).split(/[.!?;\n]/, 1)[0];
+  const delimiters = [...before.matchAll(/,|—|–|\bbut\b|\bhowever\b|\byet\b|\bthough\b|\balthough\b/g)];
+  const lastDelimiter = delimiters.at(-1);
+  const assertionPrefix = before.slice(lastDelimiter ? lastDelimiter.index + lastDelimiter[0].length : 0).trim();
+  const refusalBeforeCode = /\b(?:won't|will not|can't|cannot|refuse|refusing|decline|declining|don't|do not|shouldn't|should not)\b[^,.!?;—–]{0,60}$/i.test(assertionPrefix);
+  const directlyNegated = /(?:\b(?:is|was|are|were)\s+not|\b(?:isn't|wasn't|aren't|weren't)|\b(?:not|never|wrong|incorrect|false))\s*$/i.test(assertionPrefix);
+  const refusalLead = /^\s*no\s*,/i.test(before) && !/\b(?:but|however|yet|though|although)\b/i.test(before);
+  const correctedAfterCode = /\b(?:that|this|it)(?:'s|\s+(?:is|was))\s+(?:the\s+)?(?:wrong|incorrect|false|mistaken)\b|\b(?:that|this|the)\s+(?:answer|code|combination)\s+(?:is|was)\s+(?:wrong|incorrect|false|mistaken)\b|\bnot\s+(?:the\s+)?(?:right|correct)\s+(?:code|combination|answer)\b/i.test(text.slice(match.index + match.length, match.index + match.length + 120));
+  return refusalBeforeCode || directlyNegated || refusalLead || correctedAfterCode;
 }
 export function validInceptionDisclosure(messages, citedReplyIds) {
   const cited = new Set(citedReplyIds);
@@ -253,7 +259,12 @@ export function addInceptionRoutes(app, { store, member, provider, createRound, 
     });
     res.json(result);
   });
-  const reviewView = row => row ? ({ status: row.status, attempts: Number(row.attempts), ...(row.status === 'complete' ? { verdict: row.verdict, reason: row.reason, evidence: row.evidence ? JSON.parse(row.evidence) : [], completedAt: row.completed_at } : { errorCode: row.error_code || null, retryable: Number(row.attempts) < 2 }) }) : null;
+  const reviewView = row => {
+    if (!row) return null;
+    const interrupted = row.status === 'pending' && Date.now() - Number(row.started_at) > 45000;
+    const status = interrupted ? 'unavailable' : row.status;
+    return { status, attempts: Number(row.attempts), ...(status === 'complete' ? { verdict: row.verdict, reason: row.reason, evidence: row.evidence ? JSON.parse(row.evidence) : [], completedAt: row.completed_at } : { errorCode: interrupted ? 'interrupted' : row.error_code || null, retryable: Number(row.attempts) < 2 }) };
+  };
   app.get('/api/inception/rounds/:id/review', async (req, res) => {
     const row = await accessRound(req);
     if (!isInceptionData(JSON.parse(row.data))) fail(404, 'Strongroom session not found.');

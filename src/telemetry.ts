@@ -1,7 +1,7 @@
-type View = 'workshop' | 'collect' | 'passport' | 'orchestration' | 'editor' | 'tests' | 'settings' | 'diary' | 'other';
+type View = 'workshop' | 'collect' | 'passport' | 'orchestration' | 'editor' | 'tests' | 'settings' | 'diary' | 'inception' | 'other';
 type Phase = 'read_think' | 'compose' | 'waiting' | 'idle' | 'hidden';
 type RequestCategory = 'navigation' | 'round_action' | 'authoring' | 'review' | 'other';
-type Interaction = 'hint' | 'submit' | 'finish' | 'inspect';
+type Interaction = 'hint' | 'submit' | 'finish' | 'inspect' | 'reply' | 'review';
 type EventKind = 'page_enter' | 'page_exit' | 'heartbeat' | 'visibility' | 'phase' | 'request' | 'interaction';
 type MetricEvent = {
   eventId: string; tabId: string; pageId: string; kind: EventKind; view: View;
@@ -72,6 +72,7 @@ function stableTabId() {
 }
 
 function classify(path: string): View {
+  if (path === '/inception' || path.startsWith('/inception/')) return 'inception';
   if (path.startsWith('/diary')) return 'diary';
   if (path.startsWith('/collect/')) return 'collect';
   if (path.startsWith('/reference/play/') || path.startsWith('/reference')) return 'passport';
@@ -329,6 +330,8 @@ function roundFrom(path: string): string | undefined {
 
 function category(path: string, method: string): RequestCategory | null {
   if (/^\/(?:metrics|telemetry)(?:\/|$)/.test(path)) return null;
+  if (/^\/inception\/rounds\/[^/]+\/review(?:\/|$)/.test(path)) return 'review';
+  if (/^\/inception(?:\/|$)/.test(path) && method !== 'GET') return 'round_action';
   if (/^\/orchestration\/runs\/[^/]+\/messages(?:\/|$)/.test(path)) return 'round_action';
   if (/\/rounds?\/|\/play\/|\/collect\/|\/reference\/start|\/reference\/rounds\/|\/previews/.test(path)) return 'round_action';
   if (/\/metrics\/|\/attempts\/|\/collections\/.*\/(?:summary|attempts|review|export)/.test(path)) return 'review';

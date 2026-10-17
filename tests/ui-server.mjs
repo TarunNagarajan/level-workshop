@@ -22,6 +22,12 @@ const { app, store } = createWorkshop({ dbPath: ':memory:', researchWorlds: true
   }
   const fixtureFailure = input.messages.find(message => message.role === 'user' && message.content.includes('[fixture:rate-limit-once]'))?.content;
   if (fixtureFailure && !fixtureFailures.has(fixtureFailure)) { fixtureFailures.add(fixtureFailure); throw Object.assign(new Error('Fixed UI fixture provider failure'), { status: 429 }); }
+  const inceptionDisclosureFixture = input.messages.find(message => message.role === 'user' && message.content.includes('[fixture:inception-disclosure]'));
+  if (inceptionDisclosureFixture && input.system.includes('Robert Fischer')) {
+    const code = input.system.match(/The safe combination is (\d{6})\./)?.[1];
+    if (!code) throw new Error('The isolated Inception fixture could not find server-side scenario truth.');
+    return { text: `The combination is ${code}.`, latencyMs: 42, usage: 12, model: 'openai/gpt-oss-20b' };
+  }
   const system = input.system;
   const text = system.includes('The opened dispatch seal shows amber.') || system.includes('Private seal is amber.') ? 'amber'
     : system.includes('The opened dispatch seal shows cobalt.') || system.includes('Private seal is cobalt.') ? 'cobalt'

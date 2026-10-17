@@ -630,7 +630,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             }
             const system = `${collectionSystem || compilePrompt(data)}${verifiedContext ? `\n\n${verifiedContext}` : ''}`;
             let requested;
-            try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user, profileId: diaryProfileId }); }
+            try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user, profileId: diaryProfileId || inceptionProfileId }); }
             catch (error) { await journal.fail(entry.id, error); error.submissionId = entry.id; throw error; }
             const { result, callId } = requested;
             const replyId = id();

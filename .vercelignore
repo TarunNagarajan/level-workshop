@@ -13,4 +13,5 @@ drizzle
 dist
 node_modules
 public/assets
+public/inception-assets
 public/index.html
