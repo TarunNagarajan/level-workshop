@@ -21,6 +21,7 @@ export function validateR3Input(value) {
   for (const field of ['id', 'briefing', 'secret', 'opening', 'clues']) {
     if (typeof value[field] !== 'string' || !value[field].trim() || value[field].length > maxText) throw new Error(`Candidate input has an invalid ${field} field.`);
   }
+  if (value.profileRevision3 !== undefined && typeof value.profileRevision3 !== 'boolean') throw new Error('profileRevision3 must be a boolean when provided.');
   if (!safeId(value.id)) throw new Error('Candidate set id must use letters, numbers, and hyphens only.');
   if (!Array.isArray(value.candidates) || value.candidates.length < 1 || value.candidates.length > 12) throw new Error('Candidate input must contain between 1 and 12 prompt candidates.');
   if (!Array.isArray(value.cases) || value.cases.length < 1 || value.cases.length > 40) throw new Error('Candidate input must contain between 1 and 40 trajectories.');
@@ -68,7 +69,8 @@ function selectedList(env, key, allowed, label) {
 }
 
 export function makeR3Level(candidate, input) {
-  const base = inceptionLevel('standard', 2);
+  const revision = input.profileRevision3 ? 3 : 2;
+  const base = inceptionLevel('standard', revision);
   const canonicalCode = base.secret.match(/\b\d{6}\b/)?.[0];
   const suppliedCodes = input.secret.match(/\b\d{6}\b/g) || [];
   if (!canonicalCode || suppliedCodes.length !== 1 || suppliedCodes[0] !== canonicalCode) throw new Error('Candidate secret must preserve the canonical six-digit test truth exactly once.');
@@ -79,7 +81,7 @@ export function makeR3Level(candidate, input) {
     opening: input.opening,
     clues: input.clues,
     systemPrompt: candidate.systemPrompt,
-    inceptionScenario: { id: 'inception-strongroom-v1', profileRevision: 2 },
+    inceptionScenario: { id: 'inception-strongroom-v1', profileRevision: revision },
   };
 }
 
@@ -114,6 +116,7 @@ async function main() {
   const raw = await readFile(absoluteInput);
   const input = validateR3Input(JSON.parse(raw.toString('utf8')));
   const productionLevel = profileId ? inceptionLevel(profileId) : null;
+  const candidateFrameworkRevision = input.profileRevision3 ? 3 : 2;
   const productionCandidateId = productionLevel ? `production-${profileId}-r${productionLevel.inceptionProfile.revision}` : null;
   const candidateIds = productionLevel
     ? [productionCandidateId]
@@ -141,7 +144,7 @@ async function main() {
       const candidate = productionLevel ? productionLevel : input.candidates.find(item => item.id === candidateId);
       compilePrompt(productionLevel || makeR3Level(candidate, input));
     }
-    console.log(JSON.stringify({ valid: true, inputHash: hash(raw), mode: productionLevel ? 'production-profile' : 'candidate', profileId: profileId || null, profileRevision: productionLevel?.inceptionProfile.revision ?? null, promptHash: productionLevel?.inceptionProfile.promptHash ?? null, snapshotHash: productionLevel?.inceptionProfile.snapshotHash ?? null, candidateCount: input.candidates.length, caseCount: input.cases.length, selectedCandidates: candidateIds, selectedCases: caseIds, repeats: repeat, plannedCalls }));
+    console.log(JSON.stringify({ valid: true, inputHash: hash(raw), mode: productionLevel ? 'production-profile' : 'candidate', profileId: profileId || null, profileRevision: productionLevel?.inceptionProfile.revision ?? candidateFrameworkRevision, promptHash: productionLevel?.inceptionProfile.promptHash ?? null, snapshotHash: productionLevel?.inceptionProfile.snapshotHash ?? null, candidateCount: input.candidates.length, caseCount: input.cases.length, selectedCandidates: candidateIds, selectedCases: caseIds, repeats: repeat, plannedCalls }));
     return;
   }
 
@@ -199,7 +202,7 @@ async function main() {
     const record = {
       runId, candidateSetId: input.id, candidateId: selection.candidateId, caseId: selection.caseId, kind: testCase.kind, repeat: selection.repeat,
       source: productionLevel ? 'production-profile' : 'authored-candidate', profileId: profileId || null,
-      profileRevision: productionLevel?.inceptionProfile.revision ?? 2,
+      profileRevision: productionLevel?.inceptionProfile.revision ?? candidateFrameworkRevision,
       promptHash: productionLevel?.inceptionProfile.promptHash ?? hash(system),
       snapshotHash: productionLevel?.inceptionProfile.snapshotHash ?? null,
       inputHash: hash(raw), candidatePromptHash: hash(candidate.systemPrompt), compiledPromptHash: hash(system),
