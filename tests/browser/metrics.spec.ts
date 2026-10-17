@@ -68,7 +68,7 @@ test('owner dashboard reads real fixture metrics while editor and anonymous acce
   await participant.getByLabel('Message to target').fill(privateText);
   await participant.getByLabel('Message to target').blur();
   await participant.getByRole('button', { name: 'Send message' }).click();
-  await expect(participant.locator('.conversation')).toContainText(/I expected the matter to be resolved|matter to be resolved/);
+  await expect(participant.locator('.conversation')).toContainText(/I was honoured for Special Services to the School after Hagrid was blamed/);
   // Events generated while consent is already granted but the session is
   // unresolved must be retained, then sent after this response establishes it.
   const openedSessionResponse = participant.waitForResponse(response => response.url().includes('/api/telemetry/session') && response.request().method() === 'POST');

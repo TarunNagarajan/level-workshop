@@ -115,7 +115,7 @@ test('ordinary level listing omits internal reference cases while retaining publ
     assert.equal(ids.some(id => id.startsWith('reference-passport-study-')), false);
     assert.equal(ids.includes('reference-riddle-diary'), false);
     assert.ok(ids.includes('reference-passport-desk'));
-    assert.ok(rows.some(row => row.draft.title === "Riddle's diary"));
+    assert.ok(rows.some(row => row.draft.title === "Harry Potter: Riddle's Diary"));
   } finally {
     await new Promise(resolve => server.close(resolve));
     await fixture.store.db.close();

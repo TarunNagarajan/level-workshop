@@ -213,7 +213,7 @@ test('generic blind participants stay private and complete exports page beyond 2
   await participant.getByRole('button', { name: 'Send message' }).click();
   await expect(participant.getByRole('alert')).toContainText(/could not|failed|failure|temporarily/i);
   await participant.getByRole('button', { name: 'Send message' }).click();
-  await expect(participant.locator('.conversation')).toContainText(/I expected the matter to be resolved|matter to be resolved/);
+  await expect(participant.locator('.conversation')).toContainText(/I was honoured for Special Services to the School after Hagrid was blamed/);
   expect(bootstrapRequests).toHaveLength(0);
   expect(apiBodies.join('\n')).not.toMatch(/compiledPrompt|profileLabel|additionalInstructions|baseUrl|provider|protected truth/i);
   expect(await participant.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
