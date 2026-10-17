@@ -660,7 +660,16 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
                 {expired && <p className="diary-expired-note" role="status">Time is up. You can still file what you discovered.</p>}
                 <form className="diary-composer" onSubmit={event => { event.preventDefault(); void send(); }}>
                   <label htmlFor="diary-question">Ask the diary</label>
-                  <div className="diary-composer-paper"><textarea id="diary-question" value={message} maxLength={4000} rows={2} placeholder="Write a question…" disabled={(expired && !pendingSubmission) || !session.state.diaryOpen} onFocus={() => setMetricsPhase('compose', session.round.id, session.round.accessToken)} onBlur={() => setMetricsPhase('read_think', session.round.id, session.round.accessToken)} onChange={event => { if (!pendingSubmission && event.target.value !== message) requestId.current = ''; setMessage(event.target.value); }} />
+                  <div className="diary-composer-paper"><textarea id="diary-question" value={message} maxLength={4000} rows={2} placeholder="Write a question…" disabled={(expired && !pendingSubmission) || !session.state.diaryOpen} onKeyDown={event => {
+                    if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+                    const native = event.nativeEvent;
+                    if (native.isComposing || native.keyCode === 229) return;
+                    event.preventDefault();
+                    if (event.repeat) return;
+                    const form = event.currentTarget.form;
+                    const submitter = form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+                    if (form && submitter && !submitter.disabled) form.requestSubmit(submitter);
+                  }} onFocus={() => setMetricsPhase('compose', session.round.id, session.round.accessToken)} onBlur={() => setMetricsPhase('read_think', session.round.id, session.round.accessToken)} onChange={event => { if (!pendingSubmission && event.target.value !== message) requestId.current = ''; setMessage(event.target.value); }} />
                     <button type="submit" aria-label="Send question" disabled={sending || expired || Boolean(pendingSubmission) || !message.trim()}>{sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}</button>
                   </div>
                   {pendingSubmission && <Button type="button" className="diary-inline-recovery" disabled={sending} onClick={() => void send(true)}>Check previous submission</Button>}
