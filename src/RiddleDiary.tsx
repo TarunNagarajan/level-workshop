@@ -38,6 +38,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const readingAnchor = useRef<{ messageId: string; offset: number } | null>(null);
   const manualPageSelection = useRef(false);
   const bringLatestAfterUpdate = useRef(true);
+  const pendingReplyNavigation = useRef<{ roundId: string; navigatedAway: boolean } | null>(null);
   const lastPaginatedMessages = useRef<Message[] | null>(null);
   const [selectedProfile, setSelectedProfile] = useState('story');
   const [name, setName] = useState('');
@@ -50,6 +51,8 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const [starting, setStarting] = useState(false);
   const [sending, setSending] = useState(false);
   const [pendingSubmission, setPendingSubmission] = useState<{ id: string; content: string } | null>(null);
+  const [newReplyAvailableId, setNewReplyAvailableId] = useState<string | null>(null);
+  const [sendStatus, setSendStatus] = useState('');
   const [filing, setFiling] = useState(false);
   const [activeArtifact, setActiveArtifact] = useState<Artifact | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
@@ -110,7 +113,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   }, []);
 
   const installSession = (value: DiarySession, animateLatest = false) => {
-    setSession(value); setNow(Date.now()); setPendingRound(null); setBookPageIndex(0); setBookPages([[]]); manualPageSelection.current = false; bringLatestAfterUpdate.current = true; lastPaginatedMessages.current = null; readingAnchor.current = null; setMessage(''); setAnswer(''); setSelectedEvidence(value.state.filedEvidenceIds || []); setError(''); requestId.current = ''; setPendingSubmission(null);
+    setSession(value); setNow(Date.now()); setPendingRound(null); setBookPageIndex(0); setBookPages([[]]); manualPageSelection.current = false; bringLatestAfterUpdate.current = true; pendingReplyNavigation.current = null; lastPaginatedMessages.current = null; readingAnchor.current = null; setMessage(''); setAnswer(''); setSelectedEvidence(value.state.filedEvidenceIds || []); setError(''); setSendStatus(''); setNewReplyAvailableId(null); requestId.current = ''; setPendingSubmission(null);
     setAnimatingReplyId(animateLatest ? [...value.round.messages].reverse().find(item => item.role === 'assistant' && !item.opening)?.id || null : null);
     setInstantReplies(animateLatest ? [] : value.round.messages.map(item => item.id));
   };
@@ -233,7 +236,12 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
       const messagesChanged = lastPaginatedMessages.current !== latestMessages;
       if (messagesChanged) lastPaginatedMessages.current = latestMessages;
       let target = -1;
-      if (bringLatestAfterUpdate.current && messagesChanged && !manualPageSelection.current) target = next.length - 1;
+      if (bringLatestAfterUpdate.current && messagesChanged && !manualPageSelection.current) {
+        const latestReply = [...latestMessages].reverse().find(item => item.role === 'assistant' && !item.opening);
+        const firstReplySegment = latestReply && next.findIndex(page => page.some(segment => segment.message.id === latestReply.id && segment.start === 0));
+        target = typeof firstReplySegment === 'number' && firstReplySegment >= 0 ? firstReplySegment : next.length - 1;
+        if (latestReply) readingAnchor.current = { messageId: latestReply.id, offset: 0 };
+      }
       else if (anchor) target = next.findIndex(page => page.some(segment => segment.message.id === anchor.messageId && anchorFitsSegment(segment, anchor.offset)));
       if (target < 0) target = Math.min(bookPageIndexRef.current, next.length - 1);
       if (mobileBook) setBookPageIndex(Math.max(0, target));
@@ -270,6 +278,8 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     const last = mobileBook ? bookPages.length - 1 : Math.floor((bookPages.length - 1) / 2) * 2;
     const next = Math.max(0, Math.min(last, target));
     manualPageSelection.current = true;
+    const replyNavigation = pendingReplyNavigation.current;
+    if (replyNavigation && replyNavigation.roundId === session?.round.id) replyNavigation.navigatedAway = true;
     bringLatestAfterUpdate.current = false;
     const segment = bookPages[next]?.[0] || bookPages[next + 1]?.[0];
     readingAnchor.current = segment ? { messageId: segment.message.id, offset: segment.start } : null;
@@ -286,6 +296,18 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     goToBookPage(target);
     readingAnchor.current = latestId ? { messageId: latestId, offset: latestMessages.at(-1)?.content.length || 0 } : null;
     manualPageSelection.current = false;
+    setNewReplyAvailableId(null);
+  }
+
+  function showNewReply() {
+    if (!newReplyAvailableId) return;
+    const target = bookPages.findIndex(page => page.some(segment => segment.message.id === newReplyAvailableId && segment.start === 0));
+    if (target < 0) return;
+    setNewReplyAvailableId(null);
+    manualPageSelection.current = true;
+    bringLatestAfterUpdate.current = false;
+    readingAnchor.current = { messageId: newReplyAvailableId, offset: 0 };
+    setBookPageIndex(mobileBook ? target : Math.floor(target / 2) * 2);
   }
 
   function openMessageInBook(messageId: string) {
@@ -293,6 +315,8 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     const segment = bookPages[target]?.find(item => item.message.id === messageId);
     readingAnchor.current = segment ? { messageId, offset: segment.start } : { messageId, offset: 0 };
     manualPageSelection.current = true; bringLatestAfterUpdate.current = false;
+    const replyNavigation = pendingReplyNavigation.current;
+    if (replyNavigation && replyNavigation.roundId === session?.round.id) replyNavigation.navigatedAway = true;
     setBookPageIndex(mobileBook ? target : Math.floor(target / 2) * 2);
     setShowConversation(false);
   }
@@ -467,29 +491,50 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     const prior = retryPending ? pendingSubmission : null;
     const sentText = prior?.content || message;
     if (!sentText.trim()) return;
-    if (!prior && !manualPageSelection.current) bringLatestAfterUpdate.current = true;
+    if (!prior) {
+      pendingReplyNavigation.current = { roundId: session.round.id, navigatedAway: false };
+      manualPageSelection.current = false;
+      bringLatestAfterUpdate.current = true;
+      setNewReplyAvailableId(null);
+    }
     const roundId = session.round.id, generation = sendGeneration.current;
     if (!prior) recordMetricsInteraction('submit', roundId, session.round.accessToken);
-    setSending(true); setError('');
+    setSending(true); setError(''); setSendStatus(prior ? 'Checking the previous submission…' : 'Sending your question…');
     const id = prior?.id || requestId.current || crypto.randomUUID(); requestId.current = id;
     if (!prior) setPendingSubmission({ id, content: sentText });
     try {
       const next = await api<DiaryRound>(`/rounds/${roundId}/messages`, { method: 'POST', token: session.round.accessToken, body: { content: sentText, requestId: id } });
       if (generation !== sendGeneration.current || sceneRef.current?.round.id !== roundId) return;
       const assistant = [...next.messages].reverse().find(item => item.role === 'assistant' && !item.opening);
+      const navigation = pendingReplyNavigation.current;
+      if (assistant && navigation?.roundId === roundId) {
+        pendingReplyNavigation.current = null;
+        if (navigation.navigatedAway) {
+          setNewReplyAvailableId(assistant.id);
+          manualPageSelection.current = true;
+          bringLatestAfterUpdate.current = false;
+        } else {
+          readingAnchor.current = { messageId: assistant.id, offset: 0 };
+          manualPageSelection.current = false;
+          bringLatestAfterUpdate.current = true;
+        }
+      }
       setSession(current => current?.round.id === roundId ? { ...current, round: { ...next, accessToken: current.round.accessToken } } : current);
       setAnimatingReplyId(assistant?.id || null);
       recordMetricsReply(roundId, session.round.accessToken);
       setMessage(current => current === sentText ? '' : current);
+      setSendStatus('');
       requestId.current = ''; setPendingSubmission(null);
     } catch (cause) {
       if (generation !== sendGeneration.current || sceneRef.current?.round.id !== roundId) return;
+      let failure: string;
       if (cause instanceof ApiError && cause.submissionId) {
-        if (['failed', 'rejected', 'interrupted'].includes(cause.submissionStatus || '')) { requestId.current = ''; setPendingSubmission(null); }
-        setError(`${cause.message} The server confirmed this prompt was saved (status: ${cause.submissionStatus || 'unknown'}).${['failed', 'rejected', 'interrupted'].includes(cause.submissionStatus || '') ? ' Retry to create a new attempt.' : ' Retrying uses the same request ID and cannot invoke the model twice.'}`);
-      } else if (cause instanceof ApiError && cause.status >= 400 && cause.status < 500) { requestId.current = ''; setPendingSubmission(null); setError(cause.message); }
-      else if (cause instanceof ApiError) setError(`${cause.message} The receipt is not confirmed. Check the previous question using the same request ID.`);
-      else setError('The server receipt is unknown because the connection ended. Your text remains here. Retry the previous question to check its receipt safely.');
+        if (['failed', 'rejected', 'interrupted'].includes(cause.submissionStatus || '')) { requestId.current = ''; setPendingSubmission(null); pendingReplyNavigation.current = null; }
+        failure = `${cause.message} The server confirmed this prompt was saved (status: ${cause.submissionStatus || 'unknown'}).${['failed', 'rejected', 'interrupted'].includes(cause.submissionStatus || '') ? ' Retry to create a new attempt.' : ' Retrying uses the same request ID and cannot invoke the model twice.'}`;
+      } else if (cause instanceof ApiError && cause.status >= 400 && cause.status < 500) { requestId.current = ''; setPendingSubmission(null); failure = cause.message; pendingReplyNavigation.current = null; }
+      else if (cause instanceof ApiError) failure = `${cause.message} The receipt is not confirmed. Check the previous question using the same request ID.`;
+      else failure = 'The server receipt is unknown because the connection ended. Your text remains here. Retry the previous question to check its receipt safely.';
+      setError(failure); setSendStatus(failure);
     } finally { if (generation === sendGeneration.current && sceneRef.current?.round.id === roundId) setSending(false); }
   }
 
@@ -673,7 +718,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
                     <button type="submit" aria-label="Send question" disabled={sending || expired || Boolean(pendingSubmission) || !message.trim()}>{sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}</button>
                   </div>
                   {pendingSubmission && <Button type="button" className="diary-inline-recovery" disabled={sending} onClick={() => void send(true)}>Check previous submission</Button>}
-                  {sending && <span className="diary-writing-status" role="status">Waiting for the saved reply…</span>}
+                  {sendStatus && <span className="diary-writing-status" role="status">{sendStatus}</span>}
                 </form>
               </div>}
             </section>
@@ -688,6 +733,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
           <button type="button" onClick={() => goToBookPage(bookPageIndex + (mobileBook ? 1 : 2))} disabled={mobileBook ? bookPageIndex >= bookPages.length - 1 : spreadStart + 2 >= bookPages.length}>Next</button>
           <button type="button" onClick={latestBookPage}>Latest entry</button>
           <button type="button" onClick={() => setShowConversation(true)}>Full conversation</button>
+          {newReplyAvailableId && <button type="button" className="diary-new-reply" onClick={showNewReply}>New reply ready: view reply</button>}
         </nav>}
 
         {session.state.sceneVersion !== 2 && <p className="diary-history-notice">Earlier workshop version. Its authored clues differ from the story.</p>}
