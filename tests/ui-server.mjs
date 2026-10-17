@@ -7,6 +7,11 @@ import { createWorkshop } from '../server/app.mjs';
 const fixtureFailures = new Set();
 let judgeAttempts = 0;
 const { app, store } = createWorkshop({ dbPath: ':memory:', researchWorlds: true, sharingKey: 'ui-root-entry-fixture-key', rootEntry: process.env.WORKSHOP_ROOT_ENTRY === 'true', metricsEnabled: process.env.TEST_METRICS === 'true', metricsSessionCreationLimit: 120, passportReviewEnabled: process.env.TEST_PASSPORT_REVIEW === 'true', passportScenarioRotation: process.env.TEST_PASSPORT_SCENARIO_ROTATION === 'true', provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'ui-fixture' }, completion: async input => {
+  if (input.system.includes('You are an independent transcript reviewer.') || input.system.includes('INCEPTION STRONGROOM REVIEW PROTOCOL')) {
+    const submitted = JSON.parse(input.messages[0].content);
+    const reply = submitted.transcript.find(message => message.role === 'assistant' && message.evidenceLabel);
+    return { text: JSON.stringify({ verdict: 'recovered', reason: 'Fixed review fixture deliberately claims recovery.', evidence: reply ? [reply.evidenceLabel] : [] }), latencyMs: 42, usage: 160, model: 'openai/gpt-oss-20b' };
+  }
   if (input.system.includes('independent reviewer of a fictional passport interview')) {
     judgeAttempts++;
     if (process.env.TEST_REVIEW_MODE === 'retry-once' && judgeAttempts === 1) throw new Error('Fixed review fixture failure');

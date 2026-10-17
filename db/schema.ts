@@ -369,3 +369,17 @@ export const diary_sessions = sqliteTable('diary_sessions', {
   round_id: text('round_id').primaryKey().references(() => rounds.id, { onDelete: 'restrict' }),
   state: text('state').notNull(),
 });
+
+export const inception_sessions = sqliteTable('inception_sessions', {
+  round_id: text('round_id').primaryKey().references(() => rounds.id, { onDelete: 'restrict' }),
+  state: text('state').notNull(),
+  start_key_hash: text('start_key_hash').notNull(),
+  actor_key_hash: text('actor_key_hash').notNull(),
+  actor_id: text('actor_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  created_at: integer('created_at').notNull(),
+}, t => [uniqueIndex('inception_sessions_actor_key_hash_unique').on(t.actor_key_hash), index('inception_sessions_actor_created_idx').on(t.actor_id, t.created_at)]);
+
+export const inception_start_locks = sqliteTable('inception_start_locks', {
+  actor_id: text('actor_id').primaryKey().references(() => users.id, { onDelete: 'restrict' }),
+  serial: integer('serial').notNull().default(0),
+});

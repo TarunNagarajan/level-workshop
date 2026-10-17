@@ -1,0 +1,27 @@
+[
+  {
+    "file": "strongroom-closed-v1.webp",
+    "bytes": 134734,
+    "sha256": "9eef7b9f19ea069a9a7d1f10cd3a4466b5e370a2953439b66fcd00c265f936f3"
+  },
+  {
+    "file": "strongroom-open-v1.webp",
+    "bytes": 136786,
+    "sha256": "38ed16667675ccdedf01bff0de40a6f9dbab8adeb545e53c92cb4972e3dc4134"
+  },
+  {
+    "file": "strongroom-intro-v1.mp4",
+    "bytes": 3573699,
+    "sha256": "e27687231ec9aa23c30d9344ca0cb697047d551910b1ef25c8b4dab85c2d8e0c"
+  },
+  {
+    "file": "strongroom-intro-v1.vtt",
+    "bytes": 328,
+    "sha256": "c47d7db2f175e01ba71ed649830fd327086b73caf42a0f8bac39530f2d5133bb"
+  },
+  {
+    "file": "strongroom-roomtone-v1.mp3",
+    "bytes": 360700,
+    "sha256": "86773ee4252cd6c3ca1b1f65b0d1cf5dfe1773dcdac6c17fc76b2fa66b55a961"
+  }
+]

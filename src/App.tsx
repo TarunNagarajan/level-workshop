@@ -14,6 +14,7 @@ import { CollectionParticipant } from './CollectionParticipant';
 import { Metrics } from './Metrics';
 import { RecordingNotice } from './RecordingNotice';
 import { RiddleDiary } from './RiddleDiary';
+import { InceptionLevel } from './InceptionLevel';
 import { navigateMetrics, syncMetricsIdentity } from './telemetry';
 
 let historyIndex = 0;
@@ -37,7 +38,7 @@ export function App() {
   const [tourOpen, setTourOpen] = useState(false); const [tourUser, setTourUser] = useState('');
   const standaloneCollection = path.startsWith('/collect/');
   const inWorkspace = !/^\/(play|enter|owner|join|collect)\//.test(path) && !path.startsWith('/reference/play/') && !path.startsWith('/diary/play/') && path !== '/reference/research/preview';
-  const requiresStandaloneConsent = path.startsWith('/collect/') || path.startsWith('/play/') || path.startsWith('/reference/play/') || path.startsWith('/diary/play/');
+  const requiresStandaloneConsent = path === '/inception' || path.startsWith('/collect/') || path.startsWith('/play/') || path.startsWith('/reference/play/') || path.startsWith('/diary/play/');
   const recordingPermitted = Boolean(bootstrap) && (bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true);
   useEffect(() => { if (bootstrap?.user && recordingPermitted && path === '/' && tourUser !== bootstrap.user.id) { setTourUser(bootstrap.user.id); if (!bootstrap.tutorialDone) setTourOpen(true); } }, [bootstrap, recordingPermitted, path, tourUser]);
   useEffect(() => {
@@ -79,19 +80,19 @@ export function App() {
   else if (path.startsWith('/play/')) content = <BlindPlay token={path.split('/')[2]} />;
   else if (!bootstrap) content = <div className="auth-shell"><Mark />{error ? <><p className="error">{error}</p><Button onClick={reload}>Retry</Button></> : <p className="muted">Opening workshop…</p>}</div>;
   else if (path.startsWith('/enter/') || path.startsWith('/owner/')) content = <LinkEntry token={path.split('/')[2]} owner={path.startsWith('/owner/')} onDone={() => { navigate('/'); void reload(); }} />;
-  else if (!bootstrap.user && bootstrap.rootEntry && !path.startsWith('/join/')) content = <RootEntry onDone={() => { navigate(path === '/diary' ? '/diary' : '/'); void reload(); }} />;
+  else if (!bootstrap.user && bootstrap.rootEntry && !path.startsWith('/join/')) content = <RootEntry onDone={() => { navigate(path === '/diary' || path === '/inception' ? path : '/'); void reload(); }} />;
   else if (!bootstrap.user && bootstrap.privateEntry && !path.startsWith('/join/')) content = <div className="auth-shell"><div className="auth-card"><Mark /><p className="eyebrow">LEVEL WORKSHOP</p><h1>A private workshop.</h1><p className="muted auth-description">Open the invitation link shared with you to enter the workshop.</p></div></div>;
-  else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate(path === '/diary' ? '/diary' : '/'); void reload(); }} />;
+  else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate(path === '/diary' || path === '/inception' ? path : '/'); void reload(); }} />;
   else if (bootstrap.recordingNoticeRequired === true && (bootstrap.recordingAccepted !== true || bootstrap.recordingNoticeVersion !== 'recording-notice-v1')) content = <RecordingNotice onAccepted={() => { setRecordingAcknowledged(true); void reload(); }} />;
   else {
     const user = bootstrap.user;
     const memberModel = { connected: bootstrap.model.connected, model: bootstrap.model.model || 'Not configured', provider: bootstrap.model.provider || 'Not configured' };
-    const page = path === '/diary' || path.startsWith('/diary/') ? 'diary' : path.startsWith('/levels/') ? 'editor' : path.startsWith('/collections') ? 'collections' : path.startsWith('/attempts') ? 'attempts' : path.startsWith('/reference') ? 'reference' : path.startsWith('/orchestration') ? 'orchestration' : path.startsWith('/team') ? 'team' : path.startsWith('/settings') ? 'settings' : path.startsWith('/metrics') ? 'metrics' : 'levels';
+    const page = path === '/diary' || path.startsWith('/diary/') ? 'diary' : path === '/inception' ? 'inception' : path.startsWith('/levels/') ? 'editor' : path.startsWith('/collections') ? 'collections' : path.startsWith('/attempts') ? 'attempts' : path.startsWith('/reference') ? 'reference' : path.startsWith('/orchestration') ? 'orchestration' : path.startsWith('/team') ? 'team' : path.startsWith('/settings') ? 'settings' : path.startsWith('/metrics') ? 'metrics' : 'levels';
     content = <div className="workspace">
       <aside className="sidebar">
         <div className="sidebar-top"><Mark /><span className="tiny">PRIVATE WORKSPACE</span></div>
         <nav aria-label="Main navigation">
-          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/diary', "Riddle's diary", BookOpen, 'diary'], ['/reference', 'Reference', BookOpen, 'reference'], ['/collections', 'Collections', Layers3, 'collections'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team'], ...(user.role === 'admin' ? [['/metrics', 'Metrics', ChartNoAxesCombined, 'metrics']] : [])].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
+          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/diary', "Riddle's diary", BookOpen, 'diary'], ['/inception', 'Inception', BookOpen, 'inception'], ['/reference', 'Reference', BookOpen, 'reference'], ['/collections', 'Collections', Layers3, 'collections'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team'], ...(user.role === 'admin' ? [['/metrics', 'Metrics', ChartNoAxesCombined, 'metrics']] : [])].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
         </nav>
         <div className="sidebar-bottom">
           <button className="nav-item" aria-label="Quick tour" onClick={() => { if (path !== '/') navigate('/'); setTourOpen(true); }}><CircleHelp size={17} strokeWidth={1.5} />Quick tour</button>
@@ -103,6 +104,7 @@ export function App() {
       <main className={`main ${page === 'editor' ? 'editor-main' : ''}`}>
         {page === 'editor' ? <Editor key={path} levelId={path.split('/')[2]} user={user} model={memberModel} notify={notify} />
           : page === 'diary' ? <RiddleDiary canShare={user.role === 'admin'} onHome={() => navigate('/')} />
+          : page === 'inception' ? <InceptionLevel onHome={() => navigate('/')} />
           : page === 'attempts' ? <Attempts selectedId={path.split('/')[2]} notify={notify} />
           : page === 'collections' ? <CollectionArea path={path} notify={notify} user={user} />
           : page === 'reference' ? <PassportReference key={path} researchWorld={path.startsWith('/reference/research/') && user.role === 'admin' ? path.split('/')[3] : undefined} />
