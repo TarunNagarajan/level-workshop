@@ -63,27 +63,29 @@
         <div><span class="eyebrow">FIELD LINK / LANGLEY 1996</span><span id="profile-label" class="profile-label"></span></div>
         <div class="toolbar-actions"><span class="mission-clock" id="mission-clock" aria-label="Time remaining">04:00</span><button class="small-button" id="fullscreen-game">Fullscreen</button><button class="small-button" id="exit-game">Exit</button></div>
       </div>
-      <div class="bench" id="bench">
-        <img class="workstation-art" src="../mission-assets/workstation-v3.webp" alt="Portable field computers, recorder, phone, cables and notes on a scuffed board inside a fire truck">
-        <div class="terminal-window" id="terminal-window" aria-label="Remote Langley archive terminal">
-          <div class="terminal-screen">
-            <canvas class="crt-effect" aria-hidden="true"></canvas>
-            <div class="terminal-topline"><span>FIELD TERMINAL</span><span>LANGLEY 1996 / NIGHTJAR REDACTED</span><span id="terminal-status">ONLINE</span></div>
-            <div class="terminal-log" id="terminal-log" role="log" aria-label="Archive conversation" aria-live="polite" tabindex="0"></div>
-            <form class="terminal-composer" id="terminal-form">
-              <label class="sr-only" for="terminal-input">Message the archive AI</label>
-              <textarea id="terminal-input" rows="1" maxlength="4000" placeholder="Ask the archive AI…" autocomplete="off" spellcheck="true"></textarea>
-              <button class="send-button" id="send-button" type="submit" aria-label="Send message">Send</button>
-            </form>
-            <div class="terminal-receipt" id="terminal-receipt" role="status" hidden></div>
+      <div class="scene-stage" id="scene-stage">
+        <div class="bench" id="bench">
+          <img class="workstation-art" src="../mission-assets/workstation-v3.webp" alt="Portable field computers, recorder, phone, cables and notes on a scuffed board inside a fire truck">
+          <div class="terminal-window" id="terminal-window" aria-label="Remote Langley archive terminal">
+            <div class="terminal-screen">
+              <canvas class="crt-effect" aria-hidden="true"></canvas>
+              <div class="terminal-topline"><span>FIELD TERMINAL</span><span>LANGLEY 1996 / NIGHTJAR REDACTED</span><span id="terminal-status">ONLINE</span></div>
+              <div class="terminal-log" id="terminal-log" role="log" aria-label="Archive conversation" aria-live="polite" tabindex="0"></div>
+              <form class="terminal-composer" id="terminal-form">
+                <label class="sr-only" for="terminal-input">Message the archive AI</label>
+                <textarea id="terminal-input" rows="1" maxlength="4000" placeholder="Ask the archive AI…" autocomplete="off" spellcheck="true"></textarea>
+                <button class="send-button" id="send-button" type="submit" aria-label="Send message">Send</button>
+              </form>
+              <div class="terminal-receipt" id="terminal-receipt" role="status" hidden></div>
+            </div>
           </div>
+          <div class="machine-shade" aria-hidden="true"></div>
+          <img class="equipment equipment-service" src="../mission-assets/service-disk-v2.webp" alt="" aria-hidden="true">
+          <img class="equipment equipment-extraction" src="../mission-assets/extraction-disk-v2.webp" alt="" aria-hidden="true">
+          <button class="hotspot service-hotspot" id="service-button" type="button" aria-label="Insert service disk"><span>Service disk</span></button>
+          <button class="hotspot extraction-hotspot" id="extract-button" type="button" aria-label="Open evidence disk"><span>Evidence disk</span></button>
+          <button class="hotspot recorder-hotspot" id="replay-brief" type="button" aria-label="Replay the mission brief"><span>Replay brief</span></button>
         </div>
-        <div class="machine-shade" aria-hidden="true"></div>
-        <img class="equipment equipment-service" src="../mission-assets/service-disk-v2.webp" alt="" aria-hidden="true">
-        <img class="equipment equipment-extraction" src="../mission-assets/extraction-disk-v2.webp" alt="" aria-hidden="true">
-        <button class="hotspot service-hotspot" id="service-button" type="button" aria-label="Insert service disk"><span>Service disk</span></button>
-        <button class="hotspot extraction-hotspot" id="extract-button" type="button" aria-label="Open evidence disk"><span>Evidence disk</span></button>
-        <button class="hotspot recorder-hotspot" id="replay-brief" type="button" aria-label="Replay the mission brief"><span>Replay brief</span></button>
       </div>
       <div class="bench-actions">
         <button class="object-button" id="focus-screen">Focus terminal</button>
