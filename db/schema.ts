@@ -369,3 +369,21 @@ export const diary_sessions = sqliteTable('diary_sessions', {
   round_id: text('round_id').primaryKey().references(() => rounds.id, { onDelete: 'restrict' }),
   state: text('state').notNull(),
 });
+
+export const mission_sessions = sqliteTable('mission_sessions', {
+  round_id: text('round_id').primaryKey().references(() => rounds.id, { onDelete: 'restrict' }),
+  state: text('state').notNull(),
+});
+
+export const mission_start_keys = sqliteTable('mission_start_keys', {
+  actor_id: text('actor_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  start_key_hash: text('start_key_hash').notNull(),
+  round_id: text('round_id').notNull().unique().references(() => rounds.id, { onDelete: 'restrict' }),
+  created_at: integer('created_at').notNull(),
+}, t => [uniqueIndex('mission_start_keys_actor_key_unique').on(t.actor_id, t.start_key_hash)]);
+
+export const mission_start_locks = sqliteTable('mission_start_locks', {
+  actor_id: text('actor_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  token: text('token').notNull(),
+  expires_at: integer('expires_at').notNull(),
+});

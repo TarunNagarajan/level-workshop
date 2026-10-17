@@ -10,7 +10,10 @@ export function createDeploymentApp({ includeSpaFallback = false, apiNotFound = 
   app.use((req, res, next) => {
     res.set('Referrer-Policy', 'no-referrer');
     res.set('X-Content-Type-Options', 'nosniff');
-    res.set('X-Frame-Options', 'DENY');
+    if (req.path.startsWith('/mission-client/')) {
+      res.set('X-Frame-Options', 'SAMEORIGIN');
+      res.set('Content-Security-Policy', "frame-ancestors 'self'");
+    } else res.set('X-Frame-Options', 'DENY');
     next();
   });
 

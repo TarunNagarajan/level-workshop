@@ -14,6 +14,7 @@ import { CollectionParticipant } from './CollectionParticipant';
 import { Metrics } from './Metrics';
 import { RecordingNotice } from './RecordingNotice';
 import { RiddleDiary } from './RiddleDiary';
+import { MissionLevel } from './MissionLevel';
 import { navigateMetrics, syncMetricsIdentity } from './telemetry';
 
 let historyIndex = 0;
@@ -68,6 +69,15 @@ export function App() {
   useEffect(() => { if (!standaloneCollection) void reload(); }, [standaloneCollection]);
   useEffect(() => { const allowed = !requiresStandaloneConsent && Boolean(bootstrap) && (bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true); setRecordingAcknowledged(allowed); navigateMetrics(path); }, [path, bootstrap, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired, requiresStandaloneConsent]);
   useEffect(() => { syncMetricsIdentity(bootstrap?.user?.id || null); }, [path, bootstrap?.user?.id, bootstrap?.needsSetup, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired]);
+  useEffect(() => {
+    const listener = (event: MessageEvent) => {
+      const frame = document.querySelector<HTMLIFrameElement>('.mission-host iframe');
+      if (event.origin !== window.location.origin || event.source !== frame?.contentWindow || event.data?.type !== 'mission:return') return;
+      navigate('/');
+    };
+    window.addEventListener('message', listener);
+    return () => window.removeEventListener('message', listener);
+  }, []);
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('workshop-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4500); return () => clearTimeout(timer); }, [toast]);
   const notify = (message: string) => setToast(message);
@@ -79,19 +89,19 @@ export function App() {
   else if (path.startsWith('/play/')) content = <BlindPlay token={path.split('/')[2]} />;
   else if (!bootstrap) content = <div className="auth-shell"><Mark />{error ? <><p className="error">{error}</p><Button onClick={reload}>Retry</Button></> : <p className="muted">Opening workshop…</p>}</div>;
   else if (path.startsWith('/enter/') || path.startsWith('/owner/')) content = <LinkEntry token={path.split('/')[2]} owner={path.startsWith('/owner/')} onDone={() => { navigate('/'); void reload(); }} />;
-  else if (!bootstrap.user && bootstrap.rootEntry && !path.startsWith('/join/')) content = <RootEntry onDone={() => { navigate(path === '/diary' ? '/diary' : '/'); void reload(); }} />;
+  else if (!bootstrap.user && bootstrap.rootEntry && !path.startsWith('/join/')) content = <RootEntry onDone={() => { navigate(path || '/'); void reload(); }} />;
   else if (!bootstrap.user && bootstrap.privateEntry && !path.startsWith('/join/')) content = <div className="auth-shell"><div className="auth-card"><Mark /><p className="eyebrow">LEVEL WORKSHOP</p><h1>A private workshop.</h1><p className="muted auth-description">Open the invitation link shared with you to enter the workshop.</p></div></div>;
-  else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate(path === '/diary' ? '/diary' : '/'); void reload(); }} />;
+  else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate(path === '/diary' || path === '/mission' ? path : '/'); void reload(); }} />;
   else if (bootstrap.recordingNoticeRequired === true && (bootstrap.recordingAccepted !== true || bootstrap.recordingNoticeVersion !== 'recording-notice-v1')) content = <RecordingNotice onAccepted={() => { setRecordingAcknowledged(true); void reload(); }} />;
   else {
     const user = bootstrap.user;
     const memberModel = { connected: bootstrap.model.connected, model: bootstrap.model.model || 'Not configured', provider: bootstrap.model.provider || 'Not configured' };
-    const page = path === '/diary' || path.startsWith('/diary/') ? 'diary' : path.startsWith('/levels/') ? 'editor' : path.startsWith('/collections') ? 'collections' : path.startsWith('/attempts') ? 'attempts' : path.startsWith('/reference') ? 'reference' : path.startsWith('/orchestration') ? 'orchestration' : path.startsWith('/team') ? 'team' : path.startsWith('/settings') ? 'settings' : path.startsWith('/metrics') ? 'metrics' : 'levels';
+    const page = path === '/diary' || path.startsWith('/diary/') ? 'diary' : path === '/mission' ? 'mission' : path.startsWith('/levels/') ? 'editor' : path.startsWith('/collections') ? 'collections' : path.startsWith('/attempts') ? 'attempts' : path.startsWith('/reference') ? 'reference' : path.startsWith('/orchestration') ? 'orchestration' : path.startsWith('/team') ? 'team' : path.startsWith('/settings') ? 'settings' : path.startsWith('/metrics') ? 'metrics' : 'levels';
     content = <div className="workspace">
       <aside className="sidebar">
         <div className="sidebar-top"><Mark /><span className="tiny">PRIVATE WORKSPACE</span></div>
         <nav aria-label="Main navigation">
-          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/diary', "Riddle's diary", BookOpen, 'diary'], ['/reference', 'Reference', BookOpen, 'reference'], ['/collections', 'Collections', Layers3, 'collections'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team'], ...(user.role === 'admin' ? [['/metrics', 'Metrics', ChartNoAxesCombined, 'metrics']] : [])].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
+          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/diary', "Riddle's diary", BookOpen, 'diary'], ['/mission', 'Mission: Impossible', Network, 'mission'], ['/reference', 'Reference', BookOpen, 'reference'], ['/collections', 'Collections', Layers3, 'collections'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team'], ...(user.role === 'admin' ? [['/metrics', 'Metrics', ChartNoAxesCombined, 'metrics']] : [])].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
         </nav>
         <div className="sidebar-bottom">
           <button className="nav-item" aria-label="Quick tour" onClick={() => { if (path !== '/') navigate('/'); setTourOpen(true); }}><CircleHelp size={17} strokeWidth={1.5} />Quick tour</button>
@@ -101,7 +111,8 @@ export function App() {
         </div>
       </aside>
       <main className={`main ${page === 'editor' ? 'editor-main' : ''}`}>
-        {page === 'editor' ? <Editor key={path} levelId={path.split('/')[2]} user={user} model={memberModel} notify={notify} />
+        {page === 'mission' ? <MissionLevel />
+          : page === 'editor' ? <Editor key={path} levelId={path.split('/')[2]} user={user} model={memberModel} notify={notify} />
           : page === 'diary' ? <RiddleDiary canShare={user.role === 'admin'} onHome={() => navigate('/')} />
           : page === 'attempts' ? <Attempts selectedId={path.split('/')[2]} notify={notify} />
           : page === 'collections' ? <CollectionArea path={path} notify={notify} user={user} />

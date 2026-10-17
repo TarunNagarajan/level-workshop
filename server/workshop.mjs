@@ -12,6 +12,7 @@ import { addMetricsRoutes, createMetricsService } from './metrics.mjs';
 import { createSubmissionJournal, RECORDING_NOTICE_VERSION } from './durable-submissions.mjs';
 import { MACHINE_REVIEW_SYSTEM, MACHINE_REVIEW_PROTOCOL_VERSION, makeReviewPrompt, publicMachineReview, validateMachineReview } from './machine-review.mjs';
 import { RIDDLE_DIARY_LEVEL_ID, RIDDLE_DIARY_SCENARIO_ID, addRiddleDiaryRoutes, diaryPromptContext, isRiddleDiaryData, publicDiaryProfile } from './riddle-diary.mjs';
+import { addMissionArchiveRoutes, isMissionRound } from './mission-archive.mjs';
 const scrypt = promisify(scryptCallback);
 const id = () => randomUUID();
 const token = () => randomBytes(32).toString('base64url');
@@ -124,6 +125,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const row = await get('SELECT * FROM rounds WHERE id = ?', roundId);
         if (!row)
             fail(404, 'Test session not found.');
+        if (isMissionRound(row)) fail(404, 'Continue this session in the interactive archive.');
         const supplied = req.get('x-round-token');
         if (!(req.user && (row.author_id === req.user.id || req.user.role === 'admin')) && !(supplied && hash(supplied) === row.token))
             fail(403, 'This test session is private.');
@@ -669,13 +671,14 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         res.status(201).json({ ...next, hintsUsed: inherited.filter(m => m.role === 'hint').length });
     });
     app.get('/api/attempts', member, async (req, res) => {
-        const rows = req.query.levelId ? await all('SELECT * FROM rounds WHERE level_id = ? AND NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY started_at DESC LIMIT 200', String(req.query.levelId)) : await all('SELECT * FROM rounds WHERE NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY started_at DESC LIMIT 200');
+        const rows = req.query.levelId ? await all('SELECT * FROM rounds WHERE level_id = ? AND source <> ? AND NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY started_at DESC LIMIT 200', String(req.query.levelId), 'mission-play') : await all('SELECT * FROM rounds WHERE source <> ? AND NOT EXISTS (SELECT 1 FROM difficulty_collection_assignments WHERE round_id = rounds.id) ORDER BY started_at DESC LIMIT 200', 'mission-play');
         res.json(await Promise.all(rows.map(async row => ({ ...publicRound(row), version: (await versionRow(row.version_id)).number, review: await get('SELECT outcome, note, evidence FROM reviews WHERE round_id = ?', row.id) || null }))));
     });
     app.get('/api/attempts/:id', member, async (req, res) => {
         const row = await get('SELECT * FROM rounds WHERE id = ?', req.params.id);
         if (!row)
             fail(404, 'Test not found.');
+        if (isMissionRound(row)) fail(404, 'Continue this session in the interactive archive.');
         if (isRiddleDiaryData(JSON.parse(row.data))) fail(403, 'The diary system prompt is not available in player routes.');
         const assignment = await get('SELECT source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
         if (assignment?.source === 'participant') fail(403, 'Review participant attempts from their collection to keep collection context attached.');
@@ -686,6 +689,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const row = await get('SELECT * FROM rounds WHERE id = ?', req.params.id);
         if (!row)
             fail(404, 'Test not found.');
+        if (isMissionRound(row)) fail(404, 'Use the archive review for this session.');
         const input = z.object({ outcome: z.enum(['solved', 'partial', 'unsolved']), note: z.string().trim().min(1).max(4000), evidence: z.array(z.string()).max(40) }).parse(req.body);
         const messages = JSON.parse(row.messages);
         if (input.evidence.some(e => !messages.some(m => m.id === e && m.role === 'assistant' && !m.opening)))
@@ -702,6 +706,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const row = await get('SELECT * FROM rounds WHERE id = ?', req.params.id);
         if (!row)
             fail(404, 'Test not found.');
+        if (isMissionRound(row)) fail(404, 'Continue this session in the interactive archive.');
         if (isRiddleDiaryData(JSON.parse(row.data))) fail(403, 'The diary system prompt is not available in player routes.');
         const assignment = await get('SELECT source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
         if (assignment?.source === 'participant') fail(403, 'Participant attempts do not expose their protection prompt.');
@@ -736,7 +741,8 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     addOrchestrationRoutes(app, { store, provider, completion: instrumentedCompletion, journal, requireRecording });
     addCollectionRoutes(app, { store, provider, member, owner, versionRow, createRound, passportReviewEnabled });
     addPassportRoutes(app, { store, provider, completion: instrumentedCompletion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds, researchWorldId, collectionModels, passportReviewEnabled, passportScenarioRotation, journal, requireRecording, recordingNoticeRequired });
-    addMetricsRoutes(app, { store, enabled: metricsEnabled, secureCookies, authorizeRound: (req, roundId) => accessRound(req, roundId), admin, sessionCreationLimit: metricsSessionCreationLimit, recordingNoticeRequired, recordingAccepted });
+    const missionRoutes = addMissionArchiveRoutes(app, { store, member, provider, completion: instrumentedCompletion, journal, requireRecording, recordingNoticeRequired, reviewEnabled: Boolean(passportReviewEnabled) });
+    addMetricsRoutes(app, { store, enabled: metricsEnabled, secureCookies, authorizeRound: async (req, roundId) => await missionRoutes.authorizeMetricsRound(req, roundId) || accessRound(req, roundId), admin, sessionCreationLimit: metricsSessionCreationLimit, recordingNoticeRequired, recordingAccepted });
     app.use('/api', async (req, res) => res.status(404).json({ error: 'Endpoint not found.' }));
     app.use(async (error, req, res, next) => {
         if (error instanceof z.ZodError)

@@ -9,6 +9,15 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { app, store } = createWorkshop({ dbPath: process.env.DATABASE_PATH || resolve(root, 'data/workshop.sqlite'), passportReviewEnabled: process.env.WORKSHOP_PASSPORT_REVIEW !== 'false', recordingNoticeRequired: process.env.WORKSHOP_RECORDING_REQUIRED !== 'false' });
 const client = existsSync(resolve(root, 'dist/client/index.html')) ? resolve(root, 'dist/client') : resolve(root, 'dist');
 if (existsSync(resolve(client, 'index.html'))) {
+  app.use('/mission-assets', (_req, res, next) => {
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    next();
+  });
+  app.use('/mission-client', (_req, res, next) => {
+    res.set('X-Frame-Options', 'SAMEORIGIN');
+    res.set('Content-Security-Policy', "frame-ancestors 'self'");
+    next();
+  });
   app.use(express.static(client));
   app.get('/{*path}', (req, res) => res.sendFile(resolve(client, 'index.html')));
 } else {

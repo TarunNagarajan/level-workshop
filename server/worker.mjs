@@ -20,7 +20,10 @@ export default {
       const safe = new Response(response.body, response);
       safe.headers.set('Referrer-Policy', 'no-referrer');
       safe.headers.set('X-Content-Type-Options', 'nosniff');
-      safe.headers.set('X-Frame-Options', 'DENY');
+      if (pathname.startsWith('/mission-client/')) {
+        safe.headers.set('X-Frame-Options', 'SAMEORIGIN');
+        safe.headers.set('Content-Security-Policy', "frame-ancestors 'self'");
+      } else safe.headers.set('X-Frame-Options', 'DENY');
       return safe;
     } catch (error) {
       console.error('Workshop unavailable:', error.message);
