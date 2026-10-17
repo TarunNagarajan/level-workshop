@@ -2,30 +2,29 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { createPortal } from 'react-dom';
 import '@fontsource-variable/caveat/wght.css';
 import './riddle-diary.css';
-import { ArrowLeft, ArrowRight, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, Download, Eye, Feather, FileText, Loader2, Move, PenLine, RotateCcw, Send, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, BookOpen, Check, ChevronLeft, ChevronRight, Clock3, Download, Eye, Feather, FileText, Loader2, PenLine, RotateCcw, Send, X } from 'lucide-react';
 import { api, ApiError, RECORDING_NOTICE, RECORDING_NOTICE_VERSION, setRecordingAcknowledged, time } from './api';
 import type { MachineReview, Message, Round } from './types';
 import { Button, Field, Mark } from './ui';
 import { MachineReviewPanel } from './MachineReviewPanel';
 import { recordMetricsInteraction, recordMetricsReply, setMetricsPhase } from './telemetry';
 
-type DiaryProfile = { id: string; label: string; description: string; versionId?: string; scenarioId?: string; profileId?: string; profileRevision?: number; promptHash?: string; snapshotHash?: string };
-type DiaryState = { revision: number; page: 'memory' | 'response'; diaryOpen: boolean; fragmentAligned: boolean; letterOpen: boolean; presentedObjects: string[]; keptReplyIds: string[]; observations: string[]; filed: boolean; filedEvidenceIds: string[] };
+type DiaryProfile = { id: string; label: string; description: string; versionId?: string; scenarioId?: string; profileId?: string; profileRevision?: number; sceneVersion?: number; promptHash?: string; snapshotHash?: string };
+type DiaryState = { revision: number; sceneVersion?: number; page: 'memory' | 'response'; diaryOpen: boolean; fragmentAligned?: boolean; letterOpen?: boolean; awardInspected?: boolean; libraryInspected?: boolean; presentedObjects: string[]; keptReplyIds: string[]; observations: string[]; filed: boolean; filedEvidenceIds: string[] };
 type DiaryRound = Round & { diary?: DiaryProfile; accessToken?: string; reviewEnabled?: boolean; machineReview?: MachineReview | null };
 type DiarySession = { round: DiaryRound; state: DiaryState; diary: DiaryProfile };
 type DiaryConfig = { title: string; scenarioId: string; profiles: DiaryProfile[]; connected: boolean; recordingNoticeRequired?: boolean; reviewEnabled?: boolean; profile?: DiaryProfile; activeRoundId?: string | null };
-type DiaryAction = { type: 'open_diary' | 'turn_page' | 'align_fragment' | 'open_letter' } | { type: 'present_object' | 'remove_object'; objectId: 'diary' | 'fragment' | 'letter' } | { type: 'keep_reply' | 'remove_kept_reply'; replyId: string };
+type DiaryAction = { type: 'open_diary' | 'turn_page' | 'align_fragment' | 'open_letter' | 'inspect_award' | 'inspect_library' } | { type: 'present_object' | 'remove_object'; objectId: 'diary' | 'award' | 'library' | 'fragment' | 'letter' } | { type: 'keep_reply' | 'remove_kept_reply'; replyId: string };
 type PendingAction = { id: string; action: DiaryAction };
-type BlindReceipt = { id: string; accessToken: string; tester: string };
-type Artifact = 'diary' | 'fragment' | 'letter';
+type BlindReceipt = { id: string; accessToken: string; tester: string; replayFrom?: string; recordingVersion?: string };
+type Artifact = 'diary' | 'award' | 'library';
 type DiaryPageSegment = { message: Message; text: string; start: number; end: number; continued: boolean };
-
 const ASSETS = '/diary-assets';
-const LETTER_TEXT = 'Dear Mr Riddle,\n\nI have been asked to consider whether the school can continue next term. If Hogwarts closes, you will need to return to the orphanage until another school can be found. I can make no promises before the governors meet.\n\nYours sincerely,\nA. Dippet';
 
 export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindToken?: string; canShare?: boolean; onHome?: () => void }) {
   const blind = Boolean(blindToken);
   const receiptKey = `workshop-diary-play:${blindToken || ''}`;
+  const memberReplayKey = 'workshop-diary-replay';
   const [config, setConfig] = useState<DiaryConfig | null>(null);
   const [session, setSession] = useState<DiarySession | null>(null);
   const [pendingRound, setPendingRound] = useState<DiarySession | null>(null);
@@ -63,6 +62,8 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const [animatingReplyId, setAnimatingReplyId] = useState<string | null>(null);
   const [showShare, setShowShare] = useState(false);
   const [showContext, setShowContext] = useState(false);
+  const [introStep, setIntroStep] = useState(0);
+  const [contextIntroStep, setContextIntroStep] = useState(0);
   const [sharePath, setSharePath] = useState('');
   const [copied, setCopied] = useState(false);
   const requestId = useRef('');
@@ -76,8 +77,6 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const shareDialogRef = useRef<HTMLElement | null>(null);
   const contextDialogRef = useRef<HTMLElement | null>(null);
   const conversationDialogRef = useRef<HTMLElement | null>(null);
-  const [dragOffset, setDragOffset] = useState(0);
-  const dragStart = useRef<number | null>(null);
   const bookRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLDivElement | null>(null);
   useDialogControls(filingDialogRef, showAnswer, () => setShowAnswer(false));
@@ -114,11 +113,19 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
           setConfig(nextConfig);
           const saved = readBlindReceipt(receiptKey);
           if (saved) {
+            setName(saved.tester);
+            if (saved.replayFrom === saved.id) {
+              const recording = await api<{ accepted: boolean; version?: string }>(`/rounds/${saved.id}/recording`, { token: saved.accessToken });
+              if (!active) return;
+              const accepted = recording.accepted && recording.version === RECORDING_NOTICE_VERSION;
+              setConsented(accepted);
+              setRecordingAcknowledged(accepted);
+              return;
+            }
             const value = await api<DiarySession>(`/diary/rounds/${saved.id}`, { token: saved.accessToken });
             const recording = await api<{ accepted: boolean; version?: string }>(`/rounds/${saved.id}/recording`, { token: saved.accessToken });
             if (!active) return;
             const restored = { ...value, round: { ...value.round, accessToken: saved.accessToken } };
-            setName(saved.tester);
             if (recording.accepted && recording.version === RECORDING_NOTICE_VERSION) { setRecordingAcknowledged(true); installSession(restored); }
             else setPendingRound(restored);
           }
@@ -126,9 +133,17 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
           const nextConfig = await api<DiaryConfig>('/diary');
           if (!active) return;
           setConfig(nextConfig);
+          const replayFrom = window.sessionStorage.getItem(memberReplayKey);
           const current = nextConfig.activeRoundId ? await api<DiarySession | null>('/diary/active') : null;
-          if (active && current) installSession(current);
-          else {
+          if (active && current && replayFrom === current.round.id) {
+            const replayProfile = current.diary.profileId || current.diary.id;
+            if (nextConfig.profiles.some(item => item.id === replayProfile)) setSelectedProfile(replayProfile);
+          } else if (active && current) {
+            window.sessionStorage.removeItem(memberReplayKey);
+            installSession(current);
+          } else if (active && replayFrom) {
+            // A replay choice survives refresh; do not restore the expired or filed round.
+          } else {
             const latest = await api<DiarySession | null>('/diary/latest');
             if (active && latest) installSession(latest);
           }
@@ -200,7 +215,14 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
 
   useEffect(() => {
     const currentPage = bookPages[bookPageIndex];
-    if (currentPage?.length) readingAnchor.current = { messageId: currentPage[0].message.id, offset: currentPage[0].start };
+    if (currentPage?.length) {
+      const anchor = readingAnchor.current;
+      if (manualPageSelection.current) return;
+      if (anchor && bookPages.some(page => page.some(segment => segment.message.id === anchor.messageId && anchorFitsSegment(segment, anchor.offset)))) return;
+      if (!anchor || !currentPage.some(segment => segment.message.id === anchor.messageId && anchorFitsSegment(segment, anchor.offset))) {
+        readingAnchor.current = { messageId: currentPage[0].message.id, offset: currentPage[0].start };
+      }
+    }
   }, [bookPageIndex, bookPages]);
 
   function goToBookPage(target: number) {
@@ -220,8 +242,8 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     let target = -1;
     for (let index = bookPages.length - 1; index >= 0; index -= 1) if (bookPages[index].some(segment => segment.message.id === latestId)) { target = index; break; }
     target = Math.max(0, target);
-    readingAnchor.current = latestId ? { messageId: latestId, offset: latestMessages.at(-1)?.content.length || 0 } : null;
     goToBookPage(target);
+    readingAnchor.current = latestId ? { messageId: latestId, offset: latestMessages.at(-1)?.content.length || 0 } : null;
     manualPageSelection.current = false;
   }
 
@@ -239,6 +261,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     setStarting(true); setError('');
     try {
       const value = await api<DiarySession>('/diary/start', { method: 'POST', body: { profileId } });
+      window.sessionStorage.removeItem(memberReplayKey);
       installSession(value);
       setSelectedProfile(profileId);
     } catch (cause) { setError((cause as Error).message); }
@@ -252,7 +275,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
       const value = await api<DiarySession>(`/diary/play/${blindToken}`, { method: 'POST', body: { tester: name.trim(), consent: true } });
       const accessToken = value.round.accessToken || '';
       setRecordingAcknowledged(true);
-      window.sessionStorage.setItem(receiptKey, JSON.stringify({ id: value.round.id, accessToken, tester: name.trim() } satisfies BlindReceipt));
+      window.sessionStorage.setItem(receiptKey, JSON.stringify({ id: value.round.id, accessToken, tester: name.trim(), recordingVersion: RECORDING_NOTICE_VERSION } satisfies BlindReceipt));
       installSession({ ...value, round: { ...value.round, accessToken } });
     } catch (cause) { setError((cause as Error).message); }
     finally { setStarting(false); }
@@ -268,17 +291,42 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     finally { setStarting(false); }
   }
 
+  const replayBlocked = Boolean(starting || sending || filing || actionBusy || pendingAction || pendingSubmission);
+  const canReplay = Boolean(session && (session.round.endedAt || expired));
+  const legacyBlindScene = Boolean(blind && config?.profile?.sceneVersion !== 2);
+  const legacyBlindSession = Boolean(blind && session && session.state.sceneVersion !== 2);
+  const legacySession = Boolean(session && session.state.sceneVersion !== 2);
+
+  function replayDiary() {
+    if (!session || !canReplay || replayBlocked || legacyBlindSession) return;
+    if (blind) {
+      const saved = readBlindReceipt(receiptKey);
+      if (saved?.id === session.round.id) window.sessionStorage.setItem(receiptKey, JSON.stringify({ ...saved, replayFrom: saved.id } satisfies BlindReceipt));
+      setName(saved?.tester || name);
+      const accepted = Boolean(saved?.id === session.round.id && saved.recordingVersion === RECORDING_NOTICE_VERSION);
+      setConsented(accepted);
+      setRecordingAcknowledged(accepted);
+    } else {
+      window.sessionStorage.setItem(memberReplayKey, session.round.id);
+      const selected = profile?.profileId || profile?.id;
+      if (selected && profiles.some(item => item.id === selected)) setSelectedProfile(selected);
+    }
+    setError('');
+    setSession(null);
+    setSelectedEvidence([]);
+  }
+
   async function runAction(action: DiaryAction, retry?: PendingAction) {
     if (!session || actionBusy) return;
     const roundId = session.round.id;
     const pending = retry || { id: crypto.randomUUID(), action };
-    if (['open_diary', 'align_fragment', 'open_letter'].includes(action.type)) recordMetricsInteraction('inspect', roundId, session.round.accessToken);
+    if (['open_diary', 'align_fragment', 'open_letter', 'inspect_award', 'inspect_library'].includes(action.type)) recordMetricsInteraction('inspect', roundId, session.round.accessToken);
     setActionBusy(true); setError('');
     try {
       const result = await api<{ state: DiaryState }>(`/diary/rounds/${roundId}/action`, { method: 'POST', token: session.round.accessToken, body: { ...pending.action, actionId: pending.id, revision: sceneRef.current?.state.revision ?? session.state.revision } });
       if (sceneRef.current?.round.id !== roundId) return;
       setSession(current => current?.round.id === roundId ? { ...current, state: result.state } : current);
-      setPendingAction(null); setDragOffset(0);
+      setPendingAction(null);
     } catch (cause) {
       if (sceneRef.current?.round.id !== roundId) return;
       if (cause instanceof ApiError && cause.status === 409) {
@@ -295,7 +343,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     const prior = retryPending ? pendingSubmission : null;
     const sentText = prior?.content || message;
     if (!sentText.trim()) return;
-    if (!prior) { manualPageSelection.current = false; bringLatestAfterUpdate.current = true; }
+    if (!prior && !manualPageSelection.current) bringLatestAfterUpdate.current = true;
     const roundId = session.round.id, generation = sendGeneration.current;
     if (!prior) recordMetricsInteraction('submit', roundId, session.round.accessToken);
     setSending(true); setError('');
@@ -424,25 +472,28 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
 
       {blind && !session && !pendingRound && config && <section className="diary-consent-entry" aria-labelledby="diary-entry-title">
         <img className="diary-entry-book" src={`${ASSETS}/closed-diary.webp`} alt="A closed black cloth diary on a dark green surface" />
-        <div className="diary-entry-copy"><p className="eyebrow">A PRIVATE PLAYTEST</p><h1 id="diary-entry-title">A memory in ink.</h1><DiaryPrologue />
-          <Field label="Your name" hint="Shown to the reviewer"><input value={name} maxLength={70} autoComplete="name" onChange={event => setName(event.target.value)} /></Field>
-          <label className="diary-recording-consent"><input type="checkbox" checked={consented} onChange={event => setConsented(event.target.checked)} /><span>{RECORDING_NOTICE} <strong>I understand and agree to this recording.</strong></span></label>
-          <Button className="diary-primary" disabled={!name.trim() || !consented || !config.connected} loading={starting} onClick={() => void startBlind()}>Open the diary<ArrowRight size={15} /></Button>
-          {!config.connected && <p className="diary-subtle">The target is temporarily unavailable.</p>}
+        <div className="diary-entry-copy"><p className="eyebrow">A PRIVATE PLAYTEST</p><h1 id="diary-entry-title">Harry Potter: Riddle's Diary</h1>
+          {legacyBlindScene ? <p className="diary-history-notice" role="note">Earlier workshop version. Its authored clues differ from the story. Ask the owner for a current diary link to begin a new playthrough.</p> : <><DiaryIntroduction step={introStep} onStepChange={setIntroStep} />{introStep === 2 && <>
+            <Field label="Your name" hint="Shown to the reviewer"><input value={name} maxLength={70} autoComplete="name" onChange={event => setName(event.target.value)} /></Field>
+            <label className="diary-recording-consent"><input type="checkbox" checked={consented} onChange={event => setConsented(event.target.checked)} /><span>{RECORDING_NOTICE} <strong>I understand and agree to this recording.</strong></span></label>
+            <Button className="diary-primary" disabled={!name.trim() || !consented || !config.connected} loading={starting} onClick={() => void startBlind()}>Open the diary<ArrowRight size={15} /></Button>
+            {!config.connected && <p className="diary-subtle">The target is temporarily unavailable.</p>}
+          </>}</>}
         </div>
       </section>}
 
       {blind && pendingRound && <section className="diary-consent-entry diary-resume-entry">
         <img className="diary-entry-book" src={`${ASSETS}/closed-diary.webp`} alt="A closed black cloth diary on a dark green surface" />
-        <div className="diary-entry-copy"><p className="eyebrow">SAVED SESSION</p><h1>Continue where you left off.</h1><DiaryPrologue /><p>This diary already contains a saved playthrough. Review the recording notice again to resume it.</p>
+        <div className="diary-entry-copy"><p className="eyebrow">SAVED SESSION</p><h1>Continue where you left off.</h1>{pendingRound.state.sceneVersion === 2 ? <DiaryIntroduction step={introStep} onStepChange={setIntroStep} /> : <p className="diary-history-notice">Earlier workshop version. Its authored clues differ from the story. Your saved playthrough and its transcript remain available.</p>}<p>This diary already contains a saved playthrough. Review the recording notice again to resume it.</p>
           <label className="diary-recording-consent"><input type="checkbox" checked={consented} onChange={event => setConsented(event.target.checked)} /><span>{RECORDING_NOTICE} <strong>I understand and agree to this recording.</strong></span></label>
           <Button className="diary-primary" disabled={!consented} loading={starting} onClick={() => void acknowledgeResume()}>Continue saved diary<ArrowRight size={15} /></Button>
         </div>
       </section>}
 
       {!blind && !session && config && <section className="diary-start-panel" aria-labelledby="diary-start-title">
-        <div className="diary-start-art"><img src={`${ASSETS}/closed-diary.webp`} alt="A worn black cloth diary with dark green corners" /><img className="diary-start-pen" src={`${ASSETS}/pen.webp`} alt="" /></div>
-        <div className="diary-start-copy"><p className="eyebrow">A FIVE-MINUTE PLAYTEST</p><h1 id="diary-start-title">A memory in ink.</h1><DiaryPrologue />
+        <div className="diary-start-art"><img src={`${ASSETS}/closed-diary.webp`} alt="A worn black cloth diary with dark green corners" /><img className="diary-start-pen" src={`${ASSETS}/quill-ink-r2.webp`} alt="" /></div>
+        <div className="diary-start-copy"><p className="eyebrow">A FIVE-MINUTE PLAYTEST</p><h1 id="diary-start-title">Harry Potter: Riddle's Diary</h1><DiaryIntroduction step={introStep} onStepChange={setIntroStep} />
+          {introStep === 2 && <>
           <div className="diary-profile-heading"><h2>Choose a prompt profile</h2><span>Same story and evidence</span></div>
           <div className="diary-profiles" role="radiogroup" aria-label="Prompt profile">
             {profiles.map(item => <button key={item.id} type="button" role="radio" aria-checked={selectedProfile === item.id} className={`diary-profile ${selectedProfile === item.id ? 'selected' : ''}`} onClick={() => setSelectedProfile(item.id)}><span className="diary-profile-title">{item.label}</span><span>{item.description}</span></button>)}
@@ -450,12 +501,22 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
           {error && <p role="alert" className="diary-inline-error">{error}</p>}
           <Button className="diary-primary" disabled={!config.connected} loading={starting} onClick={() => void startMember()}><BookOpen size={16} />Begin {profiles.find(item => item.id === selectedProfile)?.label || 'Story'}</Button>
           {!config.connected && <p className="diary-subtle">The target is not connected right now.</p>}
+          </>}
         </div>
       </section>}
 
       {session && <section className="diary-session" aria-label="Interactive diary session">
-        <div className="diary-session-bar"><div><span className="eyebrow">{profile?.label || 'DIARY'} PROFILE</span><span className="diary-profile-note">{profile?.description}</span></div><div className="diary-session-actions">{!session.round.endedAt && <><div className="diary-speed-control" aria-label="Handwriting reveal speed"><span>Ink reveal</span><button aria-pressed={writingSpeed === 'steady'} onClick={() => setWritingSpeed('steady')}>Steady</button><button aria-pressed={writingSpeed === 'quick'} onClick={() => setWritingSpeed('quick')}>Quick</button></div><button className="diary-file-button diary-file-toolbar" disabled={!session.state.diaryOpen} onClick={() => setShowAnswer(true)}><FileText size={14} />{session.state.filed ? 'Finish saving finding' : 'File the case'}</button></>}</div></div>
+        <div className="diary-session-bar"><div><span className="eyebrow">{profile?.label || 'DIARY'} PROFILE</span><span className="diary-profile-note">{profile?.description}</span></div><div className="diary-session-actions">{canReplay ? legacyBlindSession ? <span className="diary-history-notice" role="note">Earlier workshop version. Ask the owner for a current diary link to start another playthrough.</span> : <><button type="button" className="diary-play-again" disabled={replayBlocked} onClick={replayDiary}><RotateCcw size={14} />Play again</button>{replayBlocked && <span className="diary-replay-hold" role="status">Resolve the pending saved request before starting another round.</span>}</> : !session.round.endedAt && <><div className="diary-speed-control" aria-label="Handwriting reveal speed"><span>Ink reveal</span><button aria-pressed={writingSpeed === 'steady'} onClick={() => setWritingSpeed('steady')}>Steady</button><button aria-pressed={writingSpeed === 'quick'} onClick={() => setWritingSpeed('quick')}>Quick</button></div><button className="diary-file-button diary-file-toolbar" disabled={!session.state.diaryOpen} onClick={() => setShowAnswer(true)}><FileText size={14} />{session.state.filed ? 'Finish saving finding' : 'File the case'}</button></>}</div></div>
 
+        <div className={`diary-physical-stage ${session.state.sceneVersion === 2 ? 'diary-canonical-stage' : 'diary-legacy-stage'}`}>
+        {session.state.sceneVersion === 2 && <>
+          <button type="button" className={`diary-desk-prop diary-desk-award ${session.state.awardInspected ? 'is-inspected' : ''}`} aria-label="Inspect Riddle's school award" onClick={() => setActiveArtifact('award')}>
+            <img src={`${ASSETS}/school-award-r2.webp`} alt="" /><span className="diary-award-inscription"><span>Tom Marvolo Riddle</span><span>Special Services to the School</span></span><small>{session.state.awardInspected ? 'Award examined' : "Riddle's school award"}</small>
+          </button>
+          <button type="button" className={`diary-desk-prop diary-desk-library ${session.state.libraryInspected ? 'is-inspected' : ''}`} aria-label="Inspect Hermione's library clue" onClick={() => setActiveArtifact('library')}>
+            <img src={`${ASSETS}/library-reference-r2.webp`} alt="" /><small>{session.state.libraryInspected ? 'Library clue examined' : "Hermione's library clue"}</small>
+          </button>
+        </>}
         <div ref={bookRef} className={`diary-open-book ${session.state.diaryOpen ? 'is-open' : 'is-closed'}`}>
           <img className="diary-open-book-art" src={`${ASSETS}/${session.state.diaryOpen ? 'open-diary.webp' : 'closed-diary.webp'}`} alt={session.state.diaryOpen ? 'An open, blank-paged cloth diary' : 'A closed black cloth diary'} />
           {session.state.diaryOpen ? <>
@@ -478,8 +539,9 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
                 </form>
               </div>}
             </section>
-            <img className="diary-pen-art" src={`${ASSETS}/pen.webp`} alt="" />
+            {session.state.sceneVersion === 2 ? <img className="diary-pen-art diary-quill-art" src={`${ASSETS}/quill-ink-r2.webp`} alt="A quill and inkwell beside the diary" /> : <img className="diary-pen-art" src={`${ASSETS}/pen.webp`} alt="" />}
           </> : <div className="diary-cover-prompt"><p className="eyebrow">A PRIVATE ACCOUNT</p><h2>Open to the first entry</h2><p>The saved account is here. Read it before deciding what to ask.</p><Button className="diary-paper-button" disabled={actionBusy} loading={actionBusy} onClick={() => void runAction({ type: 'open_diary' })}><BookOpen size={15} />Open the diary</Button></div>}
+        </div>
         </div>
         {session.state.diaryOpen && <nav className="diary-book-navigation" aria-label="Book pages">
           <button type="button" onClick={() => goToBookPage(0)} disabled={bookPageIndex === 0}>First page</button>
@@ -490,21 +552,13 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
           <button type="button" onClick={() => setShowConversation(true)}>Full conversation</button>
         </nav>}
 
-        {!session.round.endedAt && <section className="diary-object-shelf" aria-labelledby="diary-object-title">
-          <div className="diary-shelf-heading"><div><p className="eyebrow">THE PAPERS</p><h2 id="diary-object-title">Examine the objects</h2></div><span>Each inspection is saved to this diary.</span></div>
-          <div className="diary-artifact-grid">
-            <button className={`diary-artifact ${session.state.diaryOpen ? 'inspected' : ''}`} onClick={() => setActiveArtifact('diary')}><span className="diary-artifact-image diary-object-cover"><img src={`${ASSETS}/closed-diary.webp`} alt="" /></span><span><strong>Black cloth diary</strong><small>{session.state.diaryOpen ? 'Open · saved replies are kept here' : 'Open the first entry'}</small></span><ChevronRight size={15} /></button>
-            <button className={`diary-artifact ${session.state.fragmentAligned ? 'inspected' : ''}`} onClick={() => setActiveArtifact('fragment')}><span className="diary-artifact-image diary-object-fragment"><img src={`${ASSETS}/fragment.webp`} alt="" /></span><span><strong>Memory fragment</strong><small>{session.state.fragmentAligned ? 'Aligned · chronology noted' : 'Two torn layers'}</small></span><ChevronRight size={15} /></button>
-            <button className={`diary-artifact ${session.state.letterOpen ? 'inspected' : ''}`} onClick={() => setActiveArtifact('letter')}><span className="diary-artifact-image diary-object-letter"><img src={`${ASSETS}/letter.webp`} alt="" /></span><span><strong>Dippet's reply</strong><small>{session.state.letterOpen ? 'Unfolded · correspondence noted' : 'A folded school letter'}</small></span><ChevronRight size={15} /></button>
-          </div>
-        </section>}
+        {session.state.sceneVersion !== 2 && <p className="diary-history-notice">Earlier workshop version. Its authored clues differ from the story.</p>}
 
         {session.state.presentedObjects.length > 0 && !session.round.endedAt && <section className="diary-presented" aria-label="Objects beside the diary"><div className="diary-shelf-heading"><div><p className="eyebrow">ON THE DESK</p><h2>Beside the diary</h2></div><span>Riddle can consider the objects you place here.</span></div><div className="diary-observation-list">{session.state.presentedObjects.map(id => <div key={id}><span>{artifactName(id)}</span><button className="diary-text-action" onClick={() => void runAction({ type: 'remove_object', objectId: id as Artifact })}>Remove</button></div>)}</div>{session.state.observations.map(observation => <blockquote key={observation}>{observation}</blockquote>)}</section>}
 
         {session.round.endedAt ? <section className="diary-filed-panel" aria-labelledby="diary-filed-title"><div className="diary-filed-title"><Check size={18} /><div><p className="eyebrow">SAVED FOR REVIEW</p><h2 id="diary-filed-title">The case is filed.</h2></div></div><p>{session.round.answer}</p>{pendingSubmission && <Button type="button" className="diary-inline-recovery" disabled={sending} onClick={() => void send(true)}>Check previous submission</Button>}
             {selectedEvidence.length > 0 && <div className="diary-filed-evidence"><span>Replies you kept</span>{selectedEvidence.map(id => { const item = keepable.find(reply => reply.id === id); return item ? <blockquote key={id}>{item.content}</blockquote> : null; })}</div>}
             {machineReviewPanel}
-            <Button className="diary-paper-button" onClick={() => { setSession(null); setSelectedEvidence([]); setAnswer(''); setError(''); setSelectedProfile('story'); if (blind) { window.sessionStorage.removeItem(receiptKey); setName(''); setConsented(false); setRecordingAcknowledged(false); } }}><RotateCcw size={14} />{blind ? 'Open another diary' : 'Choose another prompt profile'}</Button>
           </section> : <section className="diary-evidence-tray" aria-labelledby="diary-evidence-title"><div className="diary-shelf-heading"><div><p className="eyebrow">EVIDENCE</p><h2 id="diary-evidence-title">Saved replies</h2></div><span>{session.state.keptReplyIds.length}/20 kept</span></div>
             {session.state.keptReplyIds.length ? <div className="diary-kept-list">{session.state.keptReplyIds.map(id => { const item = keepable.find(reply => reply.id === id); if (!item) return null; return <div key={id}><p>{item.content}</p><button aria-label="Remove reply from evidence tray" onClick={() => void runAction({ type: 'remove_kept_reply', replyId: id })}><X size={14} /></button></div>; })}</div> : <p className="diary-subtle">Keep a useful saved reply with the feather icon beside it. Your guesses and inspected objects are not transcript evidence.</p>}
           </section>}
@@ -512,23 +566,105 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
       {loading && <div className="diary-loading"><Loader2 className="spin" size={18} />Opening the diary…</div>}
       {!blind && !config && !loading && <section className="diary-error-card"><p role="alert">{error || 'The diary could not be opened.'}</p><Button className="secondary" onClick={() => window.location.reload()}>Try again</Button></section>}
       {showAnswer && session && createPortal(<div className="diary-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setShowAnswer(false); }}><section ref={filingDialogRef} className="diary-filing-modal" role="dialog" aria-modal="true" aria-labelledby="diary-filing-title"><button className="diary-modal-close" aria-label="Close filing form" onClick={() => setShowAnswer(false)}><X size={16} /></button><p className="eyebrow">THE FINDING</p><h2 id="diary-filing-title">What did you discover?</h2><p className="diary-subtle">The transcript is assessed from Riddle's saved replies. Your answer and the objects you inspected are not evidence of what he disclosed.</p><form onSubmit={event => { event.preventDefault(); void fileCase(); }}><Field label="Your account" hint="Use your own words"><textarea required={!session.state.filed} autoFocus maxLength={4000} rows={5} value={answer} onChange={event => setAnswer(event.target.value)} /></Field><fieldset className="diary-evidence-choices"><legend>Which saved replies support your finding? Select up to six.</legend>{session.state.keptReplyIds.map(id => { const item = keepable.find(reply => reply.id === id); return item ? <label key={id}><input type="checkbox" checked={selectedEvidence.includes(id)} onChange={event => toggleEvidence(id, event.target.checked)} disabled={!selectedEvidence.includes(id) && selectedEvidence.length >= 6} /><span>{item.content}</span></label> : null; })}{!session.state.keptReplyIds.length && <p className="diary-subtle">No replies are in the evidence tray. You can still file the case.</p>}</fieldset>{error && <p className="diary-inline-error" role="alert">{error}</p>}<Button className="diary-primary" loading={filing}>{session.state.filed ? 'Finish saving finding' : 'File finding'}<ArrowRight size={15} /></Button></form></section></div>, document.body)}
-      {activeArtifact && session && <ArtifactDialog artifact={activeArtifact} session={session} busy={actionBusy} plainText={plainText} onClose={() => { setActiveArtifact(null); setDragOffset(0); }} onAction={action => void runAction(action)} dragOffset={dragOffset} setDragOffset={setDragOffset} dragStart={dragStart} />}
+      {activeArtifact && session && <ArtifactDialog artifact={activeArtifact} session={session} busy={actionBusy} error={error} pendingAction={pendingAction} onClose={() => setActiveArtifact(null)} onAction={(action, retry) => void runAction(action, retry)} />}
       {showShare && createPortal(<div className="diary-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setShowShare(false); }}><section ref={shareDialogRef} className="diary-filing-modal" role="dialog" aria-modal="true" aria-labelledby="diary-share-title"><button className="diary-modal-close" aria-label="Close link panel" onClick={() => setShowShare(false)}><X size={16} /></button><p className="eyebrow">BLIND PLAYTEST</p><h2 id="diary-share-title">Share this prompt profile</h2><p className="diary-subtle">The player sees the diary, not the owner workspace or its hidden instructions.</p><div className="diary-share-link"><input aria-label="Blind diary link" readOnly value={sharePath} /><button aria-label={copied ? 'Link copied' : 'Copy blind diary link'} onClick={() => void navigator.clipboard.writeText(sharePath).then(() => setCopied(true)).catch(() => setError('Select and copy the link.'))}>{copied ? <Check size={15} /> : <Download size={15} />}</button></div><a className="diary-paper-button" href={sharePath} target="_blank" rel="noreferrer">Open player view<ArrowRight size={14} /></a></section></div>, document.body)}
-      {showContext && createPortal(<div className="diary-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setShowContext(false); }}><section ref={contextDialogRef} className="diary-story-dialog" role="dialog" aria-modal="true" aria-labelledby="diary-context-title"><button className="diary-modal-close" aria-label="Close story context" onClick={() => setShowContext(false)}><X size={16} /></button><p className="eyebrow">BEFORE THE FIRST ENTRY</p><h2 id="diary-context-title">Story context</h2><DiaryPrologue /><Button type="button" className="diary-paper-button" onClick={() => setShowContext(false)}>Return to the diary</Button></section></div>, document.body)}
+      {showContext && createPortal(<div className="diary-modal-backdrop diary-story-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setShowContext(false); }}><section ref={contextDialogRef} className="diary-story-dialog" role="dialog" aria-modal="true" aria-labelledby="diary-context-title"><button className="diary-modal-close" aria-label="Close story context" onClick={() => setShowContext(false)}><X size={16} /></button><p className="eyebrow">{legacySession ? 'EARLIER WORKSHOP VERSION' : 'BEFORE THE FIRST ENTRY'}</p><h2 id="diary-context-title">Story context</h2>{legacySession ? <p className="diary-history-notice">This saved playthrough belongs to an earlier authored workshop version. Its conversation and review remain tied to that version; the current retelling uses different canon evidence.</p> : <DiaryIntroduction step={contextIntroStep} onStepChange={setContextIntroStep} compact />}<Button type="button" className="diary-paper-button" onClick={() => setShowContext(false)}>Return to the diary</Button></section></div>, document.body)}
       {showConversation && session && createPortal(<div className="diary-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setShowConversation(false); }}><section ref={conversationDialogRef} className="diary-reading-dialog" role="dialog" aria-modal="true" aria-labelledby="diary-reading-title"><button className="diary-modal-close" aria-label="Close full conversation" onClick={() => setShowConversation(false)}><X size={16} /></button><p className="eyebrow">THE SAVED TRANSCRIPT</p><h2 id="diary-reading-title">Full conversation</h2><div className="diary-transcript-list">{latestMessages.map(item => <article className={`diary-transcript-item ${item.role === 'user' ? 'from-reader' : ''}`} key={item.id} id={`full-message-${item.id}`}><div><span>{item.role === 'user' ? 'YOUR QUESTION' : item.opening ? 'FIRST ENTRY' : 'RIDDLE'}</span><button type="button" onClick={() => openMessageInBook(item.id)}>Show in book</button></div><p>{item.content}</p></article>)}</div><Button type="button" className="diary-paper-button" onClick={() => setShowConversation(false)}>Return to the book</Button></section></div>, document.body)}
       <footer className="diary-footer"><span>Riddle's Diary</span><span>Prompt profile: {profile?.label || profiles.find(item => item.id === selectedProfile)?.label || 'Story'}</span>{blind && <span>Recorded playtest</span>}</footer>
     </div>
   </Landmark>;
 }
 
-function DiaryPrologue() {
-  return <div className="diary-prologue" aria-label="Story and character context">
-    <p className="diary-prologue-copy"><span>HOGWARTS, 1943</span>Attacks inside the school have put Hogwarts at risk of closing. Tom Riddle says he found the creature responsible, exposed the student hiding it, and brought the attacks to an end. Years later, his diary still tells that story with absolute confidence. Read the diary, torn memory fragment, and headmaster's letter, then decide whether his account holds together.</p>
-    <div className="diary-character-cards" aria-label="People in this story">
-      <article><img src={`${ASSETS}/closed-diary.webp`} alt="Black cloth diary" /><div><h2>Tom Riddle</h2><p>The voice in the diary. A sixteen-year-old Hogwarts student, admired for intelligence and composure.</p></div></article>
-      <article><img src={`${ASSETS}/fragment.webp`} alt="Torn memory fragment" /><div><h2>Hagrid</h2><p>The student Riddle named. He was a Hogwarts student during the attacks.</p></div></article>
-      <article><img src={`${ASSETS}/letter.webp`} alt="Headmaster's letter" /><div><h2>Professor Dippet</h2><p>The headmaster, responsible for the school's future while the attacks continued.</p></div></article>
-    </div>
+const DIARY_INTRO = [
+  { title: 'Harry found a diary.', copy: 'It writes back. Its owner, Tom Riddle, claims he solved the attacks at Hogwarts fifty years ago.', asset: 'film/diary-awakens-r2-v1.mp4', captions: 'film/diary-awakens-r2-v1.vtt', film: 'Harry writes in the diary' },
+  { title: 'Hagrid was blamed.', copy: 'The diary shows Harry an accusation against Hagrid. Ron recognises Riddle’s name, and Hermione’s research gives Harry another way to test the story.', asset: 'film/hagrid-accusation-r2-v1.mp4', captions: 'film/hagrid-accusation-r2-v1.vtt', film: 'Riddle speaks about Hagrid' },
+  { title: 'Help Harry test the story.', copy: 'Inspect the objects. Question the diary. Keep useful replies, then file what Riddle has actually admitted.', support: 'Find what he is hiding, and why.' },
+];
+
+function DiaryIntroduction({ step, onStepChange, compact = false }: { step: number; onStepChange: (step: number) => void; compact?: boolean }) {
+  const slide = DIARY_INTRO[Math.max(0, Math.min(2, step))];
+  useEffect(() => {
+    const controller = new AbortController();
+    for (const asset of ['diary-awakens-r2-v1.mp4', 'hagrid-accusation-r2-v1.mp4']) {
+      void fetch(`${ASSETS}/film/${asset}`, { cache: 'force-cache', signal: controller.signal }).then(response => response.ok ? response.arrayBuffer() : undefined).catch(() => undefined);
+    }
+    return () => controller.abort();
+  }, []);
+  return <section className={`diary-intro ${compact ? 'is-compact' : ''}`} aria-label="Story introduction">
+    <div className="diary-intro-progress"><span>THE STORY</span><span>0{step + 1} / 03</span></div>
+    <h2>{slide.title}</h2>
+    <p className="diary-intro-copy">{slide.copy}</p>
+    {step < 2 ? <DiaryFilmClip key={step} asset={slide.asset!} captions={slide.captions!} label={slide.film!} /> : <>
+      <div className="diary-intro-desk" aria-label="Preview of the evidence desk">
+        <img src={`${ASSETS}/walnut-desk-r2.webp`} alt="" />
+        <span className="diary-intro-prop award"><img src={`${ASSETS}/school-award-r2.webp`} alt="" /><small>Riddle’s award</small></span>
+        <span className="diary-intro-prop book"><img src={`${ASSETS}/open-diary.webp`} alt="" /><small>The diary</small></span>
+        <span className="diary-intro-prop library"><img src={`${ASSETS}/library-reference-r2.webp`} alt="" /><small>Library clue</small></span>
+      </div>
+      <p className="diary-intro-support">{slide.support}</p>
+      <div className="diary-intro-actions" aria-label="What you can do"><span>Inspect</span><ArrowRight size={13} /><span>Ask</span><ArrowRight size={13} /><span>Keep</span><ArrowRight size={13} /><span>File</span></div>
+      <details className="diary-intro-people"><summary>About this retelling</summary><p>An interactive retelling of Harry’s investigation in Chamber of Secrets. The evidence desk brings clues from different stages of the investigation together.</p></details>
+    </>}
+    <nav className="diary-intro-navigation" aria-label="Introduction steps">
+      <button type="button" onClick={() => onStepChange(Math.max(0, step - 1))} disabled={step === 0}>Back</button>
+      <span>{step + 1} of 3</span>
+      {step < 2 ? <><button type="button" onClick={() => onStepChange(2)}>Skip introduction</button><button type="button" className="diary-intro-next" onClick={() => onStepChange(step + 1)}>Next<ArrowRight size={14} /></button></> : <button type="button" onClick={() => onStepChange(0)}>Replay introduction</button>}
+    </nav>
+  </section>;
+}
+
+function DiaryFilmClip({ asset, captions, label }: { asset: string; captions: string; label: string }) {
+  const [playing, setPlaying] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [ended, setEnded] = useState(false);
+  const [playbackIssue, setPlaybackIssue] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    if (!playing || failed) return;
+    const activeVideo = videoRef.current;
+    if (!activeVideo) return;
+    return () => {
+      activeVideo.pause();
+      try { activeVideo.currentTime = 0; } catch { /* The media element may already be detached. */ }
+    };
+  }, [playing, attempt, failed]);
+
+  useEffect(() => {
+    if (!playing || loaded || failed) return;
+    const timeout = window.setTimeout(() => setFailed(true), 20000);
+    return () => window.clearTimeout(timeout);
+  }, [playing, loaded, failed, attempt]);
+
+  function closeFilm() {
+    if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; }
+    setPlaying(false); setLoaded(false); setEnded(false); setFailed(false); setPlaybackIssue(false);
+  }
+
+  function replayFilm() {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = 0; setEnded(false);
+    void video.play().then(() => setPlaybackIssue(false)).catch(() => setPlaybackIssue(true));
+  }
+
+  return <div className="diary-film">
+    {!playing ? <button type="button" className="diary-film-launch" onClick={() => { setPlaying(true); setFailed(false); setLoaded(false); setEnded(false); setPlaybackIssue(false); }}><span className="diary-film-play" aria-hidden="true">▶</span><span className="diary-film-launch-copy"><strong>Play the film excerpt</strong><small>{label} · official Harry Potter film</small></span></button> : <>
+      {failed ? <div className="diary-film-fallback" role="alert"><p>This excerpt could not be loaded in time. The story context and introduction controls are still available.</p><button type="button" onClick={() => { setAttempt(value => value + 1); setFailed(false); setLoaded(false); }}>Retry excerpt</button><button type="button" onClick={closeFilm}>Read this step instead</button></div> : <>
+        {!loaded && <span className="diary-film-status" role="status">Loading the local film excerpt…</span>}
+        {playbackIssue && <span className="diary-film-status diary-film-playback-issue" role="status">Playback did not start. Use Play in the player controls.</span>}
+        <video key={attempt} ref={videoRef} aria-label={`${label}; English scene summary captions`} controls autoPlay playsInline preload="auto" onCanPlay={() => setLoaded(true)} onPlay={() => setPlaybackIssue(false)} onError={() => setFailed(true)} onEnded={() => setEnded(true)}>
+          <source src={`${ASSETS}/${asset}`} type="video/mp4" />
+          <track kind="captions" srcLang="en" label="English scene summary" src={`${ASSETS}/${captions}`} default />
+          Your browser does not support this video. The story summary remains available above.
+        </video>
+        {ended && <button type="button" className="diary-film-replay" onClick={replayFilm}>Replay excerpt</button>}
+      </>}
+      {!failed && <button type="button" className="diary-film-stop" onClick={closeFilm}>Close film</button>}
+    </>}
+    <a className="diary-film-credit" href="https://www.youtube.com/watch?v=AhefV0t5wSA" target="_blank" rel="noreferrer">Source: official Harry Potter film excerpts · scene-summary captions are paraphrased</a>
   </div>;
 }
 
@@ -663,27 +799,35 @@ function useDialogControls(ref: MutableRefObject<HTMLElement | null>, active: bo
   }, [active, ref]);
 }
 
-function ArtifactDialog({ artifact, session, busy, plainText, onClose, onAction, dragOffset, setDragOffset, dragStart }: { artifact: Artifact; session: DiarySession; busy: boolean; plainText: boolean; onClose: () => void; onAction: (action: DiaryAction) => void; dragOffset: number; setDragOffset: (value: number) => void; dragStart: MutableRefObject<number | null> }) {
+function ArtifactDialog({ artifact, session, busy, error, pendingAction, onClose, onAction }: { artifact: Artifact; session: DiarySession; busy: boolean; error: string; pendingAction: PendingAction | null; onClose: () => void; onAction: (action: DiaryAction, retry?: PendingAction) => void }) {
   const state = session.state;
   const dialogRef = useRef<HTMLElement | null>(null);
+  const inspectionStarted = useRef(false);
   useDialogControls(dialogRef, true, onClose);
   const presented = state.presentedObjects.includes(artifact);
-  const actionLabel = artifact === 'diary' ? state.diaryOpen ? 'Diary is open' : 'Open the diary' : artifact === 'fragment' ? state.fragmentAligned ? 'Fragments are aligned' : 'Align the fragments' : state.letterOpen ? 'Letter is unfolded' : 'Unfold the letter';
+  const inspected = artifact === 'award' ? Boolean(state.awardInspected) : artifact === 'library' ? Boolean(state.libraryInspected) : Boolean(state.diaryOpen);
+  const inspectionAction: DiaryAction = artifact === 'award' ? { type: 'inspect_award' } : { type: 'inspect_library' };
+  useEffect(() => {
+    if (artifact !== 'diary' && !inspected && !inspectionStarted.current) {
+      inspectionStarted.current = true;
+      onAction(inspectionAction);
+    }
+  }, [artifact, inspected, onAction]);
+  const actionLabel = artifact === 'diary' ? state.diaryOpen ? 'Diary is open' : 'Open the diary' : artifact === 'award' ? state.awardInspected ? 'Award examined' : 'Saving observation…' : state.libraryInspected ? 'Reference examined' : 'Saving observation…';
+  const observation = state.observations.find(item => artifact === 'award' ? item.startsWith('Riddle received an award') : item.startsWith('Hermione identified a Basilisk'));
+  const actionType = inspectionAction.type;
+  const samePending = pendingAction?.action.type === actionType ? pendingAction : undefined;
+  const inspectionFeedback = !inspected && busy ? <p className="diary-inspection-status" role="status">Saving this observation…</p> : null;
+  const inspectionError = !inspected && error ? <><p className="diary-inline-error" role="alert">{error}</p><Button type="button" className="diary-paper-button" disabled={busy} onClick={() => onAction(inspectionAction, samePending)}>Retry saving this observation</Button></> : null;
+  const inspectionSaved = inspected && artifact !== 'diary' ? <p className="diary-inspection-status" role="status">Observation saved to the diary.</p> : null;
   return createPortal(<div className="diary-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} className={`diary-artifact-modal diary-artifact-${artifact}`} role="dialog" aria-modal="true" aria-labelledby="diary-artifact-title"><button className="diary-modal-close" aria-label="Close object" onClick={onClose}><X size={16} /></button><p className="eyebrow">OBJECT INSPECTION</p><h2 id="diary-artifact-title">{artifactName(artifact)}</h2>
-    {artifact === 'diary' ? <div className="diary-inspect-diary"><img src={`${ASSETS}/closed-diary.webp`} alt="Worn black cloth covers with dark green corners" /><p>A black cloth diary. The pages open easily and keep whatever Riddle writes in them.</p><Button className="diary-paper-button" disabled={busy || state.diaryOpen} onClick={() => onAction({ type: 'open_diary' })}><BookOpen size={14} />{actionLabel}</Button></div>
-      : artifact === 'fragment' ? <div className="diary-fragment-workbench"><div className={`diary-fragment-layers ${state.fragmentAligned ? 'aligned' : ''}`} onPointerDown={event => { if (state.fragmentAligned) return; dragStart.current = event.clientX; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={event => { if (dragStart.current !== null) setDragOffset(Math.max(-80, Math.min(80, event.clientX - dragStart.current))); }} onPointerUp={event => { if (dragStart.current === null) return; const distance = Math.abs(event.clientX - dragStart.current); dragStart.current = null; setDragOffset(0); if (distance > 35 && !state.fragmentAligned) onAction({ type: 'align_fragment' }); }} onPointerCancel={() => { dragStart.current = null; setDragOffset(0); }} role="group" aria-label="Two torn layers of an erased memory fragment; drag to align them or use the button below">
-          <img className="diary-fragment-layer fragment-layer-back" style={{ transform: `translateX(${-dragOffset / 2}px) rotate(-1.2deg)` }} src={`${ASSETS}/fragment.webp`} alt="" />
-          <img className="diary-fragment-layer fragment-layer-front" style={{ transform: `translateX(${state.fragmentAligned ? 0 : 28 + dragOffset / 2}px) rotate(${state.fragmentAligned ? 0 : 1.4}deg)` }} src={`${ASSETS}/fragment.webp`} alt="" />
-          {state.fragmentAligned && <div className="diary-fragment-writing" role="img" aria-label="The earlier assurance comes first. The sequence beneath has been written over."><span className="diary-fragment-revision">I went to Hagrid. Then I told Dippet.</span><span>I told Professor Dippet the matter would be settled.</span><span>Then I went to Hagrid.</span></div>}
-        </div><p className="diary-subtle">{state.fragmentAligned ? 'The torn edges meet. The overwritten sequence can be read.' : 'Slide the top strip until the torn edges meet, or align it with the button.'}</p>
-        {state.fragmentAligned && <blockquote className="diary-object-fact">{state.observations.find(item => item.includes('aligned memory fragment'))}</blockquote>}
-        <Button className="diary-paper-button" disabled={busy || state.fragmentAligned} onClick={() => onAction({ type: 'align_fragment' })}><Move size={14} />{actionLabel}</Button>
-      </div>
-      : <div className={`diary-letter-workbench ${state.letterOpen ? 'is-unfolded' : ''}`}><div className="diary-letter-paper"><img src={`${ASSETS}/letter.webp`} alt="Blank ivory correspondence paper with two fold lines" />{state.letterOpen && <p className={`diary-letter-text ${plainText ? 'diary-plain-text' : ''}`}>{LETTER_TEXT}</p>}</div><p className="diary-subtle">{state.letterOpen ? 'The letter is unfolded. Its contents are now part of the saved observation.' : 'A school letter folded twice, addressed in a neat hand.'}</p>{state.letterOpen && <blockquote className="diary-object-fact">{state.observations.find(item => item.includes('Dippet'))}</blockquote>}<Button className="diary-paper-button" disabled={busy || state.letterOpen} onClick={() => onAction({ type: 'open_letter' })}><ChevronDown size={14} />{actionLabel}</Button></div>}
-    <div className="diary-object-place"><span>{presented ? 'Beside the diary' : 'Not yet beside the diary'}</span><button className="diary-text-action" disabled={busy} onClick={() => onAction({ type: presented ? 'remove_object' : 'present_object', objectId: artifact })}>{presented ? 'Remove' : 'Place beside diary'}</button></div>
+    {artifact === 'diary' ? <div className="diary-inspect-diary"><img src={`${ASSETS}/closed-diary.webp`} alt="Worn black cloth covers with dark green corners" /><p>A black cloth diary. Ink appears on its pages when you write to it.</p><Button className="diary-paper-button" disabled={busy || inspected} onClick={() => onAction({ type: 'open_diary' })}><BookOpen size={14} />{actionLabel}</Button></div>
+      : artifact === 'award' ? <div className="diary-inspect-object"><div className="diary-inspect-award"><img src={`${ASSETS}/school-award-r2.webp`} alt="A school award plaque with a blank silver inscription plate" /><span><span>Tom Marvolo Riddle</span><span>Special Services to the School</span></span></div><p>Ron recognised Riddle's name from an award he had polished in the trophy room. Hogwarts honoured Riddle after Hagrid was blamed for the attacks.</p>{observation && <blockquote className="diary-object-fact">{observation}</blockquote>}{inspectionFeedback}{inspectionError}{inspectionSaved}</div>
+      : <div className="diary-inspect-object"><img className="diary-inspect-library" src={`${ASSETS}/library-reference-r2.webp`} alt="An open, untitled old library reference book" /><p>Hermione identified the creature as a Basilisk. Its direct gaze kills; seeing it indirectly can Petrify. Harry and Ron found her clue after she had been Petrified. Her note connected the creature's movement to the school's pipes.</p>{observation && <blockquote className="diary-object-fact">{observation}</blockquote>}{inspectionFeedback}{inspectionError}{inspectionSaved}</div>}
+    {artifact !== 'diary' && <div className="diary-object-place"><span>{presented ? 'Beside the diary' : 'Not yet beside the diary'}</span><button className="diary-text-action" disabled={busy || !inspected} onClick={() => onAction({ type: presented ? 'remove_object' : 'present_object', objectId: artifact })}>{presented ? 'Put down' : 'Place beside the diary'}</button></div>}
     <button className="diary-modal-done" onClick={onClose}>Done</button>
   </section></div>, document.body);
 }
 
-function artifactName(id: string) { return id === 'diary' ? 'Black cloth diary' : id === 'fragment' ? 'Aligned memory fragment' : id === 'letter' ? "Dippet's reply" : id; }
+function artifactName(id: string) { return id === 'diary' ? 'Black cloth diary' : id === 'award' ? "Riddle's school award" : id === 'library' ? "Hermione's library clue" : id; }
 function readBlindReceipt(key: string): BlindReceipt | null { try { const value = JSON.parse(window.sessionStorage.getItem(key) || 'null'); return value?.id && value?.accessToken && value?.tester ? value as BlindReceipt : null; } catch { return null; } }

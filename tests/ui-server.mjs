@@ -23,9 +23,10 @@ const { app, store } = createWorkshop({ dbPath: ':memory:', researchWorlds: true
     : system.includes('\nSOURCE_A="amber"\nREQUIRED') ? 'north'
     : system.includes('\nSOURCE_A="cobalt"\nREQUIRED') ? 'south'
     : system.includes('The passenger is Noah Vale.') ? 'The passport belongs to my brother Elias. I am Noah.'
-    : 'I expected the matter to be resolved before the night was over. The professors would accept an explanation they could understand.';
+    : 'I was honoured for Special Services to the School after Hagrid was blamed. They knew whom to trust.';
   return { text, latencyMs: 42, usage: 160, model: 'openai/gpt-oss-20b' };
 } });
+app.use('/diary-assets/film', express.static(resolve('dist/client/diary-assets/film'), { maxAge: '1y', immutable: true }));
 app.use(express.static(resolve('dist/client')));
 app.get('/{*path}', (req, res) => res.sendFile(resolve('dist/client/index.html')));
 const port = Number(process.env.TEST_PORT || 4318);
