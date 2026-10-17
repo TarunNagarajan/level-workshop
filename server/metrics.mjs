@@ -5,7 +5,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const now = () => Date.now();
 const roundMs = value => Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
 const wordCount = text => (String(text || '').match(/[\p{L}\p{N}]+/gu) || []).length;
-const safeSource = source => ({ blind: 'participant', 'reference-blind': 'participant', 'reference-research': 'diagnostic', 'reference-research-preview': 'preview', 'collection-participant': 'participant', 'diary-play': 'participant', 'diary-blind': 'participant', 'diary-diagnostic': 'diagnostic', 'collection-preview': 'preview', reference: 'diagnostic' })[source] || source || null;
+const safeSource = source => ({ blind: 'participant', 'reference-blind': 'participant', 'reference-research': 'diagnostic', 'reference-research-preview': 'preview', 'collection-participant': 'participant', 'diary-play': 'participant', 'diary-blind': 'participant', 'diary-diagnostic': 'diagnostic', 'mission-play': 'participant', 'mission-play-judge': 'diagnostic', 'collection-preview': 'preview', reference: 'diagnostic' })[source] || source || null;
 const ERROR_MAP = {
   rate_limited: 'rate_limited', timeout: 'timeout', provider_unavailable: 'unavailable',
   provider_auth: 'auth_or_config', provider_rejected: 'auth_or_config', empty_response: 'empty_response',
@@ -71,7 +71,7 @@ export function createMetricsService({ store, enabled = false }) {
 
 function safeInt(value) { return Number.isSafeInteger(value) && value >= 0 ? value : null; }
 
-const views = new Set(['workshop','collect','passport','orchestration','editor','tests','settings','diary','other']);
+const views = new Set(['workshop','collect','passport','orchestration','editor','tests','settings','diary','mission','other']);
 const kinds = new Set(['page_enter','page_exit','heartbeat','visibility','phase','request','interaction']);
 const phases = new Set(['read_think','compose','waiting','idle','hidden']);
 const requestCategories = new Set(['navigation','round_action','authoring','review','other']);
@@ -190,6 +190,7 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
       const round = await authorizeRound(req, roundId);
       if (!round) return res.status(403).json({ error: req.user ? 'Round access is not authorized.' : 'Round capability is invalid.' });
       inferred = await get('SELECT a.collection_id AS "collectionId",a.profile_id AS "profileId",COALESCE(a.source,r.source) AS source,r.version_id AS "versionId" FROM rounds r LEFT JOIN difficulty_collection_assignments a ON a.round_id=r.id WHERE r.id=?', roundId) || {};
+      inferred.profileId ||= round.profileId || null;
       inferred.source = safeSource(inferred.source);
     }
     const time = now(), batchToken=randomUUID(), expires=Math.min(time+30*60*1000,session.created_at+24*60*60*1000);
@@ -298,7 +299,7 @@ async function roundSummaryPages(store, window) {
     if(!rows.length)break;
     for(const row of rows){
       const source=row.metric_source||row.source||'unknown';
-      const participant=['participant','blind','reference-blind','collection-participant','diary-play','diary-blind'].includes(source);
+      const participant=['participant','blind','reference-blind','collection-participant','diary-play','diary-blind','mission-play'].includes(source);
       const bucket=participant?summary:summary.diagnostics;
       bucket.started++;
       bucket.questions+=Number(row.question_count)||0;

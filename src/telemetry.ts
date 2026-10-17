@@ -1,4 +1,4 @@
-type View = 'workshop' | 'collect' | 'passport' | 'orchestration' | 'editor' | 'tests' | 'settings' | 'diary' | 'other';
+type View = 'workshop' | 'collect' | 'passport' | 'orchestration' | 'editor' | 'tests' | 'settings' | 'diary' | 'mission' | 'other';
 type Phase = 'read_think' | 'compose' | 'waiting' | 'idle' | 'hidden';
 type RequestCategory = 'navigation' | 'round_action' | 'authoring' | 'review' | 'other';
 type Interaction = 'hint' | 'submit' | 'finish' | 'inspect';
@@ -43,6 +43,7 @@ let pendingSessionGeneration: number | null = null;
 let identity: string | null | undefined;
 let listenersInstalled = false;
 let started = false;
+let missionEmbedded = false;
 let recordingConsent = false;
 let pendingRoute: string | null = null;
 let intervalAt = 0;
@@ -73,6 +74,7 @@ function stableTabId() {
 
 function classify(path: string): View {
   if (path.startsWith('/diary')) return 'diary';
+  if (path.startsWith('/mission')) return 'mission';
   if (path.startsWith('/collect/')) return 'collect';
   if (path.startsWith('/reference/play/') || path.startsWith('/reference')) return 'passport';
   if (path.startsWith('/orchestration')) return 'orchestration';
@@ -84,7 +86,7 @@ function classify(path: string): View {
 }
 
 function enqueue(event: Omit<MetricEvent, 'eventId' | 'tabId' | 'pageId' | 'view'> & { pageId?: string; view?: View }, scope?: { id: string; token?: string }) {
-  if (!started || !recordingConsent) return;
+  if (!started || !recordingConsent || missionEmbedded) return;
   const eventId = uuid();
   if (!eventId) { enabled = false; sessionId = null; if (timer !== null) { window.clearInterval(timer); timer = null; } return; }
   const measured: MetricEvent = { eventId, tabId, pageId: event.pageId || pageId, view: event.view || view, ...event, ...(scope?.id ? { roundId: scope.id } : {}) };
@@ -131,6 +133,7 @@ function setPhase(next: Phase, scope?: { id: string; token?: string }) {
 }
 
 function flushInterval(kind: 'heartbeat' | 'page_exit' | 'visibility') {
+  if (missionEmbedded) { intervalAt = now(); phaseAt = intervalAt; return; }
   if (!started || !enabled) { intervalAt = now(); phaseAt = intervalAt; return; }
   const end = now();
   const elapsedMs = Math.max(0, Math.min(86400000, Math.round(end - intervalAt)));
@@ -193,7 +196,7 @@ async function flush(keepalive: boolean) {
 }
 
 async function openSession() {
-  if (!started || !pageId || !tabId || identity === undefined || !recordingConsent || identityChange !== undefined) return;
+  if (!started || missionEmbedded || !pageId || !tabId || identity === undefined || !recordingConsent || identityChange !== undefined) return;
   if (sessionFlight) return sessionFlight;
   const sessionIdentity = identity;
   const generation = sessionGeneration;
@@ -271,15 +274,31 @@ export function navigateMetrics(path: string) {
     const nextTab = stableTabId(); const nextPage = uuid();
     if (!nextTab || !nextPage) { enabled = false; return; }
     started = true; tabId = nextTab; pageId = nextPage; view = nextView; routeKey = path; intervalAt = now(); phaseAt = intervalAt; lastActivity = intervalAt; visible = document.visibilityState !== 'hidden';
-    installListeners(); if (identity !== undefined) void openSession(); return;
+    missionEmbedded = nextView === 'mission';
+    if (missionEmbedded) { phaseTime.read_think = 0; phaseTime.compose = 0; phaseTime.waiting = 0; }
+    installListeners(); if (!missionEmbedded && identity !== undefined) void openSession(); return;
   }
   if (path === routeKey) return;
-  flushInterval('page_exit');
-  void flush(false);
+  if (!missionEmbedded) { flushInterval('page_exit'); void flush(false); }
+  if (nextView === 'mission') {
+    if (timer !== null) { window.clearInterval(timer); timer = null; }
+    currentRound = null; lastReplyAt = null;
+    const nextPage = uuid();
+    if (!nextPage) { enabled = false; sessionId = null; return; }
+    pageId = nextPage; view = nextView; routeKey = path; missionEmbedded = true; intervalAt = now(); phaseAt = intervalAt;
+    phaseTime.read_think = 0; phaseTime.compose = 0; phaseTime.waiting = 0;
+    return;
+  }
   currentRound = null; lastReplyAt = null;
   const nextPage = uuid();
   if (!nextPage) { enabled = false; sessionId = null; return; }
-  pageId = nextPage; view = nextView; routeKey = path; intervalAt = now(); phaseAt = intervalAt; lastActivity = intervalAt; currentPhase = visible ? 'read_think' : 'hidden';
+  pageId = nextPage; view = nextView; routeKey = path; missionEmbedded = false; intervalAt = now(); phaseAt = intervalAt; lastActivity = now(); currentPhase = visible ? 'read_think' : 'hidden';
+  phaseTime.read_think = 0; phaseTime.compose = 0; phaseTime.waiting = 0;
+  if (!enabled && identity !== undefined) void openSession();
+  else if (enabled) {
+    if (timer !== null) window.clearInterval(timer);
+    timer = window.setInterval(() => { if (visible && now() - lastActivity >= idleAfterMs) setPhase('idle', currentRound || undefined); flushInterval('heartbeat'); void flush(false); }, heartbeatMs);
+  }
   enqueue({ kind: 'page_enter' });
 }
 

@@ -1,0 +1,90 @@
+{
+  "workstation": {
+    "file": "workstation-v2.webp",
+    "width": 1672,
+    "height": 941,
+    "bytes": 163296,
+    "sha256": "762ace2e9a02bd354716175a3ac67b5df1e245e5f3bf9f816632b884c25a5d5b",
+    "generation": "built-in image_gen, supplied two actual film still reference images",
+    "references": [
+      {
+        "film": "Sneakers (1992)",
+        "url": "https://medium.com/@robertworkman_Disruptor/even-with-its-outdated-tech-the-1992-movie-sneakers-is-still-a-good-time-47a772a04162"
+      },
+      {
+        "film": "WarGames (1983)",
+        "url": "https://wearethemutants.com/2016/12/15/falkens-maze-game-theory-computer-science-and-the-real-life-cold-war-inspirations-for-wargames/"
+      }
+    ]
+  },
+  "opening": {
+    "file": "mission-intro-v2.mp4",
+    "seconds": 30,
+    "bytes": 6135048,
+    "sha256": "64ace2097e451ef8423faa9d97a5446759aab0eda7bc69488aa29de78690c8e9",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "sourceFilmResolution": "1280x720 23.98fps; export upscaled, not native 4K",
+    "audio": "AAC stereo48000Hz",
+    "fullDecode": "passed",
+    "faststart": true,
+    "atoms": [
+      {
+        "name": "ftyp",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "moov",
+        "offset": 32,
+        "bytes": 34400
+      },
+      {
+        "name": "free",
+        "offset": 34432,
+        "bytes": 8
+      },
+      {
+        "name": "mdat",
+        "offset": 34440,
+        "bytes": 6100608
+      }
+    ]
+  },
+  "media": [
+    {
+      "file": "mission-intro-v2.mp4",
+      "bytes": 6135048,
+      "sha256": "64ace2097e451ef8423faa9d97a5446759aab0eda7bc69488aa29de78690c8e9"
+    },
+    {
+      "file": "mission-intro-v2.vtt",
+      "bytes": 383,
+      "sha256": "5c88d0a12e9d0683220e0a91e390c8ab4f5699655e75f453f740bcea587e5ed2"
+    },
+    {
+      "file": "mission-roomtone-v1.mp3",
+      "bytes": 360620,
+      "sha256": "839c347c1513f2c5459afffa93bd85d1f16a5e72f7a01dff1644f917771c4a7c"
+    }
+  ],
+  "objects": [
+    {
+      "file": "service-disk-v1.webp",
+      "bytes": 67738,
+      "width": 640,
+      "height": 585,
+      "hasAlpha": true,
+      "sha256": "5e86720bed3b708685944a1a5e93da5815a0670275d0d03d5de2c629748edc0f"
+    },
+    {
+      "file": "extraction-disk-v1.webp",
+      "bytes": 75060,
+      "width": 640,
+      "height": 552,
+      "hasAlpha": true,
+      "sha256": "75ea966cadb9e2df6b67861c38137bbd4a39ca2f6a3c3f854cf4a9e08cf615a2"
+    }
+  ]
+}

@@ -137,6 +137,26 @@ serialTest('route changes drop round scope and metrics endpoints are excluded fr
   } finally { h.restore(); }
 });
 
+serialTest('mission iframe owns its timing and the workshop starts a fresh interval on return', async () => {
+  const h = await harness();
+  try {
+    h.start('/collections'); await h.tick();
+    h.advance(3000); h.api.navigateMetrics('/mission'); await h.tick();
+    h.api.setMetricsPhase('compose');
+    const beforeMission = events(h).length;
+    h.advance(63000); await h.tick();
+    assert.equal(events(h).length, beforeMission);
+    assert.equal(h.intervals.size, 0);
+    h.api.navigateMetrics('/collections'); await h.tick();
+    h.advance(68000); await h.flushAll();
+    const all = events(h);
+    assert.ok(all.some(event => event.kind === 'page_enter' && event.view === 'workshop' && event.pageId));
+    assert.equal(all.some(event => event.view === 'mission'), false);
+    assert.equal(all.some(event => event.composeMs > 0), false);
+    assert.ok(all.filter(event => ['heartbeat', 'page_exit'].includes(event.kind) && event.elapsedMs !== undefined).every(event => event.elapsedMs < 30000));
+  } finally { h.restore(); }
+});
+
 serialTest('round replacement closes old scoped time and resets reply timing; orchestration waits are tracked', async () => {
   const h = await harness();
   try {

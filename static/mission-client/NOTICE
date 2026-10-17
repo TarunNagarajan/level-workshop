@@ -1,0 +1,27 @@
+Mission: Impossible archive browser program
+
+This directory is a separate browser application distributed under the GNU
+General Public License, version 3 or (at your option) any later version. The
+complete corresponding source is provided here as unminified HTML, JavaScript,
+and CSS. See LICENSE for the full license text.
+
+CRT presentation in mission.css adapts visual concepts from cool-retro-term,
+copyright (c) 2013-2021 Filippo Scognamiglio, https://github.com/Swordfish90/cool-retro-term
+Upstream source commit: 1394ce82fa53d2a87d5adc4d99f9eeba598ea53d
+
+The browser adaptation ports the static shader's quadratic radial coordinate
+distortion, its left/center/right RGB blend weights, and its static noise and
+edge shading. `setupCRTEffect()` in `mission.js` applies the upstream
+`distortCoordinates()` equation to a small transparent raster overlay and
+derives the scanline, noise, and vignette alpha. CSS maps the shader's channel
+weights to restrained colored DOM text shadows. Text and controls remain live
+DOM, so they stay accessible and readable without a shader-capable renderer.
+This is a responsive browser adaptation, not a pixel-identical GLSL render.
+Source reference: `app/shaders/terminal_static.frag`, especially
+`distortCoordinates()` and the `CRT_RGB_SHIFT` channel blend. The browser
+program does not include or execute upstream Qt/QML or GLSL. The upstream
+project is licensed under GPL-3.0-or-later; its complete license text is
+included in LICENSE.
+
+All other Mission archive frontend source in this directory is copyright (c)
+2026 Level Workshop contributors and offered under the same GPL terms.

@@ -33,6 +33,9 @@ export function openStore(path) {
     CREATE TABLE IF NOT EXISTS passport_scenario_counter (id INTEGER PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0);
     INSERT INTO passport_scenario_counter (id, value) VALUES (1, 0) ON CONFLICT(id) DO NOTHING;
     CREATE TABLE IF NOT EXISTS diary_sessions (round_id TEXT PRIMARY KEY REFERENCES rounds(id) ON DELETE RESTRICT, state TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS mission_sessions (round_id TEXT PRIMARY KEY REFERENCES rounds(id) ON DELETE RESTRICT, state TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS mission_start_keys (actor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, start_key_hash TEXT NOT NULL, round_id TEXT NOT NULL UNIQUE REFERENCES rounds(id) ON DELETE RESTRICT, created_at INTEGER NOT NULL, PRIMARY KEY(actor_id, start_key_hash));
+    CREATE TABLE IF NOT EXISTS mission_start_locks (actor_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS orchestration_configs (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), draft TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS orchestration_versions (id TEXT PRIMARY KEY, config_id TEXT NOT NULL REFERENCES orchestration_configs(id), number INTEGER NOT NULL, data TEXT NOT NULL, note TEXT NOT NULL, author_id TEXT NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL, UNIQUE(config_id, number));
     CREATE TABLE IF NOT EXISTS orchestration_runs (id TEXT PRIMARY KEY, config_id TEXT NOT NULL REFERENCES orchestration_configs(id), author_id TEXT NOT NULL REFERENCES users(id), snapshot TEXT NOT NULL, test_input TEXT NOT NULL, model TEXT NOT NULL, messages TEXT NOT NULL, board TEXT NOT NULL, event_seq INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
