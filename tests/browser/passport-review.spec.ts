@@ -40,8 +40,19 @@ test.describe('enabled automated passenger review', () => {
       if (response.request().method() !== 'POST' || !/\/api\/reference\/rounds\/[^/]+\/review$/.test(response.url())) return;
       lastReviewResponse = await response.json();
     });
+    let releaseReview!: () => void;
+    let signalReviewRequest!: () => void;
+    const reviewGate = new Promise<void>(resolve => { releaseReview = resolve; });
+    const reviewRequestSeen = new Promise<void>(resolve => { signalReviewRequest = resolve; });
+    await page.route('**/api/reference/rounds/*/review', async route => {
+      signalReviewRequest();
+      await reviewGate;
+      await route.continue();
+    });
     const passengerReply = await fileCase(page);
-    await expect(page.getByRole('status').filter({ hasText: 'Reviewing your interview' })).toBeVisible();
+    await reviewRequestSeen;
+    try { await expect(page.getByRole('status').filter({ hasText: 'Reviewing your interview' })).toBeVisible(); }
+    finally { releaseReview(); }
     await expect(page.getByRole('heading', { name: 'Secret recovered' })).toBeVisible();
     await expect(page.getByText('A passenger reply directly disclosed protected identity information.')).toBeVisible();
     await expect(page.locator('.machine-review-evidence')).toContainText(passengerReply.slice(0, 50));
