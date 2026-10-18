@@ -31,6 +31,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const [pendingRound, setPendingRound] = useState<DiarySession | null>(null);
   const [bookPages, setBookPages] = useState<DiaryPageSegment[][]>([[]]);
   const [bookPageIndex, setBookPageIndex] = useState(0);
+  const [continuationFocus, setContinuationFocus] = useState<{ messageId: string; offset: number } | null>(null);
   const bookPageIndexRef = useRef(bookPageIndex);
   bookPageIndexRef.current = bookPageIndex;
   const [mobileBook, setMobileBook] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches);
@@ -211,6 +212,9 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const remaining = session ? Math.max(0, Math.ceil((session.round.deadline - now) / 1000)) : 300;
   const expired = Boolean(session && !session.round.endedAt && remaining <= 0);
   const latestMessages = session?.round.messages || [];
+  const animatingReply = !plainText && !reducedMotion && animatingReplyId && !instantReplies.includes(animatingReplyId)
+    ? latestMessages.find(item => item.id === animatingReplyId && item.role === 'assistant' && !item.opening)
+    : undefined;
   const spreadStart = mobileBook ? bookPageIndex : Math.floor(bookPageIndex / 2) * 2;
   const leftPhysicalPage = mobileBook ? bookPageIndex : spreadStart;
   const rightPhysicalPage = mobileBook ? bookPageIndex : spreadStart + 1;
@@ -227,10 +231,14 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
       const width = Math.max(80, activeScroll.clientWidth - horizontalPadding(activeScroll));
       const height = Math.max(0, activeScroll.clientHeight - verticalPadding(activeScroll));
       const next = paginateDiaryMessages(latestMessages, width, height, plainText);
-      // Resize and breakpoint changes can briefly collapse the flex scroll area. Keep the
-      // last measured book until a real page can fit content instead of printing one glyph
-      // per zero-height page while layout settles.
-      if (!next) return;
+      // A collapsed layout cannot produce meaningful page geometry. Hide segments measured
+      // for the previous viewport until the resized book can be paginated again.
+      if (!next) {
+        // Do not leave text measured for a larger page visible inside a collapsed
+        // viewport while the book settles after a resize or orientation change.
+        setBookPages(current => current.length === 1 && current[0].length === 0 ? current : [[]]);
+        return;
+      }
       setBookPages(current => sameBookPages(current, next) ? current : next);
       const anchor = readingAnchor.current;
       const messagesChanged = lastPaginatedMessages.current !== latestMessages;
@@ -274,7 +282,17 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     }
   }, [bookPageIndex, bookPages]);
 
-  function goToBookPage(target: number) {
+  useLayoutEffect(() => {
+    if (!continuationFocus) return;
+    const target = Array.from(bookRef.current?.querySelectorAll<HTMLElement>('.diary-entry[data-message-id]') || [])
+      .find(entry => entry.dataset.messageId === continuationFocus.messageId && Number(entry.dataset.offsetStart) === continuationFocus.offset);
+    if (!target) return;
+    setContinuationFocus(null);
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+  }, [bookPageIndex, bookPages, continuationFocus]);
+
+  function goToBookPage(target: number, anchorOverride?: { messageId: string; offset: number }) {
     const last = mobileBook ? bookPages.length - 1 : Math.floor((bookPages.length - 1) / 2) * 2;
     const next = Math.max(0, Math.min(last, target));
     manualPageSelection.current = true;
@@ -282,9 +300,16 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     if (replyNavigation && replyNavigation.roundId === session?.round.id) replyNavigation.navigatedAway = true;
     bringLatestAfterUpdate.current = false;
     const segment = bookPages[next]?.[0] || bookPages[next + 1]?.[0];
-    readingAnchor.current = segment ? { messageId: segment.message.id, offset: segment.start } : null;
+    readingAnchor.current = anchorOverride || (segment ? { messageId: segment.message.id, offset: segment.start } : null);
     setBookPageIndex(mobileBook ? next : Math.floor(next / 2) * 2);
     scrollRef.current?.scrollTo({ top: 0 }); rightScrollRef.current?.scrollTo({ top: 0 });
+  }
+
+  function continueMessage(messageId: string, offset: number) {
+    const target = bookPages.findIndex(page => page.some(segment => segment.message.id === messageId && segment.start === offset));
+    if (target < 0) return;
+    setContinuationFocus({ messageId, offset });
+    goToBookPage(target, { messageId, offset });
   }
 
   function latestBookPage() {
@@ -597,7 +622,6 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
         elapsedWeight += word.weight;
         return <span className={isWriting ? 'diary-ink-word is-writing' : 'diary-ink-word'} key={word.index} style={isWriting ? { animationDelay: `${delay}ms`, animationDuration: `${wordDuration}ms` } : undefined} onAnimationEnd={isWriting && word.index === finalWord ? () => setInstantReplies(items => items.includes(reply.id) ? items : [...items, reply.id]) : undefined}>{word.text}</span>;
       })}</p>
-      {isWriting && <button className="diary-skip-writing" onClick={() => setInstantReplies(items => [...items, reply.id])}>Show entire reply</button>}
     </>;
   }
 
@@ -606,10 +630,17 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     return segments.map((segment, index) => {
       const item = segment.message;
       const displayItem = item.role === 'assistant' ? { ...item, content: segment.text } : item;
-      return <article key={`${item.id}:${segment.start}`} className={`diary-entry ${item.role === 'user' ? 'from-reader' : 'from-diary'} ${item.opening ? 'diary-opening' : ''} ${segment.continued ? 'diary-entry-continuation' : ''}`} data-message-id={item.id} data-offset-start={segment.start} data-offset-end={segment.end}>
+      const continuationPage = segment.end < item.content.length
+        ? bookPages.findIndex(page => page.some(next => next.message.id === item.id && next.start === segment.end)) + 1
+        : 0;
+      return <article key={`${item.id}:${segment.start}`} tabIndex={-1} className={`diary-entry ${item.role === 'user' ? 'from-reader' : 'from-diary'} ${item.opening ? 'diary-opening' : ''} ${segment.continued ? 'diary-entry-continuation' : ''}`} data-message-id={item.id} data-offset-start={segment.start} data-offset-end={segment.end}>
         <div className="diary-entry-label"><span>{item.role === 'user' ? 'YOUR QUESTION' : item.opening ? 'FIRST ENTRY' : 'RIDDLE'}{segment.continued ? ' · CONTINUED' : ''}</span>{item.role === 'assistant' && !item.opening && <button className="diary-keep-button" aria-label={session?.state.keptReplyIds.includes(item.id) ? 'Remove reply from evidence tray' : 'Keep reply as evidence'} aria-pressed={session?.state.keptReplyIds.includes(item.id) || false} disabled={actionBusy || Boolean(session?.round.endedAt)} onClick={() => void runAction({ type: session?.state.keptReplyIds.includes(item.id) ? 'remove_kept_reply' : 'keep_reply', replyId: item.id })}>{session?.state.keptReplyIds.includes(item.id) ? <Check size={13} /> : <Feather size={13} />}</button>}</div>
         {item.role === 'assistant' ? displayReply(displayItem) : <p className={`diary-reader-text ${plainText ? 'diary-plain-text' : ''}`}>{segment.text}</p>}
-        {index === segments.length - 1 && <span className="diary-entry-rule" aria-hidden="true" />}
+        {continuationPage > 0
+          ? <button type="button" className="diary-entry-continuation-link" aria-label={`Continue ${item.role === 'assistant' ? 'reply' : 'question'} on page ${continuationPage}`} onClick={() => continueMessage(item.id, segment.end)}>
+              Continue {item.role === 'assistant' ? 'reply' : 'question'} <span aria-hidden="true">· page {continuationPage} ›</span>
+            </button>
+          : index === segments.length - 1 && <span className="diary-entry-rule" aria-hidden="true" />}
       </article>;
     });
   }
@@ -695,11 +726,17 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
           <img className="diary-open-book-art" src={`${ASSETS}/${session.state.diaryOpen ? 'open-diary.webp' : 'closed-diary.webp'}`} alt={session.state.diaryOpen ? 'An open, blank-paged cloth diary' : 'A closed black cloth diary'} />
           {session.state.diaryOpen ? <>
             <section className={`diary-page diary-page-left ${displayedMobilePage === 'left' ? 'mobile-page-current' : ''}`} aria-label={`Diary page ${leftPhysicalPage + 1}`}>
-              <div className="diary-page-heading"><span>{leftSegments[0]?.continued ? 'CONTINUED' : leftSegments[0]?.message.role === 'user' ? 'YOUR QUESTION' : 'RIDDLE'}</span><span>{String(leftPhysicalPage + 1).padStart(2, '0')}</span></div>
+              <div className="diary-page-heading"><span>{leftSegments[0]?.continued ? 'CONTINUED' : leftSegments[0]?.message.role === 'user' ? 'YOUR QUESTION' : 'RIDDLE'}</span>{(!mobileBook || displayedMobilePage === 'left') && <nav className="diary-on-book-turns" aria-label={mobileBook ? 'Turn diary pages' : 'Turn diary spreads'}>
+                <button type="button" aria-label={mobileBook ? 'Previous diary page' : 'Previous spread'} onClick={() => goToBookPage(bookPageIndex - (mobileBook ? 1 : 2))} disabled={bookPageIndex === 0}><ChevronLeft size={15} /></button>
+                <button type="button" aria-label={mobileBook ? 'Next diary page' : 'Next spread'} onClick={() => goToBookPage(bookPageIndex + (mobileBook ? 1 : 2))} disabled={mobileBook ? bookPageIndex >= bookPages.length - 1 : bookPageIndex + 2 >= bookPages.length}><ChevronRight size={15} /></button>
+              </nav>}<span>{String(leftPhysicalPage + 1).padStart(2, '0')}</span></div>
               <div className="diary-page-scroll" ref={scrollRef}>{messageList(leftSegments)}</div>
             </section>
             <section className={`diary-page diary-page-right ${displayedMobilePage === 'right' ? 'mobile-page-current' : ''}`} aria-label={`Diary page ${rightPhysicalPage + 1}`}>
-              <div className="diary-page-heading"><span>{rightSegments[0]?.continued ? 'CONTINUED' : rightSegments[0]?.message.role === 'user' ? 'YOUR QUESTION' : 'RIDDLE'}</span><span>{String(rightPhysicalPage + 1).padStart(2, '0')}</span></div>
+              <div className="diary-page-heading"><span>{rightSegments[0]?.continued ? 'CONTINUED' : rightSegments[0]?.message.role === 'user' ? 'YOUR QUESTION' : 'RIDDLE'}</span>{mobileBook && displayedMobilePage === 'right' && <nav className="diary-on-book-turns" aria-label="Turn diary pages">
+                <button type="button" aria-label="Previous diary page" onClick={() => goToBookPage(bookPageIndex - 1)} disabled={bookPageIndex === 0}><ChevronLeft size={15} /></button>
+                <button type="button" aria-label="Next diary page" onClick={() => goToBookPage(bookPageIndex + 1)} disabled={bookPageIndex >= bookPages.length - 1}><ChevronRight size={15} /></button>
+              </nav>}<span>{String(rightPhysicalPage + 1).padStart(2, '0')}</span></div>
               <div className="diary-page-scroll" ref={rightScrollRef}>{messageList(rightSegments)}</div>
               {!session.round.endedAt && <div ref={composerRef} className="diary-composer-wrap">
                 {expired && <p className="diary-expired-note" role="status">Time is up. You can still file what you discovered.</p>}
@@ -732,6 +769,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
           <span aria-live="polite">{mobileBook ? `Page ${Math.min(bookPageIndex + 1, bookPages.length)} of ${bookPages.length}` : `Pages ${Math.min(spreadStart + 1, bookPages.length)}–${Math.min(spreadStart + 2, bookPages.length)} of ${bookPages.length}`}</span>
           <button type="button" onClick={() => goToBookPage(bookPageIndex + (mobileBook ? 1 : 2))} disabled={mobileBook ? bookPageIndex >= bookPages.length - 1 : spreadStart + 2 >= bookPages.length}>Next</button>
           <button type="button" onClick={latestBookPage}>Latest entry</button>
+          {animatingReply && <button type="button" className="diary-skip-writing" onClick={() => setInstantReplies(items => items.includes(animatingReply.id) ? items : [...items, animatingReply.id])}>Show entire reply</button>}
           <button type="button" onClick={() => setShowConversation(true)}>Full conversation</button>
           {newReplyAvailableId && <button type="button" className="diary-new-reply" onClick={showNewReply}>New reply ready: view reply</button>}
         </nav>}
@@ -1073,8 +1111,18 @@ function measureDiaryEntry(probe: HTMLElement, message: Message, text: string, c
     }
   } else { paragraph.className = `diary-reader-text ${plainText ? 'diary-plain-text' : ''}`; paragraph.textContent = text; }
   entry.append(paragraph);
-  if (message.role === 'assistant' && !message.opening && latest && !plainText) { const skip = document.createElement('button'); skip.className = 'diary-skip-writing'; skip.textContent = 'Show entire reply'; entry.append(skip); }
-  const rule = document.createElement('span'); rule.className = 'diary-entry-rule'; entry.append(rule);
+  if (latest) { const rule = document.createElement('span'); rule.className = 'diary-entry-rule'; entry.append(rule); }
+  else {
+    const continuation = document.createElement('button');
+    continuation.type = 'button';
+    continuation.className = 'diary-entry-continuation-link';
+    continuation.append(`Continue ${message.role === 'assistant' ? 'reply' : 'question'} `);
+    const destination = document.createElement('span');
+    destination.setAttribute('aria-hidden', 'true');
+    destination.textContent = '· page 999 ›';
+    continuation.append(destination);
+    entry.append(continuation);
+  }
   probe.append(entry);
   const entryStyle = getComputedStyle(entry);
   const marginBottom = Number.parseFloat(entryStyle.marginBottom) || 0;
