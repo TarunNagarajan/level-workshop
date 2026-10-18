@@ -51,6 +51,39 @@
     "sha256": "bfa6789a856fe6f0b19619c7a7b5d04809414828fd27f49c36f595f507bcd261"
   },
   {
+    "file": "strongroom-intro-v4.mp4",
+    "bytes": 5154384,
+    "durationSeconds": 25,
+    "dimensions": "1920x1080",
+    "frameRate": 30,
+    "videoCodec": "h264",
+    "audioCodec": "aac",
+    "actualFilmExcerptSeconds": 18,
+    "generatedBridgeSeconds": 7.6,
+    "sourceSegmentsSeconds": [[66.25,68.65],[77.5,79.5],[88.5,91.5],[15.6,26.2]],
+    "sha256": "2403afb956d7ca412f33e4fe911afc8ac3602fe42d851c3928e69cd3d359093e"
+  },
+  {
+    "file": "strongroom-intro-v4.vtt",
+    "bytes": 404,
+    "durationSeconds": 25,
+    "sha256": "13cc71c955c121237a166c574c17ea4cc5c3bf542b04343d01df6927e015d07d"
+  },
+  {
+    "file": "eames-portrait-v1.webp",
+    "bytes": 11408,
+    "dimensions": "256x256",
+    "source": "film-first75.mp4 at 66.8 seconds, crop 530x140 800x800",
+    "sha256": "4464d24f00611a73c67939124aac906c6caee4c33788daee296c3547625ff031"
+  },
+  {
+    "file": "fischer-portrait-v1.webp",
+    "bytes": 8842,
+    "dimensions": "256x256",
+    "source": "film-first75.mp4 at 45.5 seconds, crop 330x140 800x800",
+    "sha256": "2ff86b1a03a49d40612210e6a31cfb575790027dc7906f2139345125d3d52ac4"
+  },
+  {
     "file": "strongroom-success-v1.mp4",
     "bytes": 6647143,
     "durationSeconds": 29.17,

@@ -20,6 +20,9 @@ const token = () => randomBytes(32).toString('base64url');
 const hash = value => createHash('sha256').update(value).digest('hex');
 const isPassportVersion = versionId => versionId === 'reference-passport-desk-v1' || versionId.startsWith('reference-passport-study-v1-') || versionId.startsWith('reference-passport-case-');
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
+const publicFailureCodes = new Set(['rate_limited', 'provider_auth', 'provider_unavailable', 'timeout', 'empty_response', 'provider_rejected']);
+const publicRateLimitScopes = new Set(['tokens_daily', 'tokens_minute', 'requests_daily', 'requests_minute', 'unknown']);
+const publicRetryAfter = value => Number.isInteger(value) && value > 0 ? Math.min(value, 86400) : undefined;
 const accountSchema = z.object({ name: z.string().trim().min(1).max(70), email: z.email().transform(v => v.toLowerCase()), password: z.string().min(10).max(200) });
 const publicUser = user => user ? { id: user.id, name: user.name, email: user.email, role: user.role } : null;
 async function passwordHash(password) {
@@ -649,7 +652,16 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         error.submissionId ||= entry.id;
         error.submissionStatus ||= current?.status;
         error.receiptConfirmed = true;
-        if (current?.status === 'failed') error.message = 'Your prompt was recorded, but the model could not return a reply.';
+        if (current?.status === 'failed') {
+          const safeFailureMessages = {
+            rate_limited: error.rateLimitScope === 'tokens_daily' ? 'Usage limit reached. Your prompt is saved. Wait before trying again.' : 'The model service is temporarily rate limited. Your prompt is saved; wait before trying again.',
+            provider_auth: 'The model service is unavailable. Your prompt is saved.',
+            provider_unavailable: 'The model service is unavailable. Your prompt is saved.',
+            timeout: 'The model service did not respond in time. Your prompt is saved.',
+            empty_response: 'The model service returned no reply. Your prompt is saved.',
+          };
+          error.message = safeFailureMessages[error.providerCode] || 'Your prompt is saved, but the model service could not reply. Try again later.';
+        }
         else if (current?.status === 'succeeded') { error.status = 409; error.message = 'The model reply was recorded, but the conversation could not be updated.'; error.transcriptSaved = false; }
         throw error;
       }
@@ -783,7 +795,10 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const status = error.status || 500;
         if (status === 500)
             console.error('Request failed:', error.message);
-        res.status(status).json({ error: status === 500 ? 'The request could not be completed.' : error.message, ...(error.submissionId ? { submissionId: error.submissionId, submissionStatus: error.submissionStatus, receiptConfirmed: Boolean(error.receiptConfirmed), ...(error.transcriptSaved === undefined ? {} : { transcriptSaved: error.transcriptSaved }) } : {}) });
+        const failureCode = publicFailureCodes.has(error.providerCode) ? error.providerCode : undefined;
+        const retryAfterSeconds = publicRetryAfter(error.retryAfterSeconds);
+        const rateLimitScope = publicRateLimitScopes.has(error.rateLimitScope) ? error.rateLimitScope : undefined;
+        res.status(status).json({ error: status === 500 ? 'The request could not be completed.' : error.message, ...(error.submissionId ? { submissionId: error.submissionId, submissionStatus: error.submissionStatus, receiptConfirmed: Boolean(error.receiptConfirmed), ...(error.transcriptSaved === undefined ? {} : { transcriptSaved: error.transcriptSaved }), ...(failureCode ? { failureCode } : {}), ...(retryAfterSeconds ? { retryAfterSeconds } : {}), ...(rateLimitScope ? { rateLimitScope } : {}) } : {}) });
     });
     return { app, store };
 }

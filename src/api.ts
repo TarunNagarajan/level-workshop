@@ -8,7 +8,10 @@ export class ApiError extends Error {
   submissionId?: string;
   submissionStatus?: string;
   receiptConfirmed: boolean;
-  constructor(message: string, status: number, submissionId?: string, submissionStatus?: string, receiptConfirmed = false) { super(message); this.name = 'ApiError'; this.status = status; this.submissionId = submissionId; this.submissionStatus = submissionStatus; this.receiptConfirmed = receiptConfirmed; }
+  failureCode?: 'rate_limited' | 'provider_auth' | 'provider_unavailable' | 'timeout' | 'empty_response' | 'provider_rejected';
+  retryAfterSeconds?: number;
+  rateLimitScope?: 'tokens_daily' | 'tokens_minute' | 'requests_daily' | 'requests_minute' | 'unknown';
+  constructor(message: string, status: number, submissionId?: string, submissionStatus?: string, receiptConfirmed = false, metadata: { failureCode?: string; retryAfterSeconds?: number; rateLimitScope?: ApiError['rateLimitScope'] } = {}) { super(message); this.name = 'ApiError'; this.status = status; this.submissionId = submissionId; this.submissionStatus = submissionStatus; this.receiptConfirmed = receiptConfirmed; Object.assign(this, metadata); }
 }
 
 export async function api<T>(path: string, options: { method?: string; body?: unknown; token?: string; signal?: AbortSignal } = {}): Promise<T> {
@@ -37,7 +40,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
       ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
     });
     const result = await response.json();
-    if (!response.ok) { finishMetrics('error'); recorded = true; throw new ApiError(result.error || 'This request could not be completed.', response.status, result.submissionId, result.submissionStatus, result.receiptConfirmed === true); }
+    if (!response.ok) { finishMetrics('error'); recorded = true; throw new ApiError(result.error || 'This request could not be completed.', response.status, result.submissionId, result.submissionStatus, result.receiptConfirmed === true, { failureCode: ['rate_limited', 'provider_auth', 'provider_unavailable', 'timeout', 'empty_response', 'provider_rejected'].includes(result.failureCode) ? result.failureCode : undefined, retryAfterSeconds: Number.isInteger(result.retryAfterSeconds) ? result.retryAfterSeconds : undefined, rateLimitScope: ['tokens_daily', 'tokens_minute', 'requests_daily', 'requests_minute', 'unknown'].includes(result.rateLimitScope) ? result.rateLimitScope : undefined }); }
     finishMetrics('success'); recorded = true;
     return result as T;
   } catch (error) {

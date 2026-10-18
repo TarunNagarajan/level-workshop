@@ -4,14 +4,18 @@
   "openFrame": "/inception-assets/strongroom-open-v1.webp",
   "bridgeFrame": "/inception-assets/strongroom-closed-v1.webp",
   "bridgeVideo": null,
-  "introVideo": "/inception-assets/strongroom-intro-v3.mp4",
-  "introDurationSeconds": 35,
-  "captions": "/inception-assets/strongroom-intro-v3.vtt",
+  "introVideo": "/inception-assets/strongroom-intro-v4.mp4",
+  "introDurationSeconds": 25,
+  "captions": "/inception-assets/strongroom-intro-v4.vtt",
   "successVideo": "/inception-assets/strongroom-success-v1.mp4",
   "successCaptions": "/inception-assets/strongroom-success-v1.vtt",
   "successDurationSeconds": 29.17,
   "approvedTrack": null,
   "roomTone": "/inception-assets/strongroom-roomtone-v1.mp3",
+  "portraits": {
+    "eames": "/inception-assets/eames-portrait-v1.webp",
+    "fischer": "/inception-assets/fischer-portrait-v1.webp"
+  },
   "provenance": {
     "closedFrame": {
       "kind": "generated strongroom plate based on inspected bedside-scene references",
@@ -31,17 +35,18 @@
       "sha256": "86773ee4252cd6c3ca1b1f65b0d1cf5dfe1773dcdac6c17fc76b2fa66b55a961"
     },
     "introVideo": {
-      "kind": "versioned edited film excerpt with generated safe bridge; immutable after publication",
-      "durationSeconds": 35,
-      "actualFilmExcerptSeconds": 28,
+      "kind": "versioned edited film excerpt with actual strongroom door footage and generated safe bridge; immutable after publication",
+      "durationSeconds": 25,
+      "actualFilmExcerptSeconds": 18,
       "generatedBridgeSeconds": 7.6,
-      "sourceSegmentsSeconds": [[65.8, 68.65], [14, 20], [42, 49.65], [20, 27.5], [54, 58]],
-      "sha256": "44926f49dbf8249bac352b251718df4b9a3d8feb7383edd1430e3123e9197bbc"
+      "sourceSegmentsSeconds": [[66.25, 68.65], [77.5, 79.5], [88.5, 91.5], [15.6, 26.2]],
+      "sourceDescription": "Existing film-first75.mp4 and cached door-source-60-150.mp4, source offsets converted to original film seconds",
+      "sha256": "2403afb956d7ca412f33e4fe911afc8ac3602fe42d851c3928e69cd3d359093e"
     },
     "captions": {
       "kind": "scene-summary captions for the edited film excerpt",
-      "durationSeconds": 35,
-      "sha256": "bfa6789a856fe6f0b19619c7a7b5d04809414828fd27f49c36f595f507bcd261"
+      "durationSeconds": 25,
+      "sha256": "13cc71c955c121237a166c574c17ea4cc5c3bf542b04343d01df6927e015d07d"
     },
     "successVideo": {
       "kind": "versioned win-only film ending; source audio retained; immutable after publication",
@@ -53,6 +58,21 @@
       "kind": "scene-summary captions for the edited film ending",
       "durationSeconds": 29.17,
       "sha256": "d2d637e7a36ec244fb3ea4d1606ffa2b149bc5cba8051a33d2b89eb89d3dfb24"
+    },
+    "portraits": {
+      "kind": "square character portraits cropped from inspected source-film frames for conversation avatars",
+      "eames": {
+        "source": "film-first75.mp4 at 66.8 seconds",
+        "crop": [530, 140, 800, 800],
+        "dimensions": [256, 256],
+        "sha256": "4464d24f00611a73c67939124aac906c6caee4c33788daee296c3547625ff031"
+      },
+      "fischer": {
+        "source": "film-first75.mp4 at 45.5 seconds",
+        "crop": [330, 140, 800, 800],
+        "dimensions": [256, 256],
+        "sha256": "2ff86b1a03a49d40612210e6a31cfb575790027dc7906f2139345125d3d52ac4"
+      }
     }
   }
 }

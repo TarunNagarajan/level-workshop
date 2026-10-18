@@ -9,18 +9,18 @@ import { recordMetricsInteraction, recordMetricsReply, setMetricsPhase } from '.
 import './inception.css';
 
 type Profile = { id: string; profileId?: string; label: string; description: string; versionId?: string; scenarioId?: string; profileRevision?: number; promptHash?: string; snapshotHash?: string };
-type InceptionState = { revision: number; safeInspected: boolean; roomInspected: boolean; safePresented: boolean; safeOpened: boolean; finished: boolean; review: { status: string; verdict?: string; reason?: string } | null };
+type InceptionState = { revision: number; safeInspected: boolean; roomInspected: boolean; safePresented: boolean; safeOpened: boolean; finished: boolean; revealedCombination?: string; review: { status: string; verdict?: string; reason?: string } | null };
 type Session = { round: Round; state: InceptionState; profile: Profile };
 type Configuration = { title: string; profiles: Profile[]; defaultProfileId?: string; connected: boolean; recordingNoticeRequired?: boolean; recordingAccepted?: boolean; reviewEnabled?: boolean; actorScope: string; activeRoundId: string | null };
 type Review = { status: string; verdict?: string; reason?: string; evidence?: { replyId: string; quote: string }[]; retryable?: boolean; errorCode?: string };
-type MediaManifest = { closedFrame?: string | null; openFrame?: string | null; bridgeFrame?: string | null; bridgeVideo?: string | null; introVideo?: string | null; introDurationSeconds?: number; captions?: string | null; successVideo?: string | null; successCaptions?: string | null; successDurationSeconds?: number; approvedTrack?: string | null; roomTone?: string | null };
+type MediaManifest = { closedFrame?: string | null; openFrame?: string | null; bridgeFrame?: string | null; bridgeVideo?: string | null; introVideo?: string | null; introDurationSeconds?: number; captions?: string | null; successVideo?: string | null; successCaptions?: string | null; successDurationSeconds?: number; approvedTrack?: string | null; roomTone?: string | null; portraits?: { eames?: string; fischer?: string } };
 type PendingSend = { id: string; content: string };
 
 const startStorage = 'workshop-inception-start-intent';
 const startStorageFor = (actorScope: string) => `${startStorage}:${actorScope}`;
 const sessionStorageKey = 'workshop-inception-session';
 const soundStorage = 'workshop-inception-sound';
-const DEFAULT_INTRO_DURATION_SECONDS = 35;
+const DEFAULT_INTRO_DURATION_SECONDS = 25;
 const defaultSound = { muted: false, volume: 0.45 };
 const parseSound = () => { try { return { ...defaultSound, ...JSON.parse(localStorage.getItem(soundStorage) || '{}') }; } catch { return defaultSound; } };
 
@@ -37,6 +37,11 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const [introMediaIssue, setIntroMediaIssue] = useState('');
   const [introMediaAttempt, setIntroMediaAttempt] = useState(0);
   const [cinematicHandoff, setCinematicHandoff] = useState(false);
+  const [cinematicPhase, setCinematicPhase] = useState<'checking' | 'entry' | 'film' | null>(null);
+  const [revealedDigits, setRevealedDigits] = useState('');
+  const [lcdBounds, setLcdBounds] = useState<CSSProperties>({});
+  const [retryCooldownUntil, setRetryCooldownUntil] = useState(0);
+  const [retrySeconds, setRetrySeconds] = useState(0);
   const [handoffInteractive, setHandoffInteractive] = useState(true);
   const [now, setNow] = useState(Date.now());
   const [loading, setLoading] = useState(true);
@@ -45,7 +50,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const [messageText, setMessageText] = useState('');
   const [pendingSend, setPendingSend] = useState<PendingSend | null>(null);
   const [sendStatus, setSendStatus] = useState('');
-  const [activeModal, setActiveModal] = useState<'safe' | 'room' | 'rewatch' | null>(null);
+  const [activeModal, setActiveModal] = useState<'safe' | 'room' | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [successEnding, setSuccessEnding] = useState<'playing' | 'blocked' | 'error' | 'closing' | null>(null);
   const [successEndingAttempt, setSuccessEndingAttempt] = useState(0);
@@ -64,6 +69,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const modalRef = useRef<HTMLElement | null>(null);
   const conversationRef = useRef<HTMLDivElement | null>(null);
   const followConversationRef = useRef(true);
+  const preserveConversationScrollTopRef = useRef<number | null>(null);
   const lifecycle = useRef(0);
   const roundGeneration = useRef(0);
   const installedRoundId = useRef<string | null>(null);
@@ -72,6 +78,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const successVideoRef = useRef<HTMLVideoElement | null>(null);
   const successCaptionTrackRef = useRef<HTMLTrackElement | null>(null);
   const successTitleRef = useRef<HTMLHeadingElement | null>(null);
+  const cinematicTimerRef = useRef<number | null>(null);
   const autoEndedRoundRef = useRef<string | null>(null);
   const endingWasShownRef = useRef(false);
   const introProgressRef = useRef({ at: Date.now(), time: 0 });
@@ -101,6 +108,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
       const drawnWidth = image.naturalWidth * scale, drawnHeight = image.naturalHeight * scale;
       const offsetX = (width - drawnWidth) / 2, offsetY = (height - drawnHeight) / 2;
       setSafeBounds({ left: `${(offsetX + drawnWidth * 0.3553) / width * 100}%`, top: `${(offsetY + drawnHeight * 0.424) / height * 100}%`, width: `${drawnWidth * 0.2871 / width * 100}%`, height: `${drawnHeight * 0.3985 / height * 100}%` });
+      setLcdBounds({ left: `${(offsetX + drawnWidth * 0.45395) / width * 100}%`, top: `${(offsetY + drawnHeight * 0.55473) / height * 100}%`, width: `${drawnWidth * 0.06938 / width * 100}%`, height: `${drawnHeight * 0.03188 / height * 100}%`, fontSize: `${Math.max(6, drawnHeight * 0.03188 * 0.56)}px` });
     };
     image.onload = update; image.src = manifest.closedFrame;
     if (image.complete) update();
@@ -124,7 +132,8 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const install = useCallback((value: Session) => {
     roundGeneration.current++;
     if (installedRoundId.current !== value.round.id) { followConversationRef.current = true; installedRoundId.current = value.round.id; }
-    setImmersive(true); setSession(value); setRoundClock(Date.now()); setReview(value.state.review?.status === 'complete' ? value.state.review as Review : null); setSuccessEnding(null);
+    if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current);
+    setCinematicPhase(null); setRevealedDigits(''); setImmersive(true); setSession(value); setRoundClock(Date.now()); setReview(value.state.review?.status === 'complete' ? value.state.review as Review : null); setSuccessEnding(null);
     setMetricsPhase('read_think', value.round.id, value.round.accessToken);
     setError(''); setActiveModal(null); setSendStatus('');
     const stored = sessionStorage.getItem(`workshop-inception-send:${value.round.id}`);
@@ -135,19 +144,26 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   }, []);
 
   const playConfirmedEnding = useCallback((roundId: string, result: Review | null, state: InceptionState) => {
-    if (!manifest.successVideo || result?.status !== 'complete' || result.verdict !== 'recovered' || !state.safeOpened || autoEndedRoundRef.current === roundId) return;
+    if (!manifest.successVideo || result?.status !== 'complete' || result.verdict !== 'recovered' || !state.safeOpened || !state.revealedCombination || autoEndedRoundRef.current === roundId) return;
     setActiveModal(null);
     autoEndedRoundRef.current = roundId;
     endingWasShownRef.current = true;
-    setSuccessEndingError(''); setSuccessCaptionsEnabled(true); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1);
-    setSuccessEnding(reducedMotion ? 'blocked' : 'playing');
+    setSuccessEndingError(''); setSuccessCaptionsEnabled(true); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1); setSuccessEnding(null);
+    setCinematicPhase('entry'); setRevealedDigits(reducedMotion ? state.revealedCombination : '');
+    if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current);
+    if (reducedMotion) cinematicTimerRef.current = window.setTimeout(() => { setCinematicPhase('film'); setSuccessEnding('playing'); }, 450);
+    else {
+      let count = 0;
+      const revealNext = () => { count += 1; setRevealedDigits(state.revealedCombination!.slice(0, count)); if (count < state.revealedCombination!.length) cinematicTimerRef.current = window.setTimeout(revealNext, 180); else cinematicTimerRef.current = window.setTimeout(() => { setCinematicPhase('film'); setSuccessEnding('playing'); }, 500); };
+      cinematicTimerRef.current = window.setTimeout(revealNext, 180);
+    }
   }, [manifest.successVideo, reducedMotion]);
 
   const replayConfirmedEnding = () => {
     if (!session || !manifest.successVideo || review?.status !== 'complete' || review.verdict !== 'recovered' || !session.state.safeOpened) return;
     setActiveModal(null);
     endingWasShownRef.current = true;
-    setSuccessEndingError(''); setSuccessCaptionsEnabled(true); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1); setSuccessEnding('playing');
+    setSuccessEndingError(''); setSuccessCaptionsEnabled(true); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1); setCinematicPhase('film'); setSuccessEnding('playing');
   };
 
   useEffect(() => {
@@ -163,8 +179,22 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   }, [successEnding, successEndingAttempt]);
 
   useEffect(() => {
+    if (successEnding !== 'playing') return;
+    const video = successVideoRef.current;
+    if (!video) return;
+    let active = true, lastTime = video.currentTime, lastProgress = Date.now();
+    const timer = window.setInterval(() => {
+      if (video.currentTime > lastTime + 0.05) { lastTime = video.currentTime; lastProgress = Date.now(); }
+      else if (Date.now() - lastProgress > 9000) {
+        if (active) { setSuccessEndingError('The ending video stopped playing. Your saved result remains available.'); setSuccessEnding('error'); }
+      }
+    }, 1000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [successEnding, successEndingAttempt]);
+
+  useEffect(() => {
     if (successEnding !== 'closing') return;
-    const timer = window.setTimeout(() => setSuccessEnding(null), reducedMotion ? 0 : 650);
+    const timer = window.setTimeout(() => { setSuccessEnding(null); setCinematicPhase(null); }, reducedMotion ? 0 : 650);
     return () => window.clearTimeout(timer);
   }, [successEnding, reducedMotion]);
 
@@ -189,6 +219,12 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     const conversation = conversationRef.current;
     if (!conversation) return;
     if (followConversationRef.current) conversation.scrollTop = conversation.scrollHeight;
+    else if (preserveConversationScrollTopRef.current !== null) {
+      const scrollTop = preserveConversationScrollTopRef.current;
+      conversation.scrollTop = scrollTop;
+      window.requestAnimationFrame(() => { if (!followConversationRef.current && conversation.isConnected) conversation.scrollTop = scrollTop; });
+      preserveConversationScrollTopRef.current = null;
+    }
     followConversationRef.current = false;
   }, [session?.round.id, session?.round.messages.length]);
   useEffect(() => {
@@ -305,12 +341,13 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
           setReview(result.review);
           setSession(current => current?.round.id === roundId ? { ...current, state: result.state } : current);
           playConfirmedEnding(roundId, result.review, result.state);
+          if (!(result.review.status === 'complete' && result.review.verdict === 'recovered' && result.state.safeOpened && result.state.revealedCombination)) setCinematicPhase(null);
           if (result.review.status === 'complete') setSendStatus(result.review.verdict === 'recovered' ? 'Review complete. The safe is open.' : 'Review complete. Read the result below.');
           return;
         }
       } catch { /* transient GET failures do not create another review request */ }
       if (active && attempts < 32) timer = window.setTimeout(poll, 2000);
-      else if (active && attempts >= 32) setReview({ status: 'unavailable', retryable: true, errorCode: 'review_timeout' });
+      else if (active && attempts >= 32) { setReview({ status: 'unavailable', retryable: true, errorCode: 'review_timeout' }); setCinematicPhase(null); }
     };
     timer = window.setTimeout(poll, 1500);
     return () => { active = false; window.clearTimeout(timer); };
@@ -342,6 +379,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   useEffect(() => { if (session && audioRef.current) audioRef.current.setDeadline(session.round.deadline); }, [session?.round.id, session?.round.deadline]);
   useEffect(() => { localStorage.setItem(soundStorage, JSON.stringify(sound)); audioRef.current?.setVolume(sound.volume); if (audioRef.current?.isMuted !== sound.muted) audioRef.current?.setMuted(sound.muted); }, [sound]);
   useEffect(() => { if (!session?.round.endedAt && !expired) return; setSoundReady(false); if (audioRef.current) void audioRef.current.dispose(); audioRef.current = null; }, [session?.round.endedAt, expired]);
+  useEffect(() => { if (!retryCooldownUntil) { setRetrySeconds(0); return; } const tick = () => { const seconds = Math.max(0, Math.ceil((retryCooldownUntil - Date.now()) / 1000)); setRetrySeconds(seconds); if (!seconds) setRetryCooldownUntil(0); }; tick(); const timer = window.setInterval(tick, 1000); return () => window.clearInterval(timer); }, [retryCooldownUntil]);
   const enterFullscreen = async () => {
     setImmersive(true);
     try { if (!document.fullscreenElement) await rootRef.current?.requestFullscreen(); setFullscreen(Boolean(document.fullscreenElement)); }
@@ -350,15 +388,21 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const leave = async () => { lifecycle.current++; const instance = audioRef.current; audioRef.current = null; if (instance) await instance.dispose(); if (document.fullscreenElement) await document.exitFullscreen().catch(() => undefined); setImmersive(false); onHome(); };
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === 'm' && !event.repeat && !(event.target instanceof HTMLElement && /INPUT|TEXTAREA|SELECT/.test(event.target.tagName))) { setSound((current: typeof defaultSound) => ({ ...current, muted: !current.muted })); return; }
       if (event.key !== 'Escape') return;
       if (activeModal) { setActiveModal(null); return; }
-      if (intro || session) { event.preventDefault(); void leave(); }
+      if (intro && pendingStart) { event.preventDefault(); setIntro(false); setFilmEnded(false); return; }
+      if (cinematicPhase === 'entry') return;
+      if (cinematicPhase === 'film') { event.preventDefault(); setSuccessEnding(null); setCinematicPhase(null); return; }
+      if (intro) { event.preventDefault(); finishIntro(true); return; }
+      if (session) { event.preventDefault(); void leave(); }
     };
     window.addEventListener('keydown', onEscape);
     return () => window.removeEventListener('keydown', onEscape);
-  }, [activeModal, intro, session?.round.id]);
+  }, [activeModal, intro, pendingStart, session?.round.id, cinematicPhase]);
   const beginIntro = () => {
     if (!config?.connected || busy || (!config.recordingAccepted && !consented)) return;
+    if (!manifest.introVideo) { void startRound(selectedProfile); return; }
     setError(''); setIntroMediaIssue(''); introProgressRef.current = { at: Date.now(), time: 0 }; introStartRequested.current = false; void enterFullscreen();
     startAmbient(Date.now() + 300000);
     sessionStorage.setItem('workshop-inception-intro-at', String(Date.now())); setIntroTimeLeft(introDurationSeconds); setFilmEnded(!manifest.introVideo); setIntroMediaAttempt(0); setIntro(true);
@@ -385,12 +429,14 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
 
   const send = async (retry = false) => {
     if (!session || sendLock.current || (!retry && closed) || busy) return;
+    if (!retry && Date.now() < retryCooldownUntil) return;
     const existing = pendingSend;
     if (retry && !existing) return;
     if (retry && !existing?.id) return;
     if (!retry && (!messageText.trim() || existing)) return;
     const transcript = conversationRef.current;
     followConversationRef.current = !transcript || transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop < 72;
+    preserveConversationScrollTopRef.current = followConversationRef.current ? null : transcript?.scrollTop ?? 0;
     const focusAtSend = document.activeElement;
     const roundId = session.round.id, generation = lifecycle.current, roundToken = roundGeneration.current;
     const pending = existing || { id: crypto.randomUUID(), content: messageText.trim() };
@@ -414,6 +460,8 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
       if (terminalReceipt) { sessionStorage.removeItem(`workshop-inception-send:${session.round.id}`); setPendingSend(null); setSendStatus('The prompt was recorded, but Fischer could not reply. Send again to create a new attempt.'); }
       else if (apiError.receiptConfirmed) setSendStatus(apiError.submissionStatus === 'succeeded' ? 'Reply received; refreshing the saved conversation…' : 'The receipt is still being checked. Retry this same message to recover its result.');
       else setSendStatus('The response was not confirmed. Retry to check this same message.');
+      if (terminalReceipt && apiError.retryAfterSeconds) setRetryCooldownUntil(Date.now() + apiError.retryAfterSeconds * 1000);
+      if (terminalReceipt && apiError.failureCode === 'rate_limited') setSendStatus(apiError.rateLimitScope === 'tokens_daily' ? apiError.retryAfterSeconds ? 'Your prompt is saved, but the model service reached its daily token allowance. You can send again after the cooldown.' : 'Your prompt is saved, but the model service reached its daily token allowance. Wait before trying again.' : apiError.retryAfterSeconds ? 'Your prompt is saved, but the model service is temporarily rate limited. You can send again after the cooldown.' : 'Your prompt is saved, but the model service is temporarily rate limited. Wait before trying again.');
       setError((cause as Error).message); if (apiError.receiptConfirmed && !terminalReceipt) await fetchSession(session.round.id).catch(() => undefined);
     } finally { if (lifecycle.current === generation) setBusy(false); sendLock.current = false; }
   };
@@ -422,25 +470,26 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     if (!session || busy || session.round.endedAt || pendingSend) return;
     const roundId = session.round.id, generation = lifecycle.current, roundToken = roundGeneration.current;
     recordMetricsInteraction('finish', roundId, session.round.accessToken);
-    setBusy(true); setError(''); setSendStatus('Saving conversation for independent review…');
+    setCinematicPhase('checking'); setBusy(true); setError(''); setSendStatus('');
     try {
       const result = await api<{ round: Round; state: InceptionState }>(`/inception/rounds/${roundId}/finish`, { method: 'POST', body: { answer: '' } });
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
       setSession(current => current?.round.id === roundId ? { ...current, round: result.round, state: result.state } : current); setRoundClock(Date.now());
       await requestReview(roundId);
-    } catch (cause) { if (lifecycle.current === generation && roundGeneration.current === roundToken) { setError((cause as Error).message); setSendStatus(''); } }
+    } catch (cause) { if (lifecycle.current === generation && roundGeneration.current === roundToken) { setCinematicPhase(null); setError((cause as Error).message); setSendStatus(''); } }
     finally { if (lifecycle.current === generation) setBusy(false); }
   };
   const requestReview = async (roundId = session?.round.id) => {
     if (!roundId || reviewLock.current) return;
     const generation = lifecycle.current, roundToken = roundGeneration.current;
     if (session?.round.id === roundId) recordMetricsInteraction('review', roundId, session.round.accessToken);
-    reviewLock.current = true; setReview({ status: 'pending' });
+    reviewLock.current = true; setReview({ status: 'pending' }); setCinematicPhase('checking');
     try {
       const result = await api<{ review: Review | null; state: InceptionState }>(`/inception/rounds/${roundId}/review`, { method: 'POST', body: {} });
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
       setReview(result.review); if (result.state) setSession(current => current?.round.id === roundId ? { ...current, state: result.state } : current);
       if (result.state) playConfirmedEnding(roundId, result.review, result.state);
+      if (result.review?.status !== 'pending' && !(result.review?.status === 'complete' && result.review.verdict === 'recovered' && result.state?.safeOpened && result.state.revealedCombination)) setCinematicPhase(null);
       if (result.review?.status === 'complete') setSendStatus(result.review.verdict === 'recovered' ? 'Review complete. The safe is open.' : 'Review complete. Read the result below.');
     } catch (cause) {
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
@@ -449,9 +498,12 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
       if (recovered?.review && recovered.review.status !== 'pending') {
         setReview(recovered.review); setSession(current => current?.round.id === roundId ? { ...current, state: recovered.state } : current);
         playConfirmedEnding(roundId, recovered.review, recovered.state);
+        if (recovered.review.status !== 'pending' && !(recovered.review.status === 'complete' && recovered.review.verdict === 'recovered' && recovered.state.safeOpened && recovered.state.revealedCombination)) setCinematicPhase(null);
         setSendStatus(recovered.review.status === 'complete' && recovered.review.verdict === 'recovered' ? 'Review complete. The safe is open.' : 'Review complete. Read the result below.');
+      } else if (recovered?.review?.status === 'pending') {
+        setReview({ status: 'pending' }); setCinematicPhase('checking'); setError('');
       } else {
-        setReview({ status: 'unavailable', retryable: true, errorCode: 'provider_error' }); setError((cause as Error).message);
+        setReview({ status: 'unavailable', retryable: true, errorCode: 'provider_error' }); setCinematicPhase(null); setError((cause as Error).message);
       }
     }
     finally { reviewLock.current = false; }
@@ -487,45 +539,47 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   if (loading) return <main className="inception-loading" aria-busy="true">Opening the strongroom…</main>;
   if (!config) return <main className="inception-loading"><p role="alert">{error || 'The strongroom is unavailable.'}</p><button onClick={onHome}>Return to workshop</button></main>;
   const activeProfile = session?.profile || config.profiles.find(item => item.id === selectedProfile) || config.profiles[0];
-  const gameBackground = session?.state.safeOpened ? manifest.openFrame : manifest.closedFrame;
+  const gameBackground = session?.state.safeOpened && cinematicPhase !== 'entry' ? manifest.openFrame : manifest.closedFrame;
   return <main ref={rootRef} className={`inception-root ${fullscreen ? 'is-fullscreen' : ''} ${immersive ? 'is-immersive' : ''} ${reducedMotion ? 'reduced-motion' : ''}`} style={gameBackground ? { '--scene-art': `url("${gameBackground}")` } as CSSProperties : undefined}>
     <div className="inception-shade" aria-hidden="true" />
     {!session ? intro ? <section className="inception-intro" aria-label="Strongroom approach">
       {manifest.introVideo && !introMediaIssue ? <video ref={introVideoRef} key={`${manifest.introVideo}-${introMediaAttempt}`} className="inception-intro-video" autoPlay playsInline muted onTimeUpdate={event => { const video = event.currentTarget; setIntroTimeLeft(Math.max(0, Math.ceil(introDurationSeconds - video.currentTime))); introProgressRef.current = { at: Date.now(), time: video.currentTime }; }} onEnded={() => { setIntroTimeLeft(0); setFilmEnded(true); }} onError={() => setIntroMediaIssue('The approach could not play. Retry it or continue to the strongroom.')}>
         <source src={manifest.introVideo} type="video/mp4" />{manifest.captions && <track kind="captions" src={manifest.captions} srcLang="en" label="English" default />}
       </video> : manifest.bridgeVideo && !introMediaIssue ? <video key={`${manifest.bridgeVideo}-${filmEnded}`} className="inception-intro-video" autoPlay playsInline muted><source src={manifest.bridgeVideo} type="video/mp4" /></video> : <div className={`inception-intro-scene ${filmEnded ? 'handoff' : ''}`} style={(manifest.bridgeFrame || manifest.closedFrame) ? { backgroundImage: `url("${manifest.bridgeFrame || manifest.closedFrame}")` } : undefined}><p>THE DREAM IS BEGINNING TO SHIFT</p><div className="inception-intro-caption">Fischer is close. The safe is nearby.</div></div>}
-      <div className="inception-intro-chrome"><span>THE STRONGROOM</span><span aria-live="polite">{time(introTimeLeft)}</span><div><label className="inception-volume" aria-label="Sound volume"><Volume2 size={15} /><input type="range" min="0" max="0.7" step="0.05" value={sound.volume} onChange={event => setSound({ ...sound, volume: Number(event.target.value) })} /></label><button className="inception-icon-button" aria-label={sound.muted ? 'Unmute sound' : 'Mute sound'} onClick={() => { const muted = !sound.muted; setSound({ ...sound, muted }); if (!muted) startAmbient(Date.now() + 300000, false); }}>{sound.muted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>{ambientPath && !sound.muted && !soundReady && <Button className="inception-quiet-button" onClick={() => startAmbient(Date.now() + 300000, false)}>Play sound</Button>}<Button className="inception-quiet-button" onClick={() => void enterFullscreen()}><Maximize2 size={15} />{fullscreen ? 'Fullscreen' : 'Immersive view'}</Button>{pendingStart && <Button className="inception-quiet-button" disabled={busy} onClick={() => void startRound(pendingStart.profileId, { clientStartId: pendingStart.clientStartId })}>{busy ? 'Starting…' : 'Retry start'}</Button>}{introMediaIssue && <><span role="status">{introMediaIssue}</span><Button className="inception-quiet-button" disabled={busy} onClick={() => { introProgressRef.current = { at: Date.now(), time: 0 }; setIntroTimeLeft(introDurationSeconds); setIntroMediaIssue(''); setIntroMediaAttempt(value => value + 1); }}>Retry approach</Button></>}<Button aria-label="Skip approach and continue to strongroom" className="inception-quiet-button" disabled={busy} onClick={() => finishIntro(true)}>Continue to strongroom<ArrowRight size={15} /></Button><Button className="inception-quiet-button" onClick={() => { setIntro(false); sessionStorage.removeItem('workshop-inception-intro-at'); void leave(); }}><X size={15} />Leave</Button></div></div>
+      {introMediaIssue && <div className="inception-media-recovery" role="alert"><p>{introMediaIssue}</p><div><Button className="inception-quiet-button" disabled={busy} onClick={() => { introProgressRef.current = { at: Date.now(), time: 0 }; setIntroTimeLeft(introDurationSeconds); setIntroMediaIssue(''); setIntroMediaAttempt(value => value + 1); }}>Retry approach</Button><Button className="inception-quiet-button" disabled={busy} onClick={() => finishIntro(true)}>Continue</Button></div></div>}
+      {pendingStart && !busy && <div className="inception-media-recovery" role="alert"><p>The start receipt could not be confirmed.</p><Button className="inception-quiet-button" onClick={() => void startRound(pendingStart.profileId, { clientStartId: pendingStart.clientStartId })}>Retry start</Button><Button className="inception-quiet-button" onClick={() => { setIntro(false); setFilmEnded(false); }}>Return to entry</Button></div>}
       {error && <p className="inception-inline-error" role="alert">{error}</p>}
     </section> : <section className="inception-entry">
-      <header><span className="inception-kicker">A DREAM OF THE STRONGROOM</span><button className="inception-back" onClick={onHome}><ArrowLeft size={15} />Workshop</button></header>
+      <header><span className="inception-kicker">A DREAM OF THE STRONGROOM</span><div className="inception-entry-header-actions"><button className="inception-entry-sound" aria-label={sound.muted ? 'Unmute sound' : 'Mute sound'} aria-pressed={sound.muted} onClick={() => setSound((current: typeof defaultSound) => ({ ...current, muted: !current.muted }))}>{sound.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}<span>{sound.muted ? 'Sound off' : 'Sound on'}</span></button><button className="inception-back" onClick={onHome}><ArrowLeft size={15} />Workshop</button></div></header>
       <div className="inception-entry-copy"><p className="inception-kicker">INCEPTION</p><h1>Inception Strongroom</h1><p>You are Eames. Fischer cannot remember the combination. Help him return to the moment he first said it, before the dream collapses.</p></div>
       {!config.recordingAccepted && <label className="inception-consent"><input type="checkbox" checked={consented} onChange={event => setConsented(event.target.checked)} /><span>{RECORDING_NOTICE} <strong>I understand and agree to this recording.</strong></span></label>}
       <fieldset className="inception-profiles"><legend>Choose a conversation style</legend>{config.profiles.map(profile => <button type="button" key={profile.id} className={selectedProfile === profile.id ? 'selected' : ''} onClick={() => setSelectedProfile(profile.id)} aria-pressed={selectedProfile === profile.id}><span>{profile.label}</span><small>{profile.description}</small></button>)}</fieldset>
       {!config.connected && <p className="inception-inline-error" role="status">The target model is not connected yet. Your saved conversations remain available.</p>}
       {ambientPath && <p className="inception-media-note">Sound begins when you enter. You can mute it anytime.</p>}
-      {pendingStart && <div className="inception-receipt" role="alert"><p>The start receipt is not confirmed. Retry with the saved request key.</p><Button className="inception-primary" disabled={busy || (!config.recordingAccepted && !consented)} onClick={() => void startRound(pendingStart.profileId, { clientStartId: pendingStart.clientStartId })}>Check start receipt</Button></div>}
+      {pendingStart && !busy && <div className="inception-receipt" role="alert"><p>The start receipt is not confirmed. Retry with the saved request key.</p><Button className="inception-primary" disabled={!config.recordingAccepted && !consented} onClick={() => void startRound(pendingStart.profileId, { clientStartId: pendingStart.clientStartId })}>Check start receipt</Button></div>}
       {error && <p className="inception-inline-error" role="alert">{error}</p>}
       {!pendingStart && <div className="inception-entry-actions"><Button className="inception-primary" disabled={!config.connected || busy || (!config.recordingAccepted && !consented)} onClick={beginIntro}>Watch and begin<ArrowRight size={16} /></Button><Button className="inception-secondary" disabled={!config.connected || busy || (!config.recordingAccepted && !consented)} onClick={() => void startRound(selectedProfile)}>Begin without film</Button></div>}
       <footer>{config.reviewEnabled ? 'Five minutes. Your saved conversation determines whether the safe opens.' : 'Five minutes. Conversation review is currently unavailable.'}</footer>
-    </section> : <section className={`inception-play ${cinematicHandoff ? 'is-cinematic-handoff' : ''} ${!handoffInteractive ? 'is-handoff-locked' : ''}`} aria-label="Inception strongroom">
-      <header className="inception-topbar" inert={!handoffInteractive || Boolean(successEnding) ? true : undefined}><span className="inception-kicker">INCEPTION <i>·</i> STRONGROOM</span><div className="inception-top-actions"><span className={`inception-clock ${remaining <= 45 ? 'urgent' : ''}`} role="timer" aria-label={`${time(remaining)} remaining`}>{time(remaining)}</span><label className="inception-volume" aria-label="Sound volume"><Volume2 size={15} /><input type="range" min="0" max="0.7" step="0.05" value={sound.volume} disabled={closed} onChange={event => setSound({ ...sound, volume: Number(event.target.value) })} /></label><button className="inception-icon-button" aria-label={sound.muted ? 'Unmute sound' : 'Mute sound'} disabled={closed} onClick={() => { const muted = !sound.muted; setSound({ ...sound, muted }); if (!muted) startAmbient(session.round.deadline, false); }}>{sound.muted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>{ambientPath && !sound.muted && !soundReady && !closed && <button className="inception-icon-button" onClick={() => startAmbient(session.round.deadline, false)}>Play sound</button>}<button className="inception-icon-button" aria-label={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} onClick={() => fullscreen ? void document.exitFullscreen().catch(() => undefined) : void enterFullscreen()}><Maximize2 size={16} /></button><button className="inception-icon-button" aria-label="Leave strongroom" onClick={() => void leave()}><X size={18} /></button></div></header>
-      <div className={`inception-scene-row ${gameBackground ? 'has-art' : ''}`} inert={!handoffInteractive || Boolean(successEnding) ? true : undefined}>
-        <div ref={safeRef} className={`inception-safe ${session.state.safeOpened ? 'open' : ''} ${gameBackground ? 'with-art' : ''}`} role="group" aria-label={session.state.safeOpened ? 'Strongroom safe open' : 'Closed strongroom safe'}><div className="inception-safe-door"><div className="inception-safe-keypad" aria-hidden="true"><span className="inception-safe-display" /><div>{Array.from({ length: 12 }, (_, index) => <i key={index} />)}</div></div><span className="inception-safe-handle" /></div>{!session.state.safeOpened && <><button className="inception-hotspot safe-hotspot" style={gameBackground ? safeBounds : undefined} aria-label="Inspect safe" disabled={busy || closed || !handoffInteractive} onClick={() => { setActiveModal('safe'); if (!session.state.safeInspected) void inspect('inspect_safe'); }} /><button className="inception-hotspot room-hotspot" aria-label="Inspect the room" disabled={busy || closed || !handoffInteractive} onClick={() => { setActiveModal('room'); if (!session.state.roomInspected) void inspect('inspect_room'); }} /></>}</div>
-        <section className="inception-dialogue" aria-label="Conversation with Fischer" inert={!handoffInteractive ? true : undefined}>
-          <p className="inception-location">BY RADIO · EAMES TO FISCHER</p>
+    </section> : <section className={`inception-play ${cinematicHandoff ? 'is-cinematic-handoff' : ''} ${cinematicPhase ? `is-cinematic-${cinematicPhase}` : ''} ${!handoffInteractive ? 'is-handoff-locked' : ''}`} aria-label="Inception strongroom">
+      <header className="inception-topbar" inert={!handoffInteractive || Boolean(successEnding) || Boolean(cinematicPhase) ? true : undefined}><div className="inception-top-actions"><span className={`inception-clock ${remaining <= 45 ? 'urgent' : ''}`} role="timer" aria-label={`${time(remaining)} remaining`}>{time(remaining)}</span><label className="inception-volume" aria-label="Sound volume"><Volume2 size={15} /><input type="range" min="0" max="0.7" step="0.05" value={sound.volume} disabled={closed} onChange={event => setSound({ ...sound, volume: Number(event.target.value) })} /></label><button className="inception-icon-button" aria-label={sound.muted ? 'Unmute sound' : 'Mute sound'} disabled={closed} onClick={() => { const muted = !sound.muted; setSound({ ...sound, muted }); if (!muted) startAmbient(session.round.deadline, false); }}>{sound.muted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>{ambientPath && !sound.muted && !soundReady && !closed && <button className="inception-icon-button" onClick={() => startAmbient(session.round.deadline, false)}>Play sound</button>}<button className="inception-icon-button" aria-label={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} onClick={() => fullscreen ? void document.exitFullscreen().catch(() => undefined) : void enterFullscreen()}><Maximize2 size={16} /></button><button className="inception-icon-button" aria-label="Leave strongroom" onClick={() => void leave()}><X size={18} /></button></div></header>
+      {cinematicPhase === 'checking' && <p className="visually-hidden" role="status">Checking the saved conversation…</p>}
+      <div className={`inception-scene-row ${gameBackground ? 'has-art' : ''}`} inert={!handoffInteractive || Boolean(successEnding) || Boolean(cinematicPhase) ? true : undefined}>
+        <div ref={safeRef} className={`inception-safe ${session.state.safeOpened ? 'open' : ''} ${gameBackground ? 'with-art' : ''}`} role="group" aria-label={session.state.safeOpened ? 'Strongroom safe open' : 'Closed strongroom safe'}><div className="inception-safe-door"><div className="inception-safe-keypad" aria-hidden="true"><span className="inception-safe-display" /><div>{Array.from({ length: 12 }, (_, index) => <i key={index} />)}</div></div><span className="inception-safe-handle" /></div>{cinematicPhase === 'entry' && <span className="inception-revealed-code" style={lcdBounds} aria-label="Confirmed combination">{revealedDigits}</span>}{!session.state.safeOpened && <><button className="inception-hotspot safe-hotspot" style={gameBackground ? safeBounds : undefined} aria-label="Inspect safe" disabled={busy || closed || !handoffInteractive} onClick={() => { setActiveModal('safe'); if (!session.state.safeInspected) void inspect('inspect_safe'); }} /><button className="inception-hotspot room-hotspot" aria-label="Inspect the room" disabled={busy || closed || !handoffInteractive} onClick={() => { setActiveModal('room'); if (!session.state.roomInspected) void inspect('inspect_room'); }} /></>}</div>
+        <section className="inception-dialogue" aria-label="Conversation with Fischer" inert={!handoffInteractive || Boolean(cinematicPhase) ? true : undefined}>
+          <p className="inception-location" aria-hidden="true"></p>
           <div ref={conversationRef} className="inception-conversation" role="log" aria-label="Conversation transcript" aria-live="polite" aria-relevant="additions" aria-atomic="false" tabIndex={0} onScroll={event => { const element = event.currentTarget; followConversationRef.current = element.scrollHeight - element.clientHeight - element.scrollTop < 72; }}>
-            {session.round.messages.filter(item => item.role === 'user' || item.role === 'assistant').map((item: Message) => <article key={item.id} className={item.role === 'user' ? 'from-player' : 'from-fischer'}><span>{item.role === 'user' ? (session.profile.profileRevision === 1 ? 'YOU' : 'EAMES') : 'FISCHER'}</span><p>{item.content}</p></article>)}
+            {session.round.messages.filter(item => item.role === 'user' || item.role === 'assistant').map((item: Message) => <article key={item.id} className={item.role === 'user' ? 'from-player' : 'from-fischer'}><img src={item.role === 'user' ? manifest.portraits?.eames : manifest.portraits?.fischer} alt={item.role === 'user' ? 'Eames' : 'Fischer'} /><p>{item.content}</p></article>)}
           </div>
           {session.profile.profileRevision === 1 && !session.round.endedAt && <div className="inception-old-version"><p>This conversation uses an earlier version. Its prompts are preserved.</p><Button className="inception-secondary" disabled={busy || Boolean(pendingSend) || review?.status === 'pending'} onClick={() => void archiveOldAndStartCurrent()}>Finish this version and start Standard</Button></div>}
           {expired && !session.round.endedAt && <div className="inception-expired-controls" role="group" aria-label="Finish the expired conversation"><p>Time is up. Your saved conversation can still be reviewed.</p>{pendingSend && <><p role="status">Retry checks the same saved message receipt.</p><Button className="inception-secondary" disabled={busy} onClick={() => void send(true)}>Retry saved message</Button></>}{!pendingSend && <Button className="inception-primary" disabled={busy} onClick={() => void finish()}>{busy ? 'Saving conversation…' : 'Finish and review'}</Button>}{error && <p role="alert" className="inception-inline-error">{error}</p>}</div>}
           {!session.round.endedAt ? <div className="inception-composer">
-            <label htmlFor="inception-message">Speak to Fischer</label>
+            <label htmlFor="inception-message" className="visually-hidden">Speak to Fischer</label>
             <textarea id="inception-message" ref={inputRef} value={messageText} disabled={closed || busy || Boolean(pendingSend)} maxLength={4000} rows={2} onChange={event => setMessageText(event.target.value)} onFocus={() => setMetricsPhase('compose', session.round.id, session.round.accessToken)} onBlur={() => setMetricsPhase('read_think', session.round.id, session.round.accessToken)} onKeyDown={keyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} placeholder={closed ? 'This conversation has ended.' : 'Ask Fischer a question…'} />
             {pendingSend && <p className="inception-send-status" role="status">This message has an unknown receipt. Retry checks the same saved request.</p>}
-            <div className="inception-composer-actions"><span className="inception-send-status" role="status">{sendStatus}{busy && sendStatus ? ' ' : ''}</span><div>{pendingSend ? <Button className="inception-secondary" disabled={busy} onClick={() => void send(true)}>Retry saved message</Button> : <Button className="inception-primary" disabled={closed || busy || !messageText.trim()} onClick={() => void send()}>Send<ArrowRight size={15} /></Button>}{!session.round.endedAt && !expired && <Button className="inception-secondary" disabled={busy || Boolean(pendingSend)} onClick={() => void finish()}>Finish and review</Button>}</div></div>
+            <div className="inception-composer-actions"><span className="inception-send-status" role="status">{sendStatus}{retrySeconds ? ` Try again in ${retrySeconds}s.` : ''}</span><div>{pendingSend ? <Button className="inception-secondary" disabled={busy} onClick={() => void send(true)}>Retry saved message</Button> : <Button className="inception-primary" disabled={closed || busy || !messageText.trim() || retrySeconds > 0} onClick={() => void send()}>Send<ArrowRight size={15} /></Button>}{!session.round.endedAt && !expired && <Button className="inception-secondary" disabled={busy || Boolean(pendingSend)} onClick={() => void finish()}>Finish and review</Button>}</div></div>
             {error && !expired && <p className="inception-inline-error" role="alert">{error}</p>}
           </div> : <p className="inception-conversation-saved" role="status">Conversation saved.</p>}
-          {(expired || session.round.endedAt) && <div className="inception-result" role="status">
+          {(expired || session.round.endedAt) && !cinematicPhase && <div className="inception-result" role="status">
             <p className="inception-kicker">THE STRONGROOM</p>
             <div className="inception-result-copy">
               {!review ? <p>{session.round.endedAt ? 'Your conversation is saved. Its outcome is not yet verified.' : 'Time is up. Your saved conversation can be reviewed.'}</p>
@@ -541,28 +595,19 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
               {session.state.safeOpened && review?.status === 'complete' && review.verdict === 'recovered' && manifest.successVideo && <Button aria-label="Rewatch ending" className="inception-secondary" onClick={replayConfirmedEnding}>Rewatch the ending</Button>}
             </div>
           </div>}
-          <footer className="inception-play-footer"><span>{activeProfile?.label} · {session.round.messages.filter(item => item.role === 'user').length} prompts</span><button onClick={() => setActiveModal('rewatch')}>Rewatch approach</button></footer>
+          <footer className="inception-play-footer"><span>{activeProfile?.label} · {session.round.messages.filter(item => item.role === 'user').length} prompts</span></footer>
         </section>
       </div>
       {activeModal && <div className="inception-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setActiveModal(null); }}><section ref={modalRef} className="inception-modal" role="dialog" aria-modal="true" aria-labelledby="inception-modal-title" tabIndex={-1}>
         <button className="inception-modal-close" aria-label="Close" onClick={() => setActiveModal(null)}><X size={18} /></button>
-        {activeModal === 'safe' ? <><p className="inception-kicker">OBJECT INSPECTION</p><h2 id="inception-modal-title">{session.state.safeOpened ? 'Inside the strongroom safe' : 'The strongroom safe'}</h2>{session.state.safeOpened ? <div className="inception-open-interior" aria-label="Inside the open strongroom safe">{manifest.openFrame ? <img src={manifest.openFrame} alt="The open strongroom safe" /> : <p>The door is open. The mechanism is still.</p>}</div> : <><div className="inception-safe-zoom" role="img" aria-label="Close view of the compact green safe, brushed-metal keypad, and circular handle" style={manifest.closedFrame ? { backgroundImage: `url("${manifest.closedFrame}")` } : undefined} /><p className="inception-safe-detail">{session.state.safeInspected ? 'A compact safe is recessed in the dark-green bedside cabinet. Its brushed-steel face holds twelve rounded metal buttons, a small display, and a circular handle. No code is visible.' : 'A compact dark-green bedside safe with a brushed-metal face and circular handle.'}</p>{!session.state.safePresented && <Button className="inception-secondary" disabled={!session.state.safeInspected || busy || closed} onClick={() => void inspect('present_safe')}>Present safe to Fischer</Button>}</>}{busy && <p role="status">Saving inspection…</p>}</> : activeModal === 'room' ? <><p className="inception-kicker">OBJECT INSPECTION</p><h2 id="inception-modal-title">The strongroom</h2><p>A quiet bedside cabinet stands by the bed. White bedlinen runs along the right edge of the frame; nothing else in view explains the combination.</p>{busy && <p role="status">Saving observation…</p>}</> : activeModal === 'rewatch' ? <><p className="inception-kicker">THE STRONGROOM APPROACH</p><h2 id="inception-modal-title">Rewatch the approach</h2>{manifest.introVideo ? <video className="inception-rewatch-video" controls playsInline preload="metadata"><source src={manifest.introVideo} type="video/mp4" />{manifest.captions && <track kind="captions" src={manifest.captions} srcLang="en" label="English" default />}</video> : <div className="inception-rewatch-scene" style={manifest.bridgeFrame ? { backgroundImage: `url("${manifest.bridgeFrame}")` } : undefined}><p>Fischer is close. The safe is nearby.</p></div>}<p>Rewatching does not start a new attempt or change the remaining time.</p></> : null}
+        {activeModal === 'safe' ? <><p className="inception-kicker">OBJECT INSPECTION</p><h2 id="inception-modal-title">{session.state.safeOpened ? 'Inside the strongroom safe' : 'The strongroom safe'}</h2>{session.state.safeOpened ? <div className="inception-open-interior" aria-label="Inside the open strongroom safe">{manifest.openFrame ? <img src={manifest.openFrame} alt="The open strongroom safe" /> : <p>The door is open. The mechanism is still.</p>}</div> : <><div className="inception-safe-zoom" role="img" aria-label="Close view of the compact green safe, brushed-metal keypad, and circular handle" style={manifest.closedFrame ? { backgroundImage: `url("${manifest.closedFrame}")` } : undefined} /><p className="inception-safe-detail">{session.state.safeInspected ? 'A compact safe is recessed in the dark-green bedside cabinet. Its brushed-steel face holds twelve rounded metal buttons, a small display, and a circular handle. No code is visible.' : 'A compact dark-green bedside safe with a brushed-metal face and circular handle.'}</p>{!session.state.safePresented && <Button className="inception-secondary" disabled={!session.state.safeInspected || busy || closed} onClick={() => void inspect('present_safe')}>Present safe to Fischer</Button>}</>}{busy && <p role="status">Saving inspection…</p>}</> : <><p className="inception-kicker">OBJECT INSPECTION</p><h2 id="inception-modal-title">The strongroom</h2><p>A quiet bedside cabinet stands by the bed. White bedlinen runs along the right edge of the frame; nothing else in view explains the combination.</p>{busy && <p role="status">Saving observation…</p>}</>}
       </section></div>}
       {successEnding && <section className={`inception-success-ending ${successEnding === 'closing' ? 'is-closing' : ''}`} aria-label="Fischer's realization" aria-live="polite" inert={successEnding === 'closing' ? true : undefined}>
-        <video ref={successVideoRef} key={`${manifest.successVideo}-${successEndingAttempt}`} className="inception-success-ending-video" playsInline preload="auto" muted={sound.muted} onTimeUpdate={event => setSuccessTimeLeft(Math.max(0, Math.ceil((manifest.successDurationSeconds || event.currentTarget.duration || 29) - event.currentTarget.currentTime)))} onEnded={() => setSuccessEnding('closing')} onError={() => { setSuccessEndingError('The ending video could not be played. Your saved result remains available.'); setSuccessEnding('error'); }}>
+        <video ref={successVideoRef} key={`${manifest.successVideo}-${successEndingAttempt}`} className="inception-success-ending-video" playsInline preload="auto" muted={sound.muted} onTimeUpdate={event => setSuccessTimeLeft(Math.max(0, Math.ceil((manifest.successDurationSeconds || event.currentTarget.duration || 29) - event.currentTarget.currentTime)))} onEnded={() => { setSuccessEnding('closing'); setCinematicPhase(null); }} onError={() => { setSuccessEndingError('The ending video could not be played. Your saved result remains available.'); setSuccessEnding('error'); }}>
           <source src={manifest.successVideo || undefined} type="video/mp4" />{manifest.successCaptions && <track ref={successCaptionTrackRef} kind="captions" src={manifest.successCaptions} srcLang="en" label="English scene captions" default={successCaptionsEnabled} />}
         </video>
-        <h2 ref={successTitleRef} tabIndex={-1} className="inception-success-ending-title">Inside the strongroom</h2>
-        <div className="inception-success-ending-controls" role="group" aria-label="Ending playback controls">
-          {successEnding === 'blocked' && <><p role="status">Play the ending when you’re ready. Sound follows your saved preference.</p><Button className="inception-quiet-button" onClick={() => { setSuccessEndingError(''); setSuccessEndingAttempt(value => value + 1); setSuccessEnding('playing'); }}>Play ending · {time(successTimeLeft)}</Button></>}
-          {successEnding === 'error' && <p role="alert">{successEndingError}</p>}
-          {successEndingError && successEnding !== 'error' && <p role="status">{successEndingError}</p>}
-          <label className="inception-ending-volume" aria-label="Ending sound volume"><Volume2 size={15} /><input type="range" min="0" max="1" step="0.05" value={sound.volume / 0.7} onChange={event => setSound({ ...sound, volume: Number(event.target.value) * 0.7 })} /></label>
-          <Button className="inception-quiet-button" aria-label={sound.muted ? 'Turn ending sound on' : 'Mute ending sound'} onClick={() => setSound({ ...sound, muted: !sound.muted })}>{sound.muted ? <VolumeX size={17} /> : <Volume2 size={17} />}{sound.muted ? 'Sound off' : 'Mute'}</Button>
-          {manifest.successCaptions && <Button className="inception-quiet-button" aria-pressed={successCaptionsEnabled} onClick={() => setSuccessCaptionsEnabled(value => !value)}>{successCaptionsEnabled ? 'Captions on' : 'Captions off'}</Button>}
-          {successEnding !== 'error' && <Button className="inception-quiet-button" onClick={() => { setSuccessEndingError(''); setSuccessEnding(null); }}>Skip ending</Button>}
-          {successEnding === 'error' && <Button className="inception-quiet-button" onClick={() => { setSuccessEndingError(''); setSuccessEnding(null); }}>Return to result</Button>}
-        </div>
+        <h2 ref={successTitleRef} tabIndex={-1} className="visually-hidden">Inside the strongroom</h2>
+        {(successEnding === 'blocked' || successEnding === 'error') && <div className="inception-media-recovery" role={successEnding === 'error' ? 'alert' : 'status'}><p>{successEndingError || 'The ending could not start automatically.'}</p>{successEnding === 'blocked' && <Button className="inception-quiet-button" onClick={() => { setSuccessEndingError(''); setSuccessEndingAttempt(value => value + 1); setSuccessEnding('playing'); }}>Play ending</Button>}{successEnding === 'error' && <Button className="inception-quiet-button" onClick={() => { setSuccessEndingError(''); setSuccessEnding(null); setCinematicPhase(null); }}>Return to result</Button>}</div>}
       </section>}
     </section>}
   </main>;

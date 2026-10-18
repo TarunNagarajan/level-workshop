@@ -21,6 +21,23 @@ function readRateLimitResponseHeaders(headers) {
   return values;
 }
 
+function safeRateLimitScope(body) {
+  const type = body?.error?.type, message = body?.error?.message;
+  const normalized = `${typeof type === 'string' ? type : ''} ${typeof message === 'string' ? message.slice(0, 500) : ''}`.toLowerCase();
+  if (normalized.includes('token') && normalized.includes('day')) return 'tokens_daily';
+  if (normalized.includes('token') && normalized.includes('minute')) return 'tokens_minute';
+  if ((normalized.includes('request') || normalized.includes('req')) && normalized.includes('day')) return 'requests_daily';
+  if ((normalized.includes('request') || normalized.includes('req')) && normalized.includes('minute')) return 'requests_minute';
+  return 'unknown';
+}
+
+function safeRetryAfterSeconds(headers) {
+  const raw = headers?.get?.('retry-after');
+  if (typeof raw !== 'string') return undefined;
+  const value = /^\d{1,6}$/.test(raw.trim()) ? Number(raw.trim()) : Math.ceil((Date.parse(raw) - Date.now()) / 1000);
+  return Number.isFinite(value) && value > 0 ? Math.min(86400, Math.max(1, value)) : undefined;
+}
+
 export async function complete({ config, system, messages, temperature, onRateLimitHeaders }) {
   if (!config.apiKey) throw Object.assign(new Error('The target is not connected. Add GROQ_API_KEY to the server environment and restart.'), { status: 503 });
   const body = buildCompletionBody({ config, system, messages, temperature });
@@ -40,10 +57,16 @@ export async function complete({ config, system, messages, temperature, onRateLi
     try { onRateLimitHeaders(providerLimits); } catch { /* Calibration instrumentation must not change completion behavior. */ }
   }
   if (!response.ok) {
-    const message = response.status === 429 ? 'The provider limit was reached. Wait briefly and retry.'
-      : [401, 403].includes(response.status) ? 'The provider rejected the server API key. Check its access and restart.'
+    let providerError;
+    if (response.status === 429) {
+      try { providerError = await response.clone().json(); } catch { providerError = null; }
+    }
+    const rateLimitScope = response.status === 429 ? safeRateLimitScope(providerError) : undefined;
+    const retryAfterSeconds = response.status === 429 ? safeRetryAfterSeconds(response.headers) : undefined;
+    const message = response.status === 429 ? rateLimitScope === 'tokens_daily' ? 'Usage limit reached. Wait before trying again.' : 'The model service is temporarily rate limited. Wait before trying again.'
+      : [401, 403].includes(response.status) ? 'The model service is unavailable right now.'
       : `The provider could not complete this turn (${response.status}).`;
-    throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : 502, providerCode: response.status === 429 ? 'rate_limited' : [401, 403].includes(response.status) ? 'provider_auth' : response.status >= 500 ? 'provider_unavailable' : 'provider_rejected', ...(Object.keys(providerLimits).length ? { providerLimits } : {}) });
+    throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : 502, providerCode: response.status === 429 ? 'rate_limited' : [401, 403].includes(response.status) ? 'provider_auth' : response.status >= 500 ? 'provider_unavailable' : 'provider_rejected', ...(response.status === 429 ? { rateLimitScope, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) } : {}), ...(Object.keys(providerLimits).length ? { providerLimits } : {}) });
   }
   const result = await response.json();
   const text = result.choices?.[0]?.message?.content?.trim();

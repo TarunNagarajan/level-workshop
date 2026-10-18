@@ -8,7 +8,7 @@ test('durable submissions capture before provider, preserve errors, deduplicate 
   let calls = 0, failNext = false;
   const { app, store } = await createFixture({ recordingNoticeRequired: true, provider: { model: 'fixture', baseUrl: 'https://example.test/v1', apiKey: 'fixture' }, completion: async input => {
     calls++;
-    if (failNext) { failNext = false; throw Object.assign(new Error('provider outage'), { status: 429, providerCode: 'rate_limited' }); }
+    if (failNext) { failNext = false; throw Object.assign(new Error('tokens_per_day limit reached. Internal account: secret-id'), { status: 429, providerCode: 'rate_limited', rateLimitScope: 'tokens_daily', retryAfterSeconds: 3600 }); }
     return { text: 'A reply from the target.', model: input.config.model, latencyMs: 3, usage: 1 };
   } });
   const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
@@ -43,6 +43,9 @@ test('durable submissions capture before provider, preserve errors, deduplicate 
     failNext = true;
     const failed = await request(`/rounds/${round.body.id}/messages`, { method: 'POST', body: { content: 'Keep this when the model fails', requestId: '33333333-3333-4333-8333-333333333333' }, cookie });
     assert.equal(failed.status, 429); assert.equal(failed.body.submissionStatus, 'failed'); assert.equal(failed.body.receiptConfirmed, true);
+    assert.equal(failed.body.error, 'Usage limit reached. Your prompt is saved. Wait before trying again.');
+    assert.doesNotMatch(failed.body.error, /secret-id|Internal account/);
+    assert.equal(failed.body.failureCode, 'rate_limited'); assert.equal(failed.body.retryAfterSeconds, 3600); assert.equal(failed.body.rateLimitScope, 'tokens_daily');
     const savedFailure = await store.get('SELECT status, content, error_code FROM durable_submissions WHERE id = ?', failed.body.submissionId);
     assert.deepEqual({ ...savedFailure }, { status: 'failed', content: 'Keep this when the model fails', error_code: 'rate_limited' });
     const unauthorized = await request(`/rounds/${round.body.id}/messages`, { method: 'POST', auth: null, body: { content: 'Do not record this', requestId: '44444444-4444-4444-8444-444444444444' } });

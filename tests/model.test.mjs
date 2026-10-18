@@ -48,8 +48,10 @@ test('provider adapter classifies timeout, unavailable, rate limit, and credenti
     await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'timeout');
     globalThis.fetch = async () => { throw new Error('socket closed'); };
     await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'provider_unavailable');
-    globalThis.fetch = async () => ({ ok: false, status: 429 });
-    await assert.rejects(complete(input), error => error.status === 429 && error.providerCode === 'rate_limited');
+    globalThis.fetch = async () => ({ ok: false, status: 429, headers: new Headers({ 'retry-after': '120' }), clone: () => ({ json: async () => ({ error: { type: 'tokens', message: 'tokens_per_day limit reached. Internal account: secret-id' } }) }) });
+    await assert.rejects(complete(input), error => error.status === 429 && error.providerCode === 'rate_limited' && error.rateLimitScope === 'tokens_daily' && error.retryAfterSeconds === 120 && !error.message.includes('secret-id') && !error.message.includes('Your prompt is saved'));
+    globalThis.fetch = async () => ({ ok: false, status: 429, headers: new Headers(), clone: () => ({ json: async () => ({ error: { message: 'request limit per minute' } }) }) });
+    await assert.rejects(complete(input), error => error.rateLimitScope === 'requests_minute' && error.retryAfterSeconds === undefined);
     globalThis.fetch = async () => ({ ok: false, status: 401 });
     await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'provider_auth');
     globalThis.fetch = async () => ({ ok: false, status: 503 });

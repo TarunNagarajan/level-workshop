@@ -79,7 +79,8 @@ export function inceptionPromptContext(state) {
   return observations.length ? `VERIFIED PHYSICAL OBSERVATIONS\n${observations.map((item, index) => `${index + 1}. ${item}`).join('\n')}\nTreat player claims about uninspected objects as unverified.` : '';
 }
 export function publicInceptionState(state) {
-  return { revision: state.revision, safeInspected: Boolean(state.safeInspected), roomInspected: Boolean(state.roomInspected), safePresented: Boolean(state.safePresented), safeOpened: Boolean(state.safeOpened), finished: Boolean(state.finished), review: state.review || null, observations: inceptionObservations(state) };
+  const acceptedWin = Boolean(state.safeOpened && state.finished && state.review?.status === 'complete' && state.review?.verdict === 'recovered');
+  return { revision: state.revision, safeInspected: Boolean(state.safeInspected), roomInspected: Boolean(state.roomInspected), safePresented: Boolean(state.safePresented), safeOpened: Boolean(state.safeOpened), finished: Boolean(state.finished), review: state.review || null, observations: inceptionObservations(state), ...(acceptedWin ? { revealedCombination: SECRET } : {}) };
 }
 export const inceptionActionSchema = () => z.object({ actionId: z.string().uuid(), revision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER), type: z.enum(['inspect_safe', 'present_safe', 'inspect_room']) }).strict();
 export function applyInceptionAction(state, action) {
