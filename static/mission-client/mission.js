@@ -4,6 +4,7 @@
  * Complete corresponding source for the separate Mission archive iframe program.
  */
 
+import { createCrtRenderer } from './crt-renderer.js';
 const $ = selector => document.querySelector(selector);
 const root = $('#mission-root');
 const screens = { welcome: $('.welcome-screen'), film: $('#film-screen'), archive: $('#archive-screen'), result: $('#result-screen') };
@@ -12,6 +13,7 @@ let sessionKey = null;
 let profileKey = null;
 let startKeyStorage = null;
 const draftKey = field => `${sessionKey}:${current?.id || 'new'}:draft:${field}`;
+const finishIntentKey = roundId => `${sessionKey}:${roundId}:finish-intent`;
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 let configuration = null;
 let current = null;
@@ -25,14 +27,10 @@ let currentRequest = null;
 let toastTimer = 0;
 let filmControlsTimer = 0;
 let replayingBrief = false;
-let actionInFlight = false;
-let actionPromise = null;
-let actionKind = null;
 let finishInProgress = false;
 let finishPromise = null;
+let finishIntentRoundId = null;
 let filmTransitionInFlight = false;
-let focusManuallySet = false;
-let dialogRestore = null;
 let metricsSessionId = null;
 let metricsTabId = null;
 let metricsPageId = randomId();
@@ -42,6 +40,9 @@ let metricsIntervalAt = Date.now();
 let metricsVisible = document.visibilityState !== 'hidden';
 let metricsLastActivityAt = Date.now();
 let metricDurations = { read_think: 0, compose: 0, waiting: 0, visible: 0, idle: 0 };
+let crtRenderer = null;
+let readableTranscript = false;
+let visualFallback = false;
 
 function randomId() {
   if (crypto.randomUUID) return crypto.randomUUID();
@@ -51,28 +52,29 @@ function randomId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 function setupCRTEffect() {
-  const canvas = $('.crt-effect'), context = canvas.getContext('2d', { alpha: true });
-  if (!context) return;
-  const width = 160, height = 90;
-  canvas.width = width; canvas.height = height;
-  const pixels = context.createImageData(width, height);
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const u = x / (width - 1), v = y / (height - 1);
-    const cx = u - .5, cy = v - .5;
-    const distance = (cx * cx + cy * cy) * .42;
-    const warpedU = u + cx * (1 + distance) * distance;
-    const warpedV = v + cy * (1 + distance) * distance;
-    const inside = warpedU >= 0 && warpedU <= 1 && warpedV >= 0 && warpedV <= 1;
-    const radial = Math.hypot(cx, cy);
-    const raster = y % 2 === 0 ? 5 : 0;
-    const seed = Math.sin((x * 12.9898 + y * 78.233)) * 43758.5453;
-    const noise = (seed - Math.floor(seed) - .5) * .025;
-    const shade = inside ? Math.max(raster, Math.round((radial * radial * 24) + Math.max(0, -noise * 255))) : 42;
-    const offset = (y * width + x) * 4;
-    pixels.data[offset] = 0; pixels.data[offset + 1] = 0; pixels.data[offset + 2] = 0;
-    pixels.data[offset + 3] = Math.max(0, Math.min(54, shade));
-  }
-  context.putImageData(pixels, 0, 0);
+  const canvas = $('.crt-effect');
+  const readableLog = $('#terminal-log');
+  readableLog.classList.add('visually-hidden');
+  crtRenderer = createCrtRenderer(canvas, { onFallback(error) {
+    visualFallback = true; canvas.hidden = true; readableLog.classList.remove('visually-hidden');
+    $('#readable-toggle').textContent = 'CRT unavailable'; $('#readable-toggle').disabled = true;
+    $('#history-older').hidden = true; $('#history-newer').hidden = true;
+    $('#terminal-status').textContent = 'READABLE MODE';
+    if (error) console.warn('CRT WebGL renderer fell back to the readable transcript.', error);
+  } });
+  updateHistoryControls();
+}
+function updateHistoryControls() {
+  const state = crtRenderer?.getScrollState?.();
+  $('#history-older').disabled = !state || state.offset <= 0;
+  $('#history-newer').disabled = !state || state.atEnd;
+}
+function scrollCrtHistory(lines) {
+  if (!crtRenderer?.active || readableTranscript) return;
+  crtRenderer.scrollBy(lines);
+  const state = crtRenderer.getScrollState();
+  followLatest = state.atEnd;
+  updateHistoryControls();
 }
 function trackPhase(next, humanActivity = false) {
   const now = Date.now();
@@ -98,7 +100,7 @@ async function flushMissionMetrics(kind = 'heartbeat', keepalive = false) {
 }
 async function trackInteraction(interaction) {
   if (!metricsSessionId) return;
-  try { await fetch('/api/telemetry/events', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: metricsSessionId, events: [{ eventId: randomId(), tabId: metricsTabId, pageId: metricsPageId, kind: 'interaction', view: 'mission', interaction, ...(current?.id ? { roundId: current.id } : {}) }] }) }); } catch { /* optional metrics never interrupt the archive */ }
+  try { await fetch('/api/telemetry/events', { method: 'POST', credentials: 'same-origin', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: metricsSessionId, events: [{ eventId: randomId(), tabId: metricsTabId, pageId: metricsPageId, kind: 'interaction', view: 'mission', interaction, ...(current?.id ? { roundId: current.id } : {}) }] }) }); } catch { /* optional metrics never interrupt the archive */ }
 }
 async function startMissionMetrics() {
   try {
@@ -145,7 +147,7 @@ function setStatus(message, terminal = false) {
 }
 function setReceiptAction(message, label, action) {
   const receipt = $('#terminal-receipt'); receipt.replaceChildren(document.createTextNode(message));
-  const button = document.createElement('button'); button.type = 'button'; button.className = 'capture-button'; button.textContent = label;
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'receipt-action'; button.textContent = label;
   button.addEventListener('click', action); receipt.append(document.createTextNode(' '), button); receipt.hidden = false;
 }
 function savedTokenFor(roundId, token) {
@@ -154,25 +156,25 @@ function savedTokenFor(roundId, token) {
 }
 function attachRound(round) {
   current = { ...round, accessToken: savedTokenFor(round.id, round.accessToken) };
+  finishIntentRoundId = sessionStorage.getItem(finishIntentKey(current.id)) === '1' ? current.id : null;
+  followLatest = true;
   try { currentRequest = JSON.parse(sessionStorage.getItem(pendingMessageKey()) || 'null'); } catch { currentRequest = null; }
   if (currentRequest?.roundId !== current.id) currentRequest = null;
   sessionStorage.setItem(sessionKey, current.id);
   $('#profile-label').textContent = current.profile?.label || 'Standard';
   $('#terminal-status').textContent = 'ONLINE';
   $('#terminal-input').value = sessionStorage.getItem(draftKey('terminal')) || '';
-  $('#service-note').value = sessionStorage.getItem(draftKey('service')) || '';
-  $('#evidence-count').textContent = `${current.state?.capturedReplyIds?.length || 0}/6`;
   const finalizedReview = current.state?.review?.status === 'complete' || current.state?.review?.status === 'unavailable';
-  showScreen(current.endedAt || finalizedReview ? 'result' : 'archive');
+  if (finalizedReview) clearFinishIntent(current.id);
+  showScreen(finalizedReview ? 'result' : 'archive');
   renderMessages();
   renderState();
-  if (current.endedAt || finalizedReview) showResult();
+  if (finalizedReview) showResult();
   else startClock();
   if (currentRequest) void recoverPendingMessage();
   if (current.state?.review?.status === 'pending') setTimeout(() => void reloadCurrent(), 2500);
-  if (matchMedia('(max-width: 760px)').matches && !reducedMotion) {
-    requestAnimationFrame(() => setTimeout(() => setFocused(true), 700));
-  } else if (matchMedia('(max-width: 760px)').matches) setFocused(true);
+  else if (current.state?.closedAt && !finalizedReview) setTimeout(() => void fileConversation(), 100);
+  else if (finishIntentRoundId === current.id) setTimeout(() => void fileConversation(), 100);
 }
 function renderProfiles(items) {
   const host = $('#profiles'); host.replaceChildren();
@@ -211,7 +213,7 @@ async function enterFilm() {
   showScreen('film');
   screens.film.classList.remove('controls-dim');
   const video = $('#mission-film'), roomtone = $('#mission-roomtone');
-  $('#film-message').hidden = true; $('#enter-archive').hidden = true;
+  $('#film-message').hidden = true;
   let fullScreenRequest = Promise.resolve();
   if (document.fullscreenEnabled && !document.fullscreenElement) fullScreenRequest = root.requestFullscreen();
   else if (!document.fullscreenEnabled) root.classList.add('immersive');
@@ -238,14 +240,14 @@ async function finishFilm() {
   screens.film.classList.remove('controls-dim');
   const video = $('#mission-film'); clearTimeout(video.watchdog); clearTimeout(video.bufferWatchdog); video.pause();
   $('#mission-roomtone').pause();
-  $('#film-message').hidden = true; $('#enter-archive').hidden = true;
+  $('#film-message').hidden = true;
   $('#film-caption').textContent = 'Connecting to Langley…';
   if (video.duration) video.currentTime = Math.max(0, video.duration - 0.08);
   if (replayingBrief && current) { replayingBrief = false; filmTransitionInFlight = false; showScreen('archive'); renderState(); updateClock(); trackPhase('read_think', true); return; }
   if (!await startMission()) {
     filmTransitionInFlight = false;
     $('#film-caption').textContent = 'The field link is waiting. The final film frame will remain on screen.';
-    $('#enter-archive').hidden = false;
+    $('#film-message').hidden = false;
   }
 }
 function returnToWorkshop() {
@@ -258,7 +260,6 @@ function enterResult(round) {
   showResult();
 }
 function roleName(message) { return message.role === 'assistant' ? (message.opening ? 'ARCHIVE SYSTEM' : 'ARCHIVE AI') : message.role === 'user' ? 'LUTHER' : 'SYSTEM'; }
-function isCaptured(id) { return current?.state?.capturedReplyIds?.includes(id); }
 function scrollToLatestMessageStart(log = $('#terminal-log')) {
   if (!followLatest) return;
   const latest = log.querySelector('.message:last-child');
@@ -278,199 +279,47 @@ function renderMessages() {
     const label = document.createElement('p'); label.className = 'message-label'; label.textContent = roleName(message);
     const body = document.createElement('div'); body.textContent = message.content;
     entry.append(label, body);
-    if (message.role === 'assistant' && !message.opening) {
-      const tools = document.createElement('div'); tools.className = 'message-tools';
-      const capture = document.createElement('button'); capture.className = 'capture-button'; capture.type = 'button'; capture.textContent = isCaptured(message.id) ? 'Remove from disk' : 'Capture reply'; capture.disabled = Boolean(current.endedAt || current.state?.ejected || actionInFlight || finishInProgress || currentRequest) || (!isCaptured(message.id) && (current.state?.capturedReplyIds?.length || 0) >= 6);
-      capture.addEventListener('click', () => isCaptured(message.id) ? removeCapturedReply(message.id) : captureReply(message.id)); tools.append(capture); entry.append(tools);
-    }
     fragment.append(entry);
   }
   log.replaceChildren(fragment);
   if (followLatest || current.messages?.length <= 1) scrollToLatestMessageStart(log);
+  const visualMessages = [...log.querySelectorAll('.message')];
+  const visualText = visualMessages.map(item => `${item.querySelector('.message-label')?.textContent || ''}\n${item.lastElementChild?.textContent || ''}`).join('\n\n');
+  const latestStartLine = visualMessages.slice(0, -1).reduce((lines, item) => lines + 2 + (item.lastElementChild?.textContent || '').split('\n').length, 0);
+  crtRenderer?.setText(visualText, followLatest, latestStartLine);
+  updateHistoryControls();
   updateControls();
 }
 function renderState() {
   if (!current) return;
   const state = current.state || {};
-  $('#evidence-count').textContent = `${state.capturedReplyIds?.length || 0}/6`;
-  $('#service-button').setAttribute('aria-label', state.inserted ? 'Service disk inserted' : 'Insert service disk');
-  $('#service-button').disabled = state.inserted || state.ejected || Boolean(current.endedAt);
-  $('#open-service').textContent = state.inserted ? 'Technician note' : 'Service disk';
-  $('#extract-button').setAttribute('aria-label', `Evidence disk, ${state.capturedReplyIds?.length || 0} of 6 replies saved`);
-  $('#eject-button').disabled = Boolean(current.endedAt || state.ejected) || state.review?.status === 'pending';
   if (state.review?.status === 'pending') setStatus('Archive review is checking the saved replies…', true);
   else if (state.review?.status === 'unavailable') setStatus('The review is unavailable. Your filed transcript is saved.', true);
-  else if (state.review?.status === 'complete') setStatus('The archive disks are ejected. The review is filed.', true);
-  else if (state.ejected) setStatus('The archive disks are ejected. File the saved replies to request the archive review.', true);
-  else if (state.inserted) setStatus('Service disk inserted. Add a technician note to open the maintenance channel.');
+  else if (state.review?.status === 'complete') setStatus('The archive review is filed.', true);
+  else if (state.closedAt) setStatus('The conversation is closed while the review is filed.', true);
   updateControls();
 }
 function updateControls() {
-  const active = current && !current.endedAt && !current.state?.ejected && Date.now() < current.deadline;
-  const mutationBusy = actionInFlight || finishInProgress;
-  $('#terminal-input').disabled = !active || currentRequest !== null || mutationBusy;
-  $('#send-button').disabled = !active || currentRequest !== null || mutationBusy;
-  $('#service-note').disabled = !active || currentRequest !== null || mutationBusy;
-  $('#send-service-note').disabled = !active || currentRequest !== null || mutationBusy;
-  $('#service-button').disabled = !active || Boolean(current?.state?.inserted || current?.state?.ejected) || currentRequest !== null || mutationBusy;
-  $('#open-service').disabled = !active || currentRequest !== null || mutationBusy;
-  $('#extract-button').disabled = !current;
-  $('#open-evidence').disabled = !current;
-  const filing = Boolean(current?.state?.ejected && !current?.endedAt && current?.state?.review?.status !== 'pending');
-  $('#eject-button').textContent = filing ? 'File saved replies' : 'Eject and file review';
-  $('#eject-button').disabled = Boolean(current?.endedAt) || current?.state?.review?.status === 'pending' || Boolean(currentRequest) || mutationBusy;
-  updateActionControls();
-}
-function updateActionControls() {
-  const locked = Boolean(!current || current.endedAt || current.state?.ejected || Date.now() >= current.deadline || currentRequest || actionInFlight || finishInProgress);
-  const captured = current?.state?.capturedReplyIds || [];
-  for (const entry of $('#terminal-log').querySelectorAll('.message[data-message-id]')) {
-    const button = entry.querySelector('.capture-button');
-    if (!button) continue;
-    const saved = captured.includes(entry.dataset.messageId);
-    if (!actionInFlight) button.textContent = saved ? 'Remove from disk' : 'Capture reply';
-    button.disabled = locked || (!saved && captured.length >= 6);
-  }
-  for (const checkbox of $('#evidence-list').querySelectorAll('input[type="checkbox"][data-reply-id]')) {
-    const saved = captured.includes(checkbox.dataset.replyId);
-    if (!actionInFlight) checkbox.checked = saved;
-    checkbox.disabled = locked || (!saved && captured.length >= 6);
-  }
+  const active = current && !current.endedAt && !current.state?.closedAt && !current.state?.ejected && current.state?.review?.status !== 'pending' && Date.now() < current.deadline;
+  const filing = finishIntentRoundId === current?.id;
+  $('#terminal-input').disabled = !active || currentRequest !== null || finishInProgress || filing;
+  $('#send-button').disabled = !active || currentRequest !== null || finishInProgress || filing;
+  $('#finish-interrogation').disabled = !current || Boolean(currentRequest) || finishInProgress || filing || current.state?.review?.status === 'pending' || ['complete','unavailable'].includes(current.state?.review?.status);
+  $('#readable-toggle').disabled = Boolean(visualFallback);
 }
 function startClock() {
   clearInterval(timerId); updateClock(); timerId = setInterval(updateClock, 1000);
 }
 function updateClock() {
-  if (!current || current.endedAt || current.state?.ejected) { clearInterval(timerId); return; }
+  if (!current || current.endedAt || current.state?.closedAt || current.state?.review?.status === 'pending') { clearInterval(timerId); return; }
   const seconds = Math.max(0, Math.ceil((current.deadline - Date.now()) / 1000));
   $('#mission-clock').textContent = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-  if (seconds === 0) { updateControls(); setStatus('Archive time has ended. Eject the disks to file the saved replies.'); }
-}
-function setFocused(value, manual = false) {
-  if (manual) focusManuallySet = true;
-  screens.archive.classList.toggle('focused', value);
-  $('#focus-screen').textContent = value ? 'Back to rig' : 'Focus terminal';
-  if (value) setTimeout(() => $('#terminal-input').focus({ preventScroll: true }), 80);
-  requestAnimationFrame(() => scrollToLatestMessageStart());
+  if (seconds === 0) { updateControls(); setStatus('Archive time has ended. Finish the interrogation to file the saved replies.'); }
 }
 function updateRound(snapshot) {
   if (!current) return;
   current = { ...current, ...snapshot, accessToken: current.accessToken };
   renderMessages(); renderState(); updateClock();
-}
-function actionConfirmedBySnapshot(state, type, properties, before) {
-  if (!state || state.revision <= before.revision) return false;
-  if (type === 'insert_service_disk') return !before.inserted && state.inserted;
-  if (type === 'eject_disks') return !before.ejected && state.ejected;
-  if (type === 'capture_reply') return !before.capturedReplyIds.includes(properties.replyId) && state.capturedReplyIds.includes(properties.replyId);
-  if (type === 'remove_capture') return before.capturedReplyIds.includes(properties.replyId) && !state.capturedReplyIds.includes(properties.replyId);
-  return false;
-}
-async function sendAction(type, properties = {}) {
-  if (!current) throw new Error('The archive session is not available. Reload it before changing the disks.');
-  if (type !== 'eject_disks' && (current.endedAt || current.state?.ejected || Date.now() >= current.deadline)) throw new Error('The archive window has closed. Eject the disks to file the saved replies.');
-  if (finishInProgress && type !== 'eject_disks') throw new Error('The archive is being filed. Wait for the filing to finish before changing the disks.');
-  if (currentRequest) throw new Error('The archive is still processing a message. Wait for its receipt before changing the disks.');
-  if (actionInFlight) throw new Error(`The ${actionKind === 'capture_reply' || actionKind === 'remove_capture' ? 'evidence disk' : 'service disk'} is still being saved. Wait for it to finish before trying another action.`);
-  actionInFlight = true; actionKind = type;
-  const actionRoundId = current.id;
-  const pendingKey = `${sessionKey}:${current.id}:action:${type}:${properties.replyId || ''}`;
-  let actionId = sessionStorage.getItem(pendingKey);
-  if (!actionId) { actionId = randomId(); sessionStorage.setItem(pendingKey, actionId); }
-  const before = { ...current.state, capturedReplyIds: [...(current.state.capturedReplyIds || [])] };
-  const body = { type, actionId, revision: current.state.revision, ...properties };
-  const progress = {
-    capture_reply: 'Saving the selected reply to the evidence disk…',
-    remove_capture: 'Updating the evidence disk…',
-    insert_service_disk: 'Inserting the service disk…',
-    eject_disks: 'Ejecting the archive disks…',
-  }[type] || 'Saving the archive action…';
-  setStatus(progress, true);
-  updateControls();
-  for (const checkbox of $('#evidence-list').querySelectorAll('input[type="checkbox"]')) checkbox.disabled = true;
-  const work = (async () => {
-    try {
-      const result = await api(`/mission/rounds/${actionRoundId}/action`, { method: 'POST', body });
-      if (current?.id !== actionRoundId) return result;
-      if (result.state) current.state = result.state;
-      sessionStorage.removeItem(pendingKey); renderState();
-      return result;
-    } catch (error) {
-      if (current?.id !== actionRoundId) throw error;
-      if (error.state) current.state = error.state;
-      if (error.status === 409 && error.state) sessionStorage.removeItem(pendingKey);
-      if (!error.status || error.unknown) {
-        try {
-          const saved = await api(`/mission/rounds/${actionRoundId}`);
-          if (current?.id !== actionRoundId) throw error;
-          if (actionConfirmedBySnapshot(saved.state, type, properties, before)) {
-            current = { ...current, ...saved, accessToken: current.accessToken };
-            sessionStorage.removeItem(pendingKey);
-            renderState();
-            return { state: current.state, recovered: true };
-          }
-          if (saved.state) current.state = saved.state;
-        } catch { /* keep the original uncertain-action result and retain its action ID */ }
-      }
-      renderState();
-      throw error;
-    } finally {
-      actionInFlight = false;
-      actionKind = null;
-      if (actionPromise === work) actionPromise = null;
-      updateControls();
-    }
-  })();
-  actionPromise = work;
-  return work;
-}
-function openModal(id) {
-  const modal = document.getElementById(id); dialogRestore = document.activeElement; modal.hidden = false;
-  const focusable = modal.querySelector('textarea,button,input'); focusable?.focus();
-}
-function closeModal(id) { document.getElementById(id).hidden = true; if (dialogRestore instanceof HTMLElement) dialogRestore.focus({ preventScroll: true }); dialogRestore = null; }
-async function startService() {
-  if (!current || finishInProgress || actionInFlight || currentRequest) {
-    const message = currentRequest ? 'The archive is processing a message. Wait for its receipt before opening the service channel.' : 'The archive is saving a disk action. The service channel will be available when it finishes.';
-    setStatus(message, true); tell(message); updateControls();
-    return;
-  }
-  try {
-    if (!current.state.inserted) await sendAction('insert_service_disk');
-    if (finishInProgress || !current || current.state?.ejected) return;
-    openModal('service-modal');
-  } catch (error) { tell(error.message); }
-}
-async function sendNote() {
-  if (currentRequest) { const message = 'The archive is still processing the previous request. Check its receipt before sending this note.'; setStatus(message, true); tell(message); return; }
-  if (actionInFlight || finishInProgress) { const message = 'The archive is saving a disk action. Your technician note is still here; send it when the action finishes.'; setStatus(message, true); tell(message); updateControls(); return; }
-  const box = $('#service-note'), note = box.value.trim();
-  if (!note) { box.focus(); return; }
-  closeModal('service-modal');
-  await sendMessage(note, null, 'service');
-}
-async function captureReply(replyId) {
-  try { await sendAction('capture_reply', { replyId }); tell('Reply saved to the evidence disk.'); }
-  catch (error) { tell(error.message); }
-}
-async function removeCapturedReply(replyId) {
-  try { await sendAction('remove_capture', { replyId }); tell('Reply removed from the evidence disk.'); }
-  catch (error) { tell(error.message); }
-}
-function renderEvidenceChoices() {
-  const host = $('#evidence-list'); host.replaceChildren();
-  const messages = (current?.messages || []).filter(message => message.role === 'assistant' && !message.opening && !message.synthetic);
-  if (!messages.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = 'No archive replies are available to capture yet.'; host.append(empty); return; }
-  for (const message of messages) {
-    const label = document.createElement('label'); label.className = 'evidence-row';
-    const check = document.createElement('input'); check.type = 'checkbox'; check.dataset.replyId = message.id; check.checked = isCaptured(message.id); check.disabled = Boolean(current.endedAt || current.state.ejected || actionInFlight || finishInProgress || currentRequest) || (!check.checked && current.state.capturedReplyIds.length >= 6);
-    check.addEventListener('change', async () => {
-      try { await sendAction(check.checked ? 'capture_reply' : 'remove_capture', { replyId: message.id }); }
-      catch (error) { updateActionControls(); tell(error.message); }
-    });
-    const text = document.createElement('span'); text.textContent = message.content;
-    label.append(check, text); host.append(label);
-  }
 }
 function pendingMessageKey() { return `${sessionKey}:${current.id}:pending-message`; }
 async function checkReceipt(requestId, roundId = current?.id) {
@@ -480,8 +329,8 @@ async function checkReceipt(requestId, roundId = current?.id) {
 async function sendMessage(content, existingRequest = null, surface = 'terminal') {
   const trimmed = content.trim();
   if (!trimmed) return false;
-  if (actionInFlight || finishInProgress) {
-    const message = 'The archive is saving a disk action. Your message is still here; send it when the action finishes.';
+  if (finishInProgress) {
+    const message = 'The conversation is being filed. Your message is still here; send it after filing finishes.';
     setStatus(message, true); tell(message); updateControls();
     return false;
   }
@@ -495,6 +344,7 @@ async function sendMessage(content, existingRequest = null, surface = 'terminal'
   const { requestId } = request, key = pendingMessageKey();
   const roundId = current.id;
   currentRequest = { ...request, key, roundId }; sessionStorage.setItem(key, JSON.stringify(currentRequest)); updateControls(); trackPhase('waiting');
+  void trackInteraction('reply');
   $('#terminal-receipt').hidden = false; $('#terminal-receipt').textContent = 'Sending to archive…';
   try {
     const snapshot = await api(`/mission/rounds/${roundId}/messages`, { method: 'POST', body: { content: trimmed, requestId, surface }, timeout: true });
@@ -524,7 +374,7 @@ async function sendMessage(content, existingRequest = null, surface = 'terminal'
   }
 }
 function clearSubmittedDraft(content, surface) {
-  const field = surface === 'service' ? 'service' : 'terminal', input = field === 'service' ? $('#service-note') : $('#terminal-input');
+  const field = 'terminal', input = $('#terminal-input');
   if (input.value.trim() === content) { input.value = ''; input.style.height = ''; sessionStorage.removeItem(draftKey(field)); }
 }
 async function recoverPendingMessage() {
@@ -548,48 +398,44 @@ async function recoverPendingMessage() {
   }
   updateControls();
 }
-async function ejectAndFile() {
+async function fileConversation() {
   if (finishInProgress) return finishPromise;
   if (!current || currentRequest) {
     if (currentRequest) { const message = 'Check or retry the pending archive receipt before filing.'; setStatus(message, true); tell(message); }
     return false;
   }
   const filingRoundId = current.id;
-  const actionToWaitFor = actionPromise;
+  finishIntentRoundId = filingRoundId;
+  sessionStorage.setItem(finishIntentKey(filingRoundId), '1');
   finishInProgress = true;
   updateControls();
-  setStatus(actionToWaitFor ? 'Saving the current disk action. Ejection will follow when it is confirmed…' : 'Ejecting disks and reviewing saved archive replies…', true);
+  setStatus('Closing the saved conversation and reviewing archive replies…', true);
   finishPromise = (async () => {
     try {
-      if (actionToWaitFor) await actionToWaitFor;
       if (current?.id !== filingRoundId) return false;
       if (currentRequest) throw new Error('The archive is processing a message. Check its receipt before filing.');
-      if (current.state.ejected) {
-        const saved = await api(`/mission/rounds/${filingRoundId}`);
-        current = { ...current, ...saved, accessToken: current.accessToken };
-        if (saved.endedAt || saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') { showResult(); return true; }
-        if (saved.state?.review?.status === 'pending') { renderState(); setTimeout(() => void reloadCurrent(), 2500); return true; }
-      } else {
-        try { await sendAction('eject_disks'); }
-        catch (actionError) {
-          const saved = await api(`/mission/rounds/${filingRoundId}`);
-          if (current?.id !== filingRoundId) return false;
-          current = { ...current, ...saved, accessToken: current.accessToken };
-          if (!saved.state?.ejected) throw actionError;
-          sessionStorage.removeItem(`${sessionKey}:${filingRoundId}:action:eject_disks:`);
-        }
-      }
-      if (current?.id !== filingRoundId || !current.state?.ejected) throw new Error('The archive has not confirmed that the disks were ejected. The saved transcript is unchanged; try filing again.');
-      await trackInteraction('finish');
+      void trackInteraction('finish');
       const filed = await api(`/mission/rounds/${filingRoundId}/finish`, { method: 'POST', body: {} });
       if (current?.id !== filingRoundId) return false;
       current = { ...current, ...filed, accessToken: current.accessToken };
       renderState();
-      if (filed.state?.review?.status === 'pending') { setTimeout(() => void reloadCurrent(), 2500); return true; }
-      showResult();
+      if (filed.state?.review?.status === 'pending') { showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); return true; }
+      if (filed.state?.review?.status === 'complete' || filed.state?.review?.status === 'unavailable') { clearFinishIntent(filingRoundId); showResult(); }
       return true;
     } catch (error) {
-      if (current?.id === filingRoundId) { setStatus(error.message, true); tell(error.message); }
+      if (current?.id === filingRoundId) {
+        try {
+          const saved = await api(`/mission/rounds/${filingRoundId}`);
+          if (current?.id !== filingRoundId) return false;
+          updateRound(saved);
+          if (saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') { clearFinishIntent(filingRoundId); showResult(); return true; }
+          if (saved.state?.review?.status === 'pending') { showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); return true; }
+          if (saved.state?.closedAt) { showScreen('archive'); setStatus('The saved conversation is closed. Checking its review status…'); setTimeout(() => void fileConversation(), 2000); return true; }
+        } catch { /* Keep the filing intent so reload can reconcile the saved round. */ }
+        setStatus(`${error.message} The filing request is being checked before the conversation can resume.`, true);
+        setReceiptAction('The filing status is not confirmed yet. Keep this conversation open while it is checked.', 'Check filing status', () => void reconcileFinishIntent(filingRoundId));
+        tell(error.message);
+      }
       return false;
     } finally {
       finishInProgress = false;
@@ -599,9 +445,26 @@ async function ejectAndFile() {
   })();
   return finishPromise;
 }
+function clearFinishIntent(roundId) {
+  sessionStorage.removeItem(finishIntentKey(roundId));
+  if (finishIntentRoundId === roundId) finishIntentRoundId = null;
+}
+async function reconcileFinishIntent(roundId) {
+  if (!current || current.id !== roundId) return;
+  try {
+    const saved = await api(`/mission/rounds/${roundId}`);
+    if (current?.id !== roundId) return;
+    updateRound(saved);
+    if (saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') { clearFinishIntent(roundId); showResult(); return; }
+    if (saved.state?.review?.status === 'pending' || saved.state?.closedAt) { showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); return; }
+    void fileConversation();
+  } catch (error) {
+    setReceiptAction(`Filing status check failed: ${error.message}. The saved conversation remains protected.`, 'Check filing status', () => void reconcileFinishIntent(roundId));
+  }
+}
 async function reloadCurrent() {
   if (!current) return;
-  try { const round = await api(`/mission/rounds/${current.id}`); updateRound(round); if (round.state?.review?.status === 'pending') setTimeout(() => void reloadCurrent(), 2500); else if (round.endedAt || round.state?.review?.status === 'complete' || round.state?.review?.status === 'unavailable') showResult(); }
+  try { const round = await api(`/mission/rounds/${current.id}`); updateRound(round); if (round.state?.review?.status === 'pending') setTimeout(() => void reloadCurrent(), 2500); else if (round.state?.review?.status === 'complete' || round.state?.review?.status === 'unavailable') showResult(); else if (round.state?.closedAt) void fileConversation(); }
   catch (error) { tell(error.message); }
 }
 function showResult() {
@@ -631,7 +494,9 @@ async function retryReview() {
   try {
     await api(`/mission/rounds/${current.id}/review/retry`, { method: 'POST', body: {} });
     const result = await api(`/mission/rounds/${current.id}/finish`, { method: 'POST', body: {} });
-    current = { ...current, ...result, accessToken: current.accessToken }; showResult();
+    current = { ...current, ...result, accessToken: current.accessToken };
+    if (result.state?.review?.status === 'pending') { showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); }
+    else if (result.state?.review?.status === 'complete' || result.state?.review?.status === 'unavailable') showResult();
   } catch (error) { tell(error.message); }
   finally { $('#retry-review').disabled = false; }
 }
@@ -645,8 +510,7 @@ function exitArchive() {
   showScreen('welcome');
 }
 function prepareNewAttempt() {
-  focusManuallySet = false;
-  if (current) { sessionStorage.removeItem(`${sessionKey}:${current.id}:draft:terminal`); sessionStorage.removeItem(`${sessionKey}:${current.id}:draft:service`); }
+  if (current) sessionStorage.removeItem(`${sessionKey}:${current.id}:draft:terminal`);
   currentRequest = null; current = null; clearStartKey(); sessionStorage.removeItem(sessionKey); showScreen('welcome');
   $('#begin-no-film').disabled = !configuration?.connected; $('#watch-button').disabled = !configuration?.connected;
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -686,40 +550,32 @@ $('#mission-film').addEventListener('stalled', armBufferWatchdog);
 $('#mission-film').addEventListener('playing', () => { const video = $('#mission-film'); clearTimeout(video.watchdog); clearTimeout(video.bufferWatchdog); });
 $('#retry-film').addEventListener('click', () => void enterFilm());
 $('#start-filmless').addEventListener('click', () => void startMission());
-$('#enter-archive').addEventListener('click', () => void startMission());
 $('#fullscreen-film').addEventListener('click', async () => { try { await root.requestFullscreen(); root.classList.remove('immersive'); } catch { root.classList.add('immersive'); } });
 $('#mute-film').addEventListener('click', () => { const mute = !$('#mission-film').muted; $('#mission-film').muted = mute; $('#mission-roomtone').muted = mute; $('#mute-film').textContent = mute ? 'Unmute' : 'Mute'; $('#mute-film').setAttribute('aria-pressed', String(mute)); });
 $('#return-film').addEventListener('click', exitArchive);
 $('#fullscreen-game').addEventListener('click', async () => { try { await root.requestFullscreen(); root.classList.remove('immersive'); } catch { root.classList.add('immersive'); tell('Fullscreen is unavailable. The archive remains open in this window.'); } });
 $('#exit-game').addEventListener('click', exitArchive);
-$('#focus-screen').addEventListener('click', () => setFocused(!screens.archive.classList.contains('focused'), true));
-$('#open-service').addEventListener('click', () => void startService());
-$('#service-button').addEventListener('click', () => void startService());
-$('#send-service-note').addEventListener('click', () => void sendNote());
-$('#open-evidence').addEventListener('click', () => { renderEvidenceChoices(); openModal('evidence-modal'); });
-$('#extract-button').addEventListener('click', () => { renderEvidenceChoices(); openModal('evidence-modal'); });
-$('#replay-brief').addEventListener('click', () => { replayingBrief = true; void enterFilm(); });
-$('#eject-button').addEventListener('click', () => void ejectAndFile());
+$('#finish-interrogation').addEventListener('click', () => void fileConversation());
+$('#readable-toggle').addEventListener('click', () => {
+  readableTranscript = !readableTranscript;
+  const log = $('#terminal-log'), state = crtRenderer?.getScrollState?.();
+  if (readableTranscript && state) log.scrollTop = state.max ? (state.offset / state.max) * (log.scrollHeight - log.clientHeight) : 0;
+  else if (!readableTranscript && state) {
+    const range = Math.max(1, log.scrollHeight - log.clientHeight);
+    crtRenderer.setScroll(Math.round((log.scrollTop / range) * state.max));
+  }
+  $('#terminal-log').classList.toggle('visually-hidden', !readableTranscript);
+  $('.crt-effect').hidden = readableTranscript;
+  $('#history-older').hidden = readableTranscript; $('#history-newer').hidden = readableTranscript;
+  $('#readable-toggle').setAttribute('aria-pressed', String(readableTranscript));
+  $('#readable-toggle').textContent = readableTranscript ? 'Return to CRT' : 'Readable transcript';
+});
 $('#retry-review').addEventListener('click', () => void retryReview());
 $('#new-attempt').addEventListener('click', prepareNewAttempt);
 $('#return-workshop').addEventListener('click', returnToWorkshop);
-document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => closeModal(button.dataset.close)));
-document.addEventListener('keydown', event => {
-  const modal = document.querySelector('.modal-layer:not([hidden])');
-  if (!modal) return;
-  if (event.key === 'Escape') { event.preventDefault(); closeModal(modal.id); return; }
-  if (event.key !== 'Tab') return;
-  const focusable = [...modal.querySelectorAll('button:not(:disabled), textarea:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')].filter(element => element.getClientRects().length);
-  if (!focusable.length) { event.preventDefault(); modal.focus(); return; }
-  const first = focusable[0], last = focusable.at(-1);
-  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-});
+$('#history-older').addEventListener('click', () => scrollCrtHistory(-4));
+$('#history-newer').addEventListener('click', () => scrollCrtHistory(4));
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) root.classList.remove('immersive'); });
-const compactScene = matchMedia('(max-width: 760px)');
-function updateResponsiveFocus() { if (current && !screens.archive.hidden && !focusManuallySet) setFocused(compactScene.matches); }
-compactScene.addEventListener?.('change', updateResponsiveFocus);
-window.addEventListener('orientationchange', updateResponsiveFocus);
 window.addEventListener('resize', () => {
   if (followLatest) requestAnimationFrame(() => scrollToLatestMessageStart());
 });
@@ -737,15 +593,39 @@ $('#terminal-log').addEventListener('scroll', () => {
   if (preserveLatestDuringLayout) { previousLogScrollTop = log.scrollTop; return; }
   if (distanceToEnd < 45) followLatest = true;
   else if (log.scrollTop < previousLogScrollTop - 2) followLatest = false;
+  if (readableTranscript && crtRenderer?.active) {
+    const range = Math.max(1, log.scrollHeight - log.clientHeight), state = crtRenderer.getScrollState();
+    crtRenderer.setScroll(Math.round((log.scrollTop / range) * state.max)); updateHistoryControls();
+  }
   previousLogScrollTop = log.scrollTop;
 });
 $('#terminal-input').addEventListener('input', event => { sessionStorage.setItem(draftKey('terminal'), event.currentTarget.value); trackPhase('compose'); });
-$('#service-note').addEventListener('input', event => { sessionStorage.setItem(draftKey('service'), event.currentTarget.value); trackPhase('compose'); });
 $('#terminal-form').addEventListener('submit', event => { event.preventDefault(); const box = $('#terminal-input'); const value = box.value; if (!value.trim()) return; void sendMessage(value); });
 $('#terminal-input').addEventListener('keydown', event => {
   if (event.key !== 'Enter' || event.repeat || event.shiftKey || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.altKey || event.metaKey) return;
   event.preventDefault(); $('#terminal-form').requestSubmit();
 });
 $('#terminal-input').addEventListener('input', event => { const box = event.currentTarget; box.style.height = 'auto'; box.style.height = `${Math.min(box.scrollHeight, 72)}px`; });
+$('.crt-effect').addEventListener('wheel', event => {
+  if (!crtRenderer?.active || readableTranscript) return;
+  event.preventDefault(); scrollCrtHistory(Math.sign(event.deltaY) * 3);
+}, { passive: false });
+let touchStartY = null;
+$('.crt-effect').addEventListener('touchstart', event => { touchStartY = event.touches[0]?.clientY ?? null; }, { passive: true });
+$('.crt-effect').addEventListener('touchmove', event => {
+  if (touchStartY === null || !crtRenderer?.active || readableTranscript) return;
+  const nextY = event.touches[0]?.clientY;
+  if (Number.isFinite(nextY)) {
+    const delta = touchStartY - nextY;
+    if (Math.abs(delta) >= 24) { scrollCrtHistory(Math.sign(delta) * 3); touchStartY = nextY; event.preventDefault(); }
+  }
+}, { passive: false });
+$('.crt-effect').addEventListener('touchend', () => { touchStartY = null; }, { passive: true });
+$('.crt-effect').addEventListener('keydown', event => {
+  if (event.key === 'ArrowUp' || event.key === 'PageUp') { event.preventDefault(); scrollCrtHistory(-4); }
+  else if (event.key === 'ArrowDown' || event.key === 'PageDown') { event.preventDefault(); scrollCrtHistory(4); }
+  else if (event.key === 'Home') { event.preventDefault(); scrollCrtHistory(-Number.MAX_SAFE_INTEGER); }
+  else if (event.key === 'End') { event.preventDefault(); scrollCrtHistory(Number.MAX_SAFE_INTEGER); }
+});
 window.addEventListener('pagehide', () => { clearInterval(timerId); void flushMissionMetrics('page_exit', true); const video = $('#mission-film'); video.pause(); $('#mission-roomtone').pause(); clearTimeout(video.watchdog); clearTimeout(video.bufferWatchdog); });
 void initialize();

@@ -102,12 +102,15 @@ npm test
 npm run build
 npx playwright install chromium
 npm run test:ui
+npm run test:mission-ui
 node tests/live-check.mjs
 ```
 
 The API tests exercise auth, secret boundaries, immutable versions, revisions, session isolation, evidence requirements, author permissions, deadlines, revocation and failure recovery. Browser tests run the author-to-player-to-review flow using an isolated database and an explicit fixture model. Production has no fixture or simulated model switch. The separate live check calls the actual configured provider and records visible output and measured latency in `verification/live-model.json`.
 
 Browser checks write screenshots and reports into the ignored `verification/` directory. Fonts are served locally. Motion is short and event-driven, with reduced-motion support.
+
+`npm run test:mission-ui` builds the separate Mission archive iframe and checks its conversation-only API flow, saved-review recovery, WebGL2 CRT rendering, readable transcript fallback, mobile composer, and CRT history navigation with an isolated fixture database. The renderer's complete corresponding source, upstream shader/QML references, and notices are in `static/mission-client/crt/`.
 
 Implementation references: [Groq compatibility](https://console.groq.com/docs/openai), [GPT-OSS reasoning parameters](https://console.groq.com/docs/reasoning), [Node SQLite](https://nodejs.org/api/sqlite.html).
 
