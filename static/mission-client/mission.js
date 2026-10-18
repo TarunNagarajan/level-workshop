@@ -37,6 +37,7 @@ let filmTransitionInFlight = false;
 let successFilmStarting = false;
 let successFilmCompleted = false;
 let successFilmGeneration = 0;
+let successFilmActiveRoundId = null;
 let missionMuted = false;
 let metricsSessionId = null;
 let metricsTabId = null;
@@ -142,7 +143,7 @@ async function api(path, { method = 'GET', body, timeout = false } = {}) {
   } finally { if (timer) clearTimeout(timer); }
 }
 function showScreen(name) {
-  for (const [key, node] of Object.entries(screens)) node.hidden = key !== name;
+  for (const [key, node] of Object.entries(screens)) { node.hidden = key !== name; node.classList.remove('cinema-cut'); }
 }
 function tell(message) {
   const node = $('#toast'); node.textContent = message; node.hidden = false;
@@ -173,7 +174,7 @@ function attachRound(round) {
   $('#terminal-input').value = sessionStorage.getItem(draftKey('terminal')) || '';
   const finalizedReview = current.state?.review?.status === 'complete' || current.state?.review?.status === 'unavailable';
   if (finalizedReview) clearFinishIntent(current.id);
-  showScreen(finalizedReview ? 'result' : 'archive');
+  showScreen(finalizedReview && !verifiedSuccess(current) ? 'result' : 'archive');
   renderMessages();
   renderState();
   if (finalizedReview) showFinalizedRound();
@@ -235,7 +236,8 @@ async function enterFilm() {
   video.watchdog = setTimeout(() => { if (video.readyState < 2 || video.paused) showFilmError(); }, 18000);
   dimFilmControlsSoon();
 }
-function dimFilmControlsSoon() { clearTimeout(filmControlsTimer); filmControlsTimer = setTimeout(() => screens.film.classList.add('controls-dim'), 3200); }
+function dimFilmControlsSoon(screen = screens.film) { clearTimeout(filmControlsTimer); filmControlsTimer = setTimeout(() => screen.classList.add('controls-dim'), 3200); }
+function revealFilmControls(screen) { screen.classList.remove('controls-dim'); dimFilmControlsSoon(screen); }
 function armBufferWatchdog() {
   const video = $('#mission-film'); clearTimeout(video.bufferWatchdog);
   video.bufferWatchdog = setTimeout(showFilmError, 18000);
@@ -275,28 +277,41 @@ function preloadSuccessFilm() {
 }
 function showSuccessFilmError(message = 'The ending film could not play. You can retry, play it directly, or skip it.') {
   if (screens.successFilm.hidden) return;
-  successFilmGeneration++; clearTimeout(successFilmWatchdog); $('#success-film').pause(); successFilmStarting = false;
+  successFilmGeneration++; clearTimeout(successFilmWatchdog); $('#success-film').pause(); successFilmStarting = false; successFilmActiveRoundId = null;
   $('#success-film-error').textContent = message;
   $('#success-film-message').hidden = false;
+}
+function successAttemptIsCurrent(generation, roundId) {
+  return generation === successFilmGeneration && current?.id === roundId && verifiedSuccess();
+}
+function waitForSuccessCut(generation, roundId) {
+  const source = [screens.archive, screens.success, screens.result].find(screen => !screen.hidden);
+  if (!source || reducedMotion) return Promise.resolve(successAttemptIsCurrent(generation, roundId));
+  source.classList.add('cinema-cut');
+  return new Promise(resolve => setTimeout(() => resolve(successAttemptIsCurrent(generation, roundId)), 260));
 }
 async function playSuccessFilm({ replay = false, resume = false } = {}) {
   if (!verifiedSuccess()) return showResult();
   if (successFilmStarting) return;
   const roundId = current.id, video = $('#success-film');
+  if (!replay && successFilmActiveRoundId === roundId && !screens.successFilm.hidden) return;
   if (!replay && sessionStorage.getItem(successPlaybackKey(roundId)) === 'seen') return showSuccessCompletion();
   const generation = ++successFilmGeneration;
   successFilmCompleted = false; successFilmStarting = true;
+  successFilmActiveRoundId = roundId;
+  clearTimeout(filmControlsTimer); screens.successFilm.classList.remove('controls-dim');
   screens.film.classList.remove('controls-dim');
   $('#mission-film').pause(); $('#mission-roomtone').pause();
   clearTimeout($('#mission-film').watchdog); clearTimeout($('#mission-film').bufferWatchdog);
+  if (!await waitForSuccessCut(generation, roundId) || !successAttemptIsCurrent(generation, roundId)) return;
   showScreen('successFilm');
-  video.focus({ preventScroll: true });
   $('#success-film-message').hidden = true;
   sessionStorage.setItem(successPlaybackKey(roundId), 'playing');
   if (video.error) video.load();
   video.preload = 'auto'; video.muted = missionMuted;
   if (video.readyState === 0) video.load();
   const resumeAt = resume && !replay ? Number(sessionStorage.getItem(successFilmPositionKey(roundId)) || 0) : 0;
+  if (!successAttemptIsCurrent(generation, roundId) || screens.successFilm.hidden) return;
   if (video.readyState >= 1) video.currentTime = Math.min(Math.max(0, resumeAt), Math.max(0, Number.isFinite(video.duration) ? video.duration - 0.1 : resumeAt));
   else if (resumeAt > 0) {
     await new Promise(resolve => {
@@ -304,25 +319,31 @@ async function playSuccessFilm({ replay = false, resume = false } = {}) {
       video.addEventListener('loadedmetadata', done, { once: true }); video.addEventListener('error', done, { once: true });
       setTimeout(done, 2500);
     });
+    if (!successAttemptIsCurrent(generation, roundId) || screens.successFilm.hidden) return;
     if (video.readyState >= 1) video.currentTime = Math.min(resumeAt, Math.max(0, Number.isFinite(video.duration) ? video.duration - 0.1 : resumeAt));
   } else video.currentTime = 0;
+  if (!successAttemptIsCurrent(generation, roundId) || screens.successFilm.hidden) return;
   clearTimeout(successFilmWatchdog);
   successFilmWatchdog = setTimeout(() => {
     if (screens.successFilm.hidden) return;
     if (video.readyState < 2 || video.paused) showSuccessFilmError('The ending film is taking too long to start. Retry, use Play, or skip the ending.');
   }, 18000);
   try {
+    if (!successAttemptIsCurrent(generation, roundId) || screens.successFilm.hidden) { if (screens.successFilm.hidden) video.pause(); return; }
     await video.play();
-    if (generation !== successFilmGeneration || current?.id !== roundId || !verifiedSuccess()) return;
+    if (!successAttemptIsCurrent(generation, roundId) || screens.successFilm.hidden) { if (screens.successFilm.hidden) video.pause(); return; }
+    dimFilmControlsSoon(screens.successFilm);
   } catch (firstError) {
-    if (generation !== successFilmGeneration) return;
-    if (!missionMuted && current?.id === roundId) {
+    if (!successAttemptIsCurrent(generation, roundId) || screens.successFilm.hidden) { if (screens.successFilm.hidden) video.pause(); return; }
+    if (!missionMuted) {
       video.muted = true; syncFilmMuteButtons();
       try {
+        if (!successAttemptIsCurrent(generation, roundId) || screens.successFilm.hidden) { if (screens.successFilm.hidden) video.pause(); return; }
         await video.play();
-        if (generation !== successFilmGeneration || current?.id !== roundId || !verifiedSuccess()) return;
+        if (!successAttemptIsCurrent(generation, roundId) || screens.successFilm.hidden) { if (screens.successFilm.hidden) video.pause(); return; }
+        dimFilmControlsSoon(screens.successFilm);
         tell('The ending started muted. Use Unmute if you want sound.');
-      } catch { showSuccessFilmError(); }
+      } catch { if (!screens.successFilm.hidden && successAttemptIsCurrent(generation, roundId)) showSuccessFilmError(); else if (screens.successFilm.hidden) video.pause(); }
     } else showSuccessFilmError();
   } finally { if (generation === successFilmGeneration) successFilmStarting = false; }
 }
@@ -331,6 +352,7 @@ function completeSuccessFilm() {
   successFilmGeneration++;
   clearTimeout(successFilmWatchdog);
   $('#success-film').pause();
+  successFilmActiveRoundId = null;
   successFilmCompleted = true;
   sessionStorage.setItem(successPlaybackKey(current.id), 'seen');
   sessionStorage.removeItem(successFilmPositionKey(current.id));
@@ -338,8 +360,10 @@ function completeSuccessFilm() {
 }
 async function replaySuccessFilm() {
   if (!current?.id) return;
+  const roundId = current.id;
   try {
-    const saved = await api(`/mission/rounds/${current.id}`);
+    const saved = await api(`/mission/rounds/${roundId}`);
+    if (current?.id !== roundId) return;
     updateRound(saved);
     if (!verifiedSuccess()) return showResult();
     void playSuccessFilm({ replay: true });
@@ -353,6 +377,7 @@ function retrySuccessFilm() {
 function toggleFilmMute(video) { setFilmMuted(!video.muted); }
 function stopMissionMedia() {
   successFilmGeneration++;
+  successFilmActiveRoundId = null;
   clearTimeout(filmControlsTimer); clearTimeout(successFilmWatchdog);
   for (const video of [$('#mission-film'), $('#success-film')]) {
     clearTimeout(video.watchdog); clearTimeout(video.bufferWatchdog); video.pause();
@@ -403,10 +428,10 @@ function renderMessages() {
 function renderState() {
   if (!current) return;
   const state = current.state || {};
-  if (state.review?.status === 'pending') setStatus('Archive review is checking the saved replies…', true);
+  if (state.review?.status === 'pending') setStatus('Verifying retrieval…', true);
   else if (state.review?.status === 'unavailable') setStatus('The review is unavailable. Your filed transcript is saved.', true);
-  else if (state.review?.status === 'complete') setStatus('The archive review is filed.', true);
-  else if (state.closedAt) setStatus('The conversation is closed while the review is filed.', true);
+  else if (state.review?.status === 'complete') setStatus('Verification complete.', true);
+  else if (state.closedAt) setStatus('Verifying retrieval…', true);
   updateControls();
 }
 function updateControls() {
@@ -424,7 +449,7 @@ function updateClock() {
   if (!current || current.endedAt || current.state?.closedAt || current.state?.review?.status === 'pending') { clearInterval(timerId); return; }
   const seconds = Math.max(0, Math.ceil((current.deadline - Date.now()) / 1000));
   $('#mission-clock').textContent = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-  if (seconds === 0) { updateControls(); setStatus('Archive time has ended. Finish the interrogation to file the saved replies.'); }
+  if (seconds === 0) { updateControls(); setStatus('The window has closed. Select Complete mission to verify retrieval.'); }
 }
 function updateRound(snapshot) {
   if (!current) return;
@@ -519,7 +544,7 @@ async function fileConversation() {
   sessionStorage.setItem(finishIntentKey(filingRoundId), '1');
   finishInProgress = true;
   updateControls();
-  setStatus('Closing the saved conversation and reviewing archive replies…', true);
+  setStatus('Verifying retrieval…', true);
   finishPromise = (async () => {
     try {
       if (current?.id !== filingRoundId) return false;
@@ -530,7 +555,7 @@ async function fileConversation() {
       if (current?.id !== filingRoundId) return false;
       current = { ...current, ...filed, accessToken: current.accessToken };
       renderState();
-      if (filed.state?.review?.status === 'pending') { showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); return true; }
+      if (filed.state?.review?.status === 'pending') { showScreen('archive'); setStatus('Verifying retrieval…'); setTimeout(() => void reloadCurrent(), 2500); return true; }
       if (filed.state?.review?.status === 'complete' || filed.state?.review?.status === 'unavailable') { clearFinishIntent(filingRoundId); showFinalizedRound(); }
       return true;
     } catch (error) {
@@ -540,8 +565,8 @@ async function fileConversation() {
           if (current?.id !== filingRoundId) return false;
           updateRound(saved);
           if (saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') { clearFinishIntent(filingRoundId); showFinalizedRound(); return true; }
-          if (saved.state?.review?.status === 'pending') { showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); return true; }
-          if (saved.state?.closedAt) { showScreen('archive'); setStatus('The saved conversation is closed. Checking its review status…'); setTimeout(() => void fileConversation(), 2000); return true; }
+          if (saved.state?.review?.status === 'pending') { showScreen('archive'); setStatus('Verifying retrieval…'); setTimeout(() => void reloadCurrent(), 2500); return true; }
+          if (saved.state?.closedAt) { showScreen('archive'); setStatus('Verifying retrieval…'); setTimeout(() => void fileConversation(), 2000); return true; }
         } catch { /* Keep the filing intent so reload can reconcile the saved round. */ }
         setStatus(`${error.message} The filing request is being checked before the conversation can resume.`, true);
         setReceiptAction('The filing status is not confirmed yet. Keep this conversation open while it is checked.', 'Check filing status', () => void reconcileFinishIntent(filingRoundId));
@@ -567,7 +592,7 @@ async function reconcileFinishIntent(roundId) {
     if (current?.id !== roundId) return;
     updateRound(saved);
     if (saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') { clearFinishIntent(roundId); showFinalizedRound(); return; }
-    if (saved.state?.review?.status === 'pending' || saved.state?.closedAt) { showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); return; }
+    if (saved.state?.review?.status === 'pending' || saved.state?.closedAt) { showScreen('archive'); setStatus('Verifying retrieval…'); setTimeout(() => void reloadCurrent(), 2500); return; }
     void fileConversation();
   } catch (error) {
     setReceiptAction(`Filing status check failed: ${error.message}. The saved conversation remains protected.`, 'Check filing status', () => void reconcileFinishIntent(roundId));
@@ -591,6 +616,7 @@ function renderSavedTranscript(target) {
 function showFinalizedRound() {
   if (verifiedSuccess()) {
     clearInterval(timerId);
+    if (successFilmActiveRoundId === current.id && !screens.successFilm.hidden) return;
     const playback = sessionStorage.getItem(successPlaybackKey(current.id));
     if (playback === 'seen') showSuccessCompletion();
     else void playSuccessFilm({ resume: playback === 'playing' });
@@ -604,7 +630,7 @@ function showSuccessCompletion() {
   clearInterval(timerId); clearTimeout(successFilmWatchdog);
   const video = $('#success-film'); video.pause();
   sessionStorage.setItem(successPlaybackKey(current.id), 'seen');
-  successFilmCompleted = true; successFilmStarting = false;
+  successFilmCompleted = true; successFilmStarting = false; successFilmActiveRoundId = null;
   renderSavedTranscript('#success-transcript');
   showScreen('success');
   $('#success-title').focus({ preventScroll: true });
@@ -635,12 +661,12 @@ async function retryReview() {
     await api(`/mission/rounds/${current.id}/review/retry`, { method: 'POST', body: {} });
     const result = await api(`/mission/rounds/${current.id}/finish`, { method: 'POST', body: {} });
     current = { ...current, ...result, accessToken: current.accessToken };
-    if (result.state?.review?.status === 'pending') { preloadSuccessFilm(); showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); }
+    if (result.state?.review?.status === 'pending') { preloadSuccessFilm(); showScreen('archive'); setStatus('Verifying retrieval…'); setTimeout(() => void reloadCurrent(), 2500); }
     else if (result.state?.review?.status === 'complete' || result.state?.review?.status === 'unavailable') showFinalizedRound();
   } catch (error) {
     try {
       const saved = await api(`/mission/rounds/${current.id}`); updateRound(saved);
-      if (saved.state?.review?.status === 'pending') { preloadSuccessFilm(); showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); }
+      if (saved.state?.review?.status === 'pending') { preloadSuccessFilm(); showScreen('archive'); setStatus('Verifying retrieval…'); setTimeout(() => void reloadCurrent(), 2500); }
       else if (saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') showFinalizedRound();
       else tell(error.message);
     } catch { tell(error.message); }
@@ -690,7 +716,10 @@ $('#watch-button').addEventListener('click', () => void enterFilm());
 $('#begin-no-film').addEventListener('click', () => { try { if (document.fullscreenEnabled && !document.fullscreenElement) void root.requestFullscreen().catch(() => root.classList.add('immersive')); else root.classList.add('immersive'); } catch { root.classList.add('immersive'); } void startMission(); });
 $('#skip-film').addEventListener('click', () => void finishFilm());
 $('#mission-film').addEventListener('ended', () => void finishFilm());
-screens.film.addEventListener('pointermove', () => { screens.film.classList.remove('controls-dim'); dimFilmControlsSoon(); });
+screens.film.addEventListener('pointermove', () => revealFilmControls(screens.film));
+screens.film.addEventListener('pointerdown', () => revealFilmControls(screens.film));
+screens.film.addEventListener('focusin', () => screens.film.classList.remove('controls-dim'));
+screens.film.addEventListener('focusout', () => dimFilmControlsSoon(screens.film));
 $('#mission-film').addEventListener('error', showFilmError);
 $('#mission-film').addEventListener('loadeddata', () => { const video = $('#mission-film'); if (video.readyState >= 2) clearTimeout(video.watchdog); });
 $('#mission-film').addEventListener('waiting', armBufferWatchdog);
@@ -723,7 +752,15 @@ $('#play-success-film').addEventListener('click', () => { $('#success-film-messa
 $('#retry-success-film').addEventListener('click', retrySuccessFilm);
 $('#fullscreen-success-film').addEventListener('click', async () => { try { await root.requestFullscreen(); root.classList.remove('immersive'); } catch { root.classList.add('immersive'); } });
 $('#return-success-film').addEventListener('click', exitArchive);
-screens.successFilm.addEventListener('pointermove', () => { screens.successFilm.classList.remove('controls-dim'); dimFilmControlsSoon(); });
+screens.successFilm.addEventListener('pointermove', () => revealFilmControls(screens.successFilm));
+screens.successFilm.addEventListener('pointerdown', () => revealFilmControls(screens.successFilm));
+screens.successFilm.addEventListener('focusin', () => screens.successFilm.classList.remove('controls-dim'));
+screens.successFilm.addEventListener('focusout', () => dimFilmControlsSoon(screens.successFilm));
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Tab') return;
+  const visibleFilm = [screens.film, screens.successFilm].find(screen => !screen.hidden);
+  if (visibleFilm) revealFilmControls(visibleFilm);
+}, true);
 $('#replay-success-film').addEventListener('click', () => void replaySuccessFilm());
 $('#success-new-attempt').addEventListener('click', prepareNewAttempt);
 $('#success-return-workshop').addEventListener('click', returnToWorkshop);

@@ -113,6 +113,8 @@ test('verified recovery plays before completion, then skip/replay/reload never f
   let reopened = page.frameLocator('iframe[title="Mission: Impossible archive"]');
   await expect(reopened.locator('#success-film-screen')).toBeVisible({ timeout: 10000 });
   await expect.poll(() => reopened.locator('#success-film').evaluate(video => (video as HTMLVideoElement).currentTime)).toBeGreaterThanOrEqual(playbackPosition - 0.5);
+  const resumedPosition = await reopened.locator('#success-film').evaluate(video => (video as HTMLVideoElement).currentTime);
+  await expect.poll(() => reopened.locator('#success-film').evaluate(video => (video as HTMLVideoElement).currentTime)).toBeGreaterThan(resumedPosition + 0.35);
   await expect(reopened.locator('#result-screen')).toBeHidden();
   expect(finishRequests).toBe(1);
   const savedWhilePlaying = await (await page.request.get(`/api/mission/rounds/${round.id}`)).json() as { state: { review: { attempts: number } } };
@@ -222,6 +224,56 @@ test('unavailable ending film offers play, retry, and completion fallback', asyn
   await expect(mission.locator('#retry-success-film')).toBeVisible();
   await mission.locator('#skip-success-film-fallback').click();
   await expect(mission.locator('#success-screen')).toBeVisible();
+});
+
+test('returning during delayed resume metadata cancels playback from starting later', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  const round = await startMission(page);
+  let holdEnding = false;
+  await page.route('**/mission-assets/mission-success-v1.mp4', async route => {
+    if (holdEnding) await new Promise(resolve => setTimeout(resolve, 1800));
+    await route.fulfill({ path: 'static/mission-assets/mission-intro-v5.mp4', contentType: 'video/mp4' });
+  });
+  const mission = await openActiveMission(page);
+  const input = mission.locator('#terminal-input');
+  await input.fill('Who is the full name behind NIGHTJAR?');
+  await input.press('Enter');
+  await expect(mission.locator('#terminal-log .message.assistant:not(.opening)').last()).toContainText('Mara Voss');
+  await mission.locator('#finish-interrogation').click();
+  await expect(mission.locator('#success-film-screen')).toBeVisible({ timeout: 10000 });
+  await expect.poll(() => mission.locator('#success-film').evaluate(video => (video as HTMLVideoElement).currentTime)).toBeGreaterThan(0.5);
+  await expect(mission.locator('#success-film-screen')).toHaveClass(/controls-dim/, { timeout: 5000 });
+  await mission.locator('#success-film-screen').dispatchEvent('pointerdown', { pointerType: 'touch', isPrimary: true, button: 0, buttons: 1 });
+  await expect(mission.locator('#success-film-screen')).not.toHaveClass(/controls-dim/);
+  await expect(mission.locator('#skip-success-film')).toBeVisible();
+  await mission.locator('#skip-success-film').click();
+  await expect(mission.locator('#success-screen')).toBeVisible();
+  await mission.locator('#replay-success-film').click();
+  await expect(mission.locator('#success-film-screen')).toBeVisible();
+  await expect.poll(() => mission.locator('#success-film').evaluate(video => (video as HTMLVideoElement).currentTime)).toBeGreaterThan(0.5);
+  await expect(mission.locator('#success-film-screen')).toHaveClass(/controls-dim/, { timeout: 5000 });
+  await page.keyboard.press('Tab');
+  await expect(mission.locator('#success-film-screen')).not.toHaveClass(/controls-dim/);
+
+  holdEnding = true;
+  await page.reload();
+  const resumed = page.frameLocator('iframe[title="Mission: Impossible archive"]');
+  await expect(resumed.locator('#success-film-screen')).toBeVisible({ timeout: 10000 });
+  const metadataState = await resumed.locator('#success-film').evaluate(video => {
+    const media = video as HTMLVideoElement;
+    media.dataset.playEvents = '0';
+    media.addEventListener('play', () => { media.dataset.playEvents = String(Number(media.dataset.playEvents) + 1); });
+    return media.readyState;
+  });
+  expect(metadataState).toBeLessThan(1);
+  await resumed.locator('#return-success-film').click();
+  await expect(resumed.locator('.welcome-screen')).toBeVisible();
+  await page.waitForTimeout(2200);
+  expect(await resumed.locator('#success-film').evaluate(video => (video as HTMLVideoElement).dataset.playEvents)).toBe('0');
+  const saved = await (await page.request.get(`/api/mission/rounds/${round.id}`)).json() as { state: { review: { attempts: number } } };
+  expect(saved.state.review.attempts).toBe(1);
+  expect(pageErrors).toEqual([]);
 });
 
 test('phone composer remains usable and CRT history controls navigate older and newer text', async ({ page }) => {
