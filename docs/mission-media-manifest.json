@@ -1,69 +1,68 @@
 {
-  "revision": 3,
+  "revision": 4,
   "presentation": {
-    "type": "WebGL CRT interrogation",
+    "type": "Film file browser opens current dark orange WebGL CRT interrogation",
     "upstream": "https://github.com/swordfish90/cool-retro-term",
     "commit": "1394ce82fa53d2a87d5adc4d99f9eeba598ea53d",
     "preset": "Default Amber"
   },
   "opening": {
-    "file": "mission-intro-v6.mp4",
-    "seconds": 18,
-    "width": 1920,
-    "height": 1080,
-    "fps": 30,
-    "audio": "AAC stereo48000Hz",
-    "sourceResolution": "1280x720; active picture crop1280x528 at0,96; upscaled1080p, not native4K",
+    "file": "mission-intro-v7.mp4",
+    "seconds": 10.5,
+    "frames": 315,
     "fullDecode": "passed",
-    "cleanSourceLetterbox": "verified sampled film frames",
+    "longestNearIdenticalFrameRun": 2,
     "faststart": true,
-    "bytes": 3756956,
-    "sha256": "e52dfb691b785e0750eb89efcc957899bcb950d540bb6addf648ceeeee05521e"
+    "bytes": 2710856,
+    "sha256": "222fd41fff66fa24167acd9092328f6bdbb79ac3865dd274d3a47d8d5d79c2c9",
+    "sourceResolution": "1280x720; active crop1280x528y96; proportionally upscaled1080, not native4K"
   },
   "successEnding": {
-    "file": "mission-success-v1.mp4",
-    "seconds": 18,
-    "width": 1920,
-    "height": 1080,
-    "fps": 30,
-    "audio": "AAC stereo48000Hz",
-    "sourceResolution": "1280x720; active picture crop1280x528 at0,96; upscaled1080p, not native4K",
+    "file": "mission-success-v2.mp4",
+    "seconds": 15,
+    "frames": 450,
     "fullDecode": "passed",
-    "cleanSourceLetterbox": "verified sampled film frames",
+    "longestNearIdenticalFrameRun": 2,
     "faststart": true,
-    "bytes": 4072497,
-    "sha256": "87271a816684fc333af5655825f56997c8b771e481c044f95b0be64e8b9c8d5a"
+    "bytes": 4255070,
+    "sha256": "582e0d36ec33a897f3a688a9a27e85f0ddd8a28658eced8f12a436d78f2822f6",
+    "sourceResolution": "1280x720; active crop1280x528y96; proportionally upscaled1080, not native4K"
   },
   "media": [
     {
-      "file": "mission-intro-v6.mp4",
-      "bytes": 3756956,
-      "sha256": "e52dfb691b785e0750eb89efcc957899bcb950d540bb6addf648ceeeee05521e"
+      "file": "mission-intro-v7.mp4",
+      "bytes": 2710856,
+      "sha256": "222fd41fff66fa24167acd9092328f6bdbb79ac3865dd274d3a47d8d5d79c2c9"
     },
     {
-      "file": "mission-intro-v6.vtt",
-      "bytes": 240,
-      "sha256": "de8dea6e0354f9596903de8a57b89d5d19b9829e9a4f8d8e8198c8e6030f95d9"
+      "file": "mission-intro-v7.vtt",
+      "bytes": 239,
+      "sha256": "44a22e347b4078c85ca1f4a63c4af6f41cf84e4af9fb095780cd3c2e4ffdd193"
     },
     {
-      "file": "mission-intro-v6-poster.webp",
-      "bytes": 40438,
-      "sha256": "93645646a5d7d72c8eebc694ee1fc0d7fd77251493a50c29052b7e5d70bde5d6"
+      "file": "mission-intro-v7-poster.webp",
+      "bytes": 63336,
+      "sha256": "a592220cd301b29f2f8b1120b275c54469a76d9176017ede49ee1e384ad18f67"
     },
     {
-      "file": "mission-success-v1.mp4",
-      "bytes": 4072497,
-      "sha256": "87271a816684fc333af5655825f56997c8b771e481c044f95b0be64e8b9c8d5a"
+      "file": "mission-success-v2.mp4",
+      "bytes": 4255070,
+      "sha256": "582e0d36ec33a897f3a688a9a27e85f0ddd8a28658eced8f12a436d78f2822f6"
     },
     {
-      "file": "mission-success-v1.vtt",
+      "file": "mission-success-v2.vtt",
       "bytes": 166,
-      "sha256": "d273c8ca27ec95592cd198f7377c3ef2eaa892abfd7bfef0ed3059979aa5c056"
+      "sha256": "666d6f402a2e8b06a14b1ebf2702f29342ba5897535d5ce873db19a4d54865fb"
     },
     {
-      "file": "mission-success-v1-poster.webp",
-      "bytes": 47240,
-      "sha256": "2b26a628aa41749cb16b61ce92ebc18f208cdb48dcdf9c0c67fbd7ca6e7998c5"
+      "file": "mission-success-v2-poster.webp",
+      "bytes": 47428,
+      "sha256": "8e3e2c9739131ae8e417ace3bddfacd02a8ea4f08d2f32562bfc1cc392cc6d4c"
+    },
+    {
+      "file": "mission-screen-match-v1.webp",
+      "bytes": 132696,
+      "sha256": "0ac4410cf3c43961ac7fcb820ff3e3ad13efa5cd02702e262ccd7489395f5932"
     },
     {
       "file": "mission-roomtone-v1.mp3",
@@ -78,15 +77,15 @@
       "title": "Into the Vault Scene (4/9), Movieclips",
       "introSeconds": [
         3,
-        11
+        7
       ]
     },
     {
       "url": "https://www.youtube.com/watch?v=ar0xLps7WSY",
       "title": "Close Call Scene (5/9), Movieclips",
       "introSeconds": [
-        0.2,
-        4.7
+        5,
+        11.5
       ],
       "successSegmentsSeconds": [
         [
@@ -95,11 +94,11 @@
         ],
         [
           23.8,
-          27.2
+          26.8
         ],
         [
-          20.5,
-          23.1
+          20.7,
+          22.7
         ]
       ]
     }
