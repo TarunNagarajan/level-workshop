@@ -13,7 +13,7 @@ import { createSubmissionJournal, RECORDING_NOTICE_VERSION } from './durable-sub
 import { MACHINE_REVIEW_SYSTEM, MACHINE_REVIEW_PROTOCOL_VERSION, makeReviewPrompt, publicMachineReview, validateMachineReview } from './machine-review.mjs';
 import { RIDDLE_DIARY_LEVEL_ID, RIDDLE_DIARY_SCENARIO_ID, addRiddleDiaryRoutes, diaryPromptContext, isRiddleDiaryData, publicDiaryProfile } from './riddle-diary.mjs';
 import { addMissionArchiveRoutes, isMissionRound } from './mission-archive.mjs';
-import { INCEPTION_SCENARIO_ID, addInceptionRoutes, inceptionPromptContext, isInceptionData, publicInceptionProfile } from './inception.mjs';
+import { INCEPTION_ORGANIZER_RECORDING_POLICY, INCEPTION_SCENARIO_ID, addInceptionRoutes, inceptionPromptContext, isInceptionData, publicInceptionProfile } from './inception.mjs';
 const scrypt = promisify(scryptCallback);
 const id = () => randomUUID();
 const token = () => randomBytes(32).toString('base64url');
@@ -38,6 +38,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     if (!store)
         throw new Error('A persistent store is required.');
     const cookieOptions = { httpOnly: true, sameSite: 'strict', path: '/', secure: secureCookies, maxAge: 30 * 86400000 };
+    const inceptionCookieOptions = { ...cookieOptions };
     const { get, all, run, batch } = store;
     const app = express();
     const authLimits = new Map();
@@ -54,15 +55,36 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         }
         const auth = req.cookies.workshop ? await get('SELECT users.* FROM auth JOIN users ON users.id = auth.user_id LEFT JOIN link_sessions ON link_sessions.auth_token = auth.token LEFT JOIN workshop_links ON workshop_links.id = link_sessions.link_id WHERE auth.token = ? AND auth.expires > ? AND (link_sessions.link_id IS NULL OR (workshop_links.revoked = 0 AND workshop_links.expires > ?))', hash(req.cookies.workshop), Date.now(), Date.now()) : null;
         req.user = auth || null;
+        req.inceptionEntry = null;
+        if (rootEntry && req.cookies.inception_entry) {
+          const entry = await get(`SELECT users.id,users.name,users.role FROM auth
+            JOIN users ON users.id=auth.user_id
+            JOIN link_sessions ON link_sessions.auth_token=auth.token
+            JOIN workshop_links ON workshop_links.id=link_sessions.link_id
+            WHERE auth.token=? AND auth.expires>? AND workshop_links.id=? AND workshop_links.revoked=0 AND workshop_links.expires>?`,
+            hash(`inception-entry:${req.cookies.inception_entry}`), Date.now(), 'root-workshop-entry', Date.now());
+          if (entry && (entry.role === 'inception_participant' ? !req.user : req.user?.id === entry.id)) {
+            req.inceptionEntry = { actor: { id: entry.id, name: entry.name, role: entry.role }, policyId: INCEPTION_ORGANIZER_RECORDING_POLICY };
+          }
+        }
         next();
     });
     const member = (req, res, next) => req.user ? next() : res.status(401).json({ error: 'Sign in to use the workshop.' });
+    const inceptionMember = (req, res, next) => {
+      const actor = req.inceptionEntry?.actor || req.user;
+      if (!actor) return res.status(401).json({ error: 'Open the Inception entry link to continue.' });
+      req.inceptionActor = actor;
+      next();
+    };
     const admin = (req, res, next) => req.user?.role === 'admin' ? next() : res.status(403).json({ error: 'Only the workspace owner can do this.' });
     const metrics = createMetricsService({ store, enabled: metricsEnabled });
     const journal = createSubmissionJournal(store);
     const recordingAccepted = async userId => Boolean(userId && await get('SELECT user_id FROM user_recording_acknowledgements WHERE user_id = ? AND version = ?', userId, RECORDING_NOTICE_VERSION));
-    const requireRecording = async (req, round = null) => {
+    const requireRecording = async (req, round = null, organizerStart = false) => {
       if (!recordingNoticeRequired) return;
+      const scopedActorId = req.inceptionEntry?.actor?.id;
+      if (scopedActorId && organizerStart && !round && req.inceptionActor?.id === scopedActorId) return;
+      if (scopedActorId && round && isInceptionData(JSON.parse(round.data)) && round.recording_notice_version === INCEPTION_ORGANIZER_RECORDING_POLICY && round.author_id === scopedActorId) return;
       const roundAccepted = round && ((round.recording_accepted_at && round.recording_notice_version === RECORDING_NOTICE_VERSION) || await get('SELECT round_id FROM difficulty_collection_assignments WHERE round_id = ? AND consent_at IS NOT NULL AND consent_version IS NOT NULL', round.id));
       if (roundAccepted) return;
       if (req.user && await recordingAccepted(req.user.id)) return;
@@ -132,14 +154,23 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             fail(404, 'Test session not found.');
         if (isMissionRound(row)) fail(404, 'Continue this session in the interactive archive.');
         const supplied = req.get('x-round-token');
-        if (!(req.user && (row.author_id === req.user.id || req.user.role === 'admin')) && !(supplied && hash(supplied) === row.token))
+        const inceptionOwner = req.inceptionEntry?.actor?.id === row.author_id && isInceptionData(JSON.parse(row.data))
+          ? await get('SELECT round_id FROM inception_sessions WHERE round_id=? AND actor_id=?', row.id, req.inceptionEntry.actor.id)
+          : null;
+        const inceptionRound = isInceptionData(JSON.parse(row.data));
+        const memberOwnsRound = req.user && (row.author_id === req.user.id || req.user.role === 'admin');
+        const validRoundToken = Boolean(supplied && hash(supplied) === row.token);
+        const organizerPolicyRound = inceptionRound && row.source === 'inception-play' && row.recording_notice_version === INCEPTION_ORGANIZER_RECORDING_POLICY;
+        const allowed = inceptionRound ? Boolean(memberOwnsRound || inceptionOwner || (validRoundToken && !organizerPolicyRound))
+          : Boolean(memberOwnsRound || validRoundToken);
+        if (!allowed)
             fail(403, 'This test session is private.');
         return row;
     };
-    const createRound = async ({ version, userId = null, tester, source, messages, parentId = null, deskState, roundId: requestedRoundId, rawToken: requestedToken, collectionAssignment, frozenConfig, allocationLeaseToken, consentAt = null, recordingAckUserId = null, diaryState = null, inceptionState = null }) => {
+    const createRound = async ({ version, userId = null, tester, source, messages, parentId = null, deskState, roundId: requestedRoundId, rawToken: requestedToken, collectionAssignment, frozenConfig, allocationLeaseToken, consentAt = null, recordingAckUserId = null, recordingPolicy = null, diaryState = null, inceptionState = null }) => {
         consentAt ||= collectionAssignment?.consentAt || null;
         if (isPassportVersion(version.id) && !deskState) fail(409, 'Start this reference from the interactive passport desk.');
-        if (userId && recordingNoticeRequired && !await recordingAccepted(userId) && !consentAt) fail(428, 'Acknowledge the recording notice before starting a test.');
+        if (userId && recordingNoticeRequired && !await recordingAccepted(userId) && !consentAt && !recordingPolicy) fail(428, 'Acknowledge the recording notice before starting a test.');
         if (recordingNoticeRequired && !userId && ['blind', 'reference-blind', 'reference-research-preview'].includes(source) && !consentAt) fail(428, 'Accept the recording notice before starting this test.');
         const raw = requestedToken || token();
         const roundId = requestedRoundId || id();
@@ -150,7 +181,8 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const initial = messages || [{ id: id(), role: 'assistant', content: data.opening, createdAt: Date.now(), opening: true }];
         const config = frozenConfig || safeConfig();
         const roundStartedAt = Date.now();
-        const roundValues = [roundId, hash(raw), version.level_id, version.id, userId, source, version.data, JSON.stringify(config), tester, JSON.stringify(initial), roundStartedAt, parentId, consentAt, consentAt ? RECORDING_NOTICE_VERSION : null];
+        if (recordingPolicy && (!inceptionState || recordingPolicy !== INCEPTION_ORGANIZER_RECORDING_POLICY || source !== 'inception-play')) fail(403, 'The recording policy is not valid for this session.');
+        const roundValues = [roundId, hash(raw), version.level_id, version.id, userId, source, version.data, JSON.stringify(config), tester, JSON.stringify(initial), roundStartedAt, parentId, consentAt, recordingPolicy || (consentAt ? RECORDING_NOTICE_VERSION : null)];
         const allocationGuard = allocationLeaseToken && collectionAssignment?.source === 'participant';
         const roundInsert = allocationGuard
           ? ['INSERT INTO rounds (id, token, level_id, version_id, author_id, source, data, config, tester, messages, started_at, parent_id, recording_accepted_at, recording_notice_version) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM difficulty_collection_leases l JOIN difficulty_collections c ON c.id = l.collection_id JOIN difficulty_collection_links k ON k.id = ? AND k.collection_id = c.id WHERE l.collection_id = ? AND l.token = ? AND l.expires > ? AND c.status = ? AND k.revoked = 0 AND k.expires > ?)', ...roundValues, collectionAssignment.linkId, collectionAssignment.collectionId, allocationLeaseToken, Date.now(), 'active', Date.now()]
@@ -265,7 +297,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         ]);
         await enter(res, user);
     });
-    app.get('/api/team', member, async (req, res) => res.json(await all('SELECT id, name, email, role FROM users ORDER BY created_at')));
+    app.get('/api/team', member, async (req, res) => res.json(await all("SELECT id, name, email, role FROM users WHERE role <> 'inception_participant' ORDER BY created_at")));
     const checkOwnerKey = value => {
       if (!ownerKey || !timingSafeEqual(Buffer.from(hash(value)), Buffer.from(hash(ownerKey)))) fail(404, 'This owner link is not available.');
     };
@@ -304,6 +336,32 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         : [['UPDATE workshop_links SET revoked = 1 WHERE id = ?', link.id], ['DELETE FROM auth WHERE token IN (SELECT auth_token FROM link_sessions WHERE link_id = ?)', link.id]]);
       return { enabled };
     };
+    app.post('/api/inception/entry', async (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      z.object({}).strict().parse(req.body);
+      if (req.inceptionEntry) {
+        const actor = req.inceptionEntry.actor;
+        return res.json({ actorId: actor.id, actorScope: hash(String(actor.id)).slice(0, 24), recordingAuthorized: true, policyId: INCEPTION_ORGANIZER_RECORDING_POLICY });
+      }
+      if (req.user && !rootEntry) {
+        const accepted = await recordingAccepted(req.user.id);
+        return res.json({ actorId: req.user.id, actorScope: hash(String(req.user.id)).slice(0, 24), recordingAuthorized: accepted || !recordingNoticeRequired, policyId: null, ordinaryRecordingNotice: recordingNoticeRequired && !accepted });
+      }
+      const link = await activeRootEntryLink();
+      let actor;
+      if (req.user) actor = req.user;
+      else {
+        actor = { id: id(), name: `Participant ${randomBytes(5).toString('hex')}`, email: `${id()}@participant.invalid`, password: '', role: 'inception_participant' };
+        await run('INSERT INTO users VALUES (?, ?, ?, ?, ?, ?)', actor.id, actor.name, actor.email, actor.password, actor.role, Date.now());
+      }
+      const raw = token(), expires = Date.now() + inceptionCookieOptions.maxAge;
+      await batch([
+        ['INSERT INTO auth (token,user_id,expires) VALUES (?,?,?)', hash(`inception-entry:${raw}`), actor.id, expires],
+        ['INSERT INTO link_sessions (auth_token,link_id) VALUES (?,?)', hash(`inception-entry:${raw}`), link.id],
+      ]);
+      res.cookie('inception_entry', raw, inceptionCookieOptions);
+      res.json({ actorId: actor.id, actorScope: hash(String(actor.id)).slice(0, 24), recordingAuthorized: true, policyId: INCEPTION_ORGANIZER_RECORDING_POLICY });
+    });
     const createEditorEntry = async (req, res, link, name) => {
       if (req.user) return res.json({ user: publicUser(req.user) });
       const user = { id: id(), name, email: `${id()}@workshop.invalid`, password: 'link-only', role: 'editor' };
@@ -551,11 +609,12 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
       res.json(result);
     });
     app.get('/api/rounds/:id/recording', async (req, res) => {
-      const row = await accessRound(req), collectionConsent = await get('SELECT round_id FROM difficulty_collection_assignments WHERE round_id = ? AND consent_at IS NOT NULL AND consent_version IS NOT NULL', row.id), accepted = Boolean((row.recording_accepted_at && row.recording_notice_version === RECORDING_NOTICE_VERSION) || collectionConsent || await recordingAccepted(req.user?.id));
-      res.json({ accepted, version: accepted ? RECORDING_NOTICE_VERSION : null });
+      const row = await accessRound(req), collectionConsent = await get('SELECT round_id FROM difficulty_collection_assignments WHERE round_id = ? AND consent_at IS NOT NULL AND consent_version IS NOT NULL', row.id), organizerPolicy = isInceptionData(JSON.parse(row.data)) && row.recording_notice_version === INCEPTION_ORGANIZER_RECORDING_POLICY && req.inceptionEntry?.actor?.id === row.author_id, accepted = Boolean(organizerPolicy || (row.recording_accepted_at && row.recording_notice_version === RECORDING_NOTICE_VERSION) || collectionConsent || await recordingAccepted(req.user?.id));
+      res.json({ accepted, version: accepted ? (organizerPolicy ? INCEPTION_ORGANIZER_RECORDING_POLICY : RECORDING_NOTICE_VERSION) : null });
     });
     app.post('/api/rounds/:id/recording', async (req, res) => {
       const row = await accessRound(req), input = z.object({ version: z.literal(RECORDING_NOTICE_VERSION), accepted: z.literal(true) }).parse(req.body);
+      if (req.inceptionEntry?.actor?.role === 'inception_participant' && isInceptionData(JSON.parse(row.data))) fail(403, 'The organizer-provided Inception recording policy cannot be replaced by a participant acknowledgement.');
       const acceptedAt = Date.now();
         if (row.recording_notice_version !== input.version) await run('UPDATE rounds SET recording_accepted_at = ?, recording_notice_version = ? WHERE id = ?', acceptedAt, input.version, row.id);
         if (req.user) await run('INSERT INTO user_recording_acknowledgements (user_id, version, accepted_at) VALUES (?, ?, ?) ON CONFLICT(user_id, version) DO NOTHING', req.user.id, input.version, acceptedAt);
@@ -569,7 +628,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         try { return await action(await accessRound(req), lease); }
         finally { await run('DELETE FROM round_locks WHERE round_id = ? AND token = ?', initial.id, lease); }
     };
-    addInceptionRoutes(app, { store, member, provider, createRound, accessRound, withRoundLock, publicRound, requireRecording, recordingNoticeRequired, reviewEnabled: Boolean(passportReviewEnabled), completion: instrumentedCompletion, markCompletionSaved: metrics.markSaved });
+    addInceptionRoutes(app, { store, member, inceptionMember, provider, createRound, accessRound, withRoundLock, publicRound, requireRecording, recordingNoticeRequired, reviewEnabled: Boolean(passportReviewEnabled), completion: instrumentedCompletion, markCompletionSaved: metrics.markSaved });
     const collectionModels = createCollectionModelServices({ store, provider, completion: instrumentedCompletion, metrics });
     app.post('/api/rounds/:id/messages', async (req, res) => {
       const authorized = await accessRound(req), content = z.string().trim().min(1).max(4000).parse(req.body.content);
@@ -583,7 +642,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const existing = await journal.find(`round:${authorized.id}`, requestId);
         if (existing) {
           const existingAssignment = await get('SELECT collection_id, profile_id FROM difficulty_collection_assignments WHERE round_id = ?', authorized.id);
-          const checked = await journal.begin({ roundId: authorized.id, clientRequestId: requestId, actorId: req.user?.id, source: authorized.source, versionId: authorized.version_id, collectionId: existingAssignment?.collection_id, profileId: existingAssignment?.profile_id || diaryProfileId || inceptionProfileId, scenarioId: diaryMode ? RIDDLE_DIARY_SCENARIO_ID : inceptionMode ? INCEPTION_SCENARIO_ID : undefined, content });
+          const checked = await journal.begin({ roundId: authorized.id, clientRequestId: requestId, actorId: req.user?.id || (inceptionMode ? req.inceptionEntry?.actor?.id : null), source: authorized.source, versionId: authorized.version_id, collectionId: existingAssignment?.collection_id, profileId: existingAssignment?.profile_id || diaryProfileId || inceptionProfileId, scenarioId: diaryMode ? RIDDLE_DIARY_SCENARIO_ID : inceptionMode ? INCEPTION_SCENARIO_ID : undefined, content });
           const receipt = checked.entry;
           if (receipt.status === 'succeeded' && receipt.transcript_saved) return res.json({ ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', authorized.id)), submissionId: receipt.id });
           return res.status(409).json({ error: receipt.status === 'succeeded' ? 'The reply was recorded, but the conversation save did not complete.' : 'This request was already received and will not be sent twice.', submissionId: receipt.id, submissionStatus: receipt.status, receiptConfirmed: true, transcriptSaved: Boolean(receipt.transcript_saved) });
@@ -593,7 +652,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
       const messagesBefore = JSON.parse(authorized.messages);
       if (messagesBefore.filter(m => m.role === 'user').length >= 40) fail(409, 'This test has reached its 40-turn limit.');
       const assignment = await get('SELECT collection_id, profile_id FROM difficulty_collection_assignments WHERE round_id = ?', authorized.id);
-      const { entry, shouldInvoke } = await journal.begin({ roundId: authorized.id, clientRequestId: requestId, actorId: req.user?.id, source: authorized.source, versionId: authorized.version_id, collectionId: assignment?.collection_id, profileId: assignment?.profile_id || diaryProfileId || inceptionProfileId, scenarioId: diaryMode ? RIDDLE_DIARY_SCENARIO_ID : inceptionMode ? INCEPTION_SCENARIO_ID : undefined, content });
+      const { entry, shouldInvoke } = await journal.begin({ roundId: authorized.id, clientRequestId: requestId, actorId: req.user?.id || (inceptionMode ? req.inceptionEntry?.actor?.id : null), source: authorized.source, versionId: authorized.version_id, collectionId: assignment?.collection_id, profileId: assignment?.profile_id || diaryProfileId || inceptionProfileId, scenarioId: diaryMode ? RIDDLE_DIARY_SCENARIO_ID : inceptionMode ? INCEPTION_SCENARIO_ID : undefined, content });
       if (!shouldInvoke) {
         if (entry.status === 'succeeded' && entry.transcript_saved) return res.json({ ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', authorized.id)), submissionId: entry.id });
         return res.status(409).json({ error: entry.status === 'succeeded' ? 'The reply was recorded, but the conversation save did not complete.' : 'This request was already received and will not be sent twice.', submissionId: entry.id, submissionStatus: entry.status, receiptConfirmed: true, transcriptSaved: Boolean(entry.transcript_saved) });
@@ -635,7 +694,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             }
             const system = `${collectionSystem || compilePrompt(data)}${verifiedContext ? `\n\n${verifiedContext}` : ''}`;
             let requested;
-            try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user, profileId: diaryProfileId || inceptionProfileId }); }
+            try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user || (inceptionMode ? req.inceptionEntry?.actor : undefined), profileId: diaryProfileId || inceptionProfileId }); }
             catch (error) { await journal.fail(entry.id, error); error.submissionId = entry.id; throw error; }
             const { result, callId } = requested;
             const replyId = id();
@@ -787,7 +846,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     addCollectionRoutes(app, { store, provider, member, owner, versionRow, createRound, passportReviewEnabled });
     addPassportRoutes(app, { store, provider, completion: instrumentedCompletion, member, createRound, accessRound, withRoundLock, publicRound, addDraft, researchWorlds, researchWorldId, collectionModels, passportReviewEnabled, passportScenarioRotation, journal, requireRecording, recordingNoticeRequired });
     const missionRoutes = addMissionArchiveRoutes(app, { store, member, provider, completion: instrumentedCompletion, journal, requireRecording, recordingNoticeRequired, reviewEnabled: Boolean(passportReviewEnabled) });
-    addMetricsRoutes(app, { store, enabled: metricsEnabled, secureCookies, authorizeRound: async (req, roundId) => await missionRoutes.authorizeMetricsRound(req, roundId) || accessRound(req, roundId), admin, sessionCreationLimit: metricsSessionCreationLimit, recordingNoticeRequired, recordingAccepted });
+    addMetricsRoutes(app, { store, enabled: metricsEnabled, secureCookies, authorizeRound: async (req, roundId) => await missionRoutes.authorizeMetricsRound(req, roundId) || accessRound(req, roundId), admin, sessionCreationLimit: metricsSessionCreationLimit, recordingNoticeRequired, recordingAccepted, inceptionEntryPolicy: INCEPTION_ORGANIZER_RECORDING_POLICY });
     app.use('/api', async (req, res) => res.status(404).json({ error: 'Endpoint not found.' }));
     app.use(async (error, req, res, next) => {
         if (error instanceof z.ZodError)

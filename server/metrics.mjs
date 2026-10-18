@@ -131,16 +131,20 @@ function applyCursorWindow(query, window, cursor) {
   return window;
 }
 
-export function addMetricsRoutes(app, { store, enabled = false, secureCookies = false, authorizeRound = async () => null, admin, sessionCreationLimit = 120, recordingNoticeRequired = false, recordingAccepted = async () => true }) {
+export function addMetricsRoutes(app, { store, enabled = false, secureCookies = false, authorizeRound = async () => null, admin, sessionCreationLimit = 120, recordingNoticeRequired = false, recordingAccepted = async () => true, inceptionEntryPolicy = null }) {
   const { get, all, run, batch } = store;
+  const identityFor = req => req.inceptionEntry?.actor?.id || req.user?.id || null;
   const cookieName = 'workshop_metrics';
   const cookieOptions = { httpOnly: true, sameSite: 'strict', path: '/api/telemetry', secure: secureCookies };
   const sessionCreationLimits = new Map();
   app.post('/api/telemetry/session', async (req, res) => {
-    if (recordingNoticeRequired && req.user && !await recordingAccepted(req.user.id)) return res.status(428).json({ error: 'Acknowledge the recording notice before telemetry starts.' });
+    const organizerView = req.inceptionEntry?.policyId === inceptionEntryPolicy && req.body?.view === 'inception';
+    const restrictedEntry = req.inceptionEntry?.actor?.role === 'inception_participant';
+    if (restrictedEntry && !organizerView) return res.status(403).json({ error: 'This participant entry is limited to Inception telemetry.' });
+    if (recordingNoticeRequired && req.user && !organizerView && !await recordingAccepted(req.user.id)) return res.status(428).json({ error: 'Acknowledge the recording notice before telemetry starts.' });
     if (!enabled) return res.json({ enabled: false, heartbeatSeconds: 0, idleAfterMs: 0 });
     const raw = req.cookies?.[cookieName];
-    const userId = req.user?.id || null, time = now();
+    const userId = identityFor(req), time = now();
     let session = raw ? await get('SELECT * FROM metrics_sessions WHERE token_hash=?', hash(raw)) : null;
     if (session && (session.expires_at <= time || session.created_at + 24 * 60 * 60 * 1000 <= time || session.closed_at || session.user_id !== userId)) {
       await run('UPDATE metrics_sessions SET closed_at=? WHERE id=? AND closed_at IS NULL', time, session.id);
@@ -168,15 +172,20 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
     res.json({ enabled: true, heartbeatSeconds: 18, idleAfterMs: 30000, sessionId: currentSessionId });
   });
   app.post('/api/telemetry/events', async (req, res) => {
-    if (recordingNoticeRequired && req.user && !await recordingAccepted(req.user.id)) return res.status(428).json({ error: 'Acknowledge the recording notice before telemetry starts.' });
     if (!enabled) return res.json({ accepted: 0, duplicates: 0 });
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(key => !['events','roundId','sessionId'].includes(key))) return res.status(400).json({ error: 'Event batch contains an unsupported field.' });
     if (!uuid(req.body.sessionId)) return res.status(400).json({ error: 'Metrics session ID is required.' });
-    const raw = req.cookies?.[cookieName];
-    const session = raw ? await get('SELECT * FROM metrics_sessions WHERE token_hash=?', hash(raw)) : null;
-    if (!session || req.body.sessionId !== session.id || session.expires_at <= now() || session.created_at + 24 * 60 * 60 * 1000 <= now() || session.closed_at || session.user_id !== (req.user?.id || null)) return res.status(401).json({ error: 'Metrics session expired.' });
     const events = req.body?.events;
     if (!Array.isArray(events) || events.length < 1 || events.length > 50) return res.status(400).json({ error: 'Submit 1 through 50 events.' });
+    const organizerBatch = req.inceptionEntry?.policyId === inceptionEntryPolicy && events.every(event => event?.view === 'inception');
+    const restrictedEntry = req.inceptionEntry?.actor?.role === 'inception_participant';
+    if (restrictedEntry && !organizerBatch) return res.status(403).json({ error: 'This participant entry is limited to Inception telemetry.' });
+    const ordinaryAcknowledgement = Boolean(req.user && await recordingAccepted(req.user.id));
+    const reliesOnOrganizerPolicy = Boolean(organizerBatch && !ordinaryAcknowledgement);
+    if (recordingNoticeRequired && req.user && !organizerBatch && !ordinaryAcknowledgement) return res.status(428).json({ error: 'Acknowledge the recording notice before telemetry starts.' });
+    const raw = req.cookies?.[cookieName];
+    const session = raw ? await get('SELECT * FROM metrics_sessions WHERE token_hash=?', hash(raw)) : null;
+    if (!session || req.body.sessionId !== session.id || session.expires_at <= now() || session.created_at + 24 * 60 * 60 * 1000 <= now() || session.closed_at || session.user_id !== identityFor(req)) return res.status(401).json({ error: 'Metrics session expired.' });
     events.forEach(validateEvent);
     if (req.body.roundId !== undefined && !uuid(req.body.roundId)) return res.status(400).json({ error: 'Round ID is invalid.' });
     if (req.body.roundId !== undefined && events.some(e => e.roundId !== undefined && e.roundId !== req.body.roundId)) return res.status(400).json({ error: 'Batch round ID does not match its events.' });
@@ -186,21 +195,22 @@ export function addMetricsRoutes(app, { store, enabled = false, secureCookies = 
     let inferred = {};
     if (roundIds.size) {
       const roundId = [...roundIds][0];
-      if (!req.user && !req.get('x-round-token')) return res.status(403).json({ error: 'Round capability is required.' });
+      if (!req.user && !req.inceptionEntry && !req.get('x-round-token')) return res.status(403).json({ error: 'Round capability is required.' });
       const round = await authorizeRound(req, roundId);
-      if (!round) return res.status(403).json({ error: req.user ? 'Round access is not authorized.' : 'Round capability is invalid.' });
+      if (!round) return res.status(403).json({ error: req.user || req.inceptionEntry ? 'Round access is not authorized.' : 'Round capability is invalid.' });
+      if (reliesOnOrganizerPolicy && !(round.source === 'inception-play' && round.author_id === req.inceptionEntry.actor.id && round.recording_notice_version === inceptionEntryPolicy)) return res.status(403).json({ error: 'Organizer-policy telemetry is limited to this participant’s Inception round.' });
       inferred = await get('SELECT a.collection_id AS "collectionId",a.profile_id AS "profileId",COALESCE(a.source,r.source) AS source,r.version_id AS "versionId" FROM rounds r LEFT JOIN difficulty_collection_assignments a ON a.round_id=r.id WHERE r.id=?', roundId) || {};
       inferred.profileId ||= round.profileId || null;
       inferred.source = safeSource(inferred.source);
     }
-    const time = now(), batchToken=randomUUID(), expires=Math.min(time+30*60*1000,session.created_at+24*60*60*1000);
-    const stmts=[['UPDATE metrics_sessions SET event_window_started_at=CASE WHEN event_window_started_at+60000<=? THEN ? ELSE event_window_started_at END,event_window_count=CASE WHEN event_window_started_at+60000<=? THEN ? ELSE event_window_count+? END,event_batch_token=?,last_seen_at=?,expires_at=? WHERE id=? AND expires_at>? AND created_at+86400000>? AND closed_at IS NULL AND (user_id=? OR (user_id IS NULL AND CAST(? AS TEXT) IS NULL)) AND (CASE WHEN event_window_started_at+60000<=? THEN 0 ELSE event_window_count END)+?<=200',time,time,time,events.length,events.length,batchToken,time,expires,session.id,time,time,req.user?.id||null,req.user?.id||null,time,events.length]];
+    const time = now(), batchToken=randomUUID(), expires=Math.min(time+30*60*1000,session.created_at+24*60*60*1000), actorId = identityFor(req);
+    const stmts=[['UPDATE metrics_sessions SET event_window_started_at=CASE WHEN event_window_started_at+60000<=? THEN ? ELSE event_window_started_at END,event_window_count=CASE WHEN event_window_started_at+60000<=? THEN ? ELSE event_window_count+? END,event_batch_token=?,last_seen_at=?,expires_at=? WHERE id=? AND expires_at>? AND created_at+86400000>? AND closed_at IS NULL AND (user_id=? OR (user_id IS NULL AND CAST(? AS TEXT) IS NULL)) AND (CASE WHEN event_window_started_at+60000<=? THEN 0 ELSE event_window_count END)+?<=200',time,time,time,events.length,events.length,batchToken,time,expires,session.id,time,time,actorId,actorId,time,events.length]];
     for (const e of events) stmts.push(['INSERT INTO metrics_events (event_id,session_id,user_id,tab_id,page_id,round_id,collection_id,profile_id,source,version_id,event_kind,view_category,phase,elapsed_ms,active_ms,visible_ms,idle_ms,read_think_ms,compose_ms,waiting_ms,since_reply_ms,request_category,request_outcome,request_wall_ms,retry_count,interaction,created_at) SELECT ?,s.id,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? FROM metrics_sessions s WHERE s.id=? AND s.event_batch_token=? ON CONFLICT(event_id) DO NOTHING',
       e.eventId, session.user_id, e.tabId, e.pageId, e.roundId || batchRoundId || null, inferred.collectionId || null, inferred.profileId || null, inferred.source || null, inferred.versionId || null, e.kind, e.view, e.phase || null, e.elapsedMs ?? null, e.activeMs ?? null, e.visibleMs ?? null, e.idleMs ?? null, e.readThinkMs ?? null, e.composeMs ?? null, e.waitingMs ?? null, e.sinceReplyMs ?? null, e.requestCategory || null, e.requestOutcome || null, e.requestWallMs ?? null, e.retryCount ?? null, e.interaction || null, time, session.id, batchToken]);
     const results = await batch(stmts);
     if (!results[0]?.changes) {
       const current=await get('SELECT user_id,expires_at,created_at,closed_at FROM metrics_sessions WHERE id=?',session.id);
-      if(!current||current.closed_at||current.expires_at<=time||current.created_at+24*60*60*1000<=time||current.user_id!==(req.user?.id||null))return res.status(401).json({error:'Metrics session expired.'});
+      if(!current||current.closed_at||current.expires_at<=time||current.created_at+24*60*60*1000<=time||current.user_id!==actorId)return res.status(401).json({error:'Metrics session expired.'});
       return res.status(429).json({ error: 'Event rate limit reached.' });
     }
     const accepted=results.slice(1).reduce((n,result)=>n+Number(result.changes||0),0);
