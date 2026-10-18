@@ -225,7 +225,8 @@ test('Groq start reservation remains held through finish and is released after i
   try {
     const owner = (await fixture.request('/setup', { method: 'POST', body: { name: 'Owner', email: `cap-${randomUUID()}@example.test`, password: 'long-test-password' } })).cookie;
     await fixture.request('/recording/acknowledge', { method: 'POST', cookie: owner, body: { version: 'recording-notice-v1', accepted: true } });
-    const started = await fixture.request('/inception/start', { method: 'POST', cookie: owner, body: { profileId: 'standard', clientStartId: randomUUID().replaceAll('-', ''), consent: true } });
+    const clientStartId = randomUUID().replaceAll('-', ''), startBody = { profileId: 'standard', clientStartId, consent: true };
+    const started = await fixture.request('/inception/start', { method: 'POST', cookie: owner, body: startBody });
     assert.equal(started.status, 201, JSON.stringify(started.body));
     const roundId = started.body.round.id;
     assert.equal(JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config).providerId, 'groq');
@@ -236,6 +237,11 @@ test('Groq start reservation remains held through finish and is released after i
     assert.equal(fixture.calls.length, 1);
     assert.equal(fixture.calls[0].config.providerId, 'groq');
     assert.equal((await fixture.store.get('SELECT COUNT(*) AS n FROM inception_provider_reservations WHERE round_id=?', roundId)).n, 0);
+    const repeated = await fixture.request('/inception/start', { method: 'POST', cookie: owner, body: startBody });
+    assert.equal(repeated.status, 200, JSON.stringify(repeated.body));
+    assert.equal(repeated.body.round.id, roundId);
+    assert.equal((await fixture.store.get("SELECT COUNT(*) AS n FROM rounds WHERE source='inception-play'")).n, 1);
+    assert.equal(fixture.calls.length, 1);
   } finally { await fixture.close(); }
 });
 
