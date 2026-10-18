@@ -16,12 +16,30 @@ type Configuration = { title: string; profiles: Profile[]; defaultProfileId?: st
 type Review = { status: string; verdict?: string; reason?: string; evidence?: { replyId: string; quote: string }[]; retryable?: boolean; errorCode?: string };
 type MediaManifest = { closedFrame?: string | null; openFrame?: string | null; dialogueTexture?: string | null; bridgeFrame?: string | null; bridgeVideo?: string | null; introVideo?: string | null; introDurationSeconds?: number; captions?: string | null; successVideo?: string | null; successCaptions?: string | null; successFilmDurationSeconds?: number; successDurationSeconds?: number; successTitleFadeInStartSeconds?: number; successTitleFadeInEndSeconds?: number; successTitleFadeStartSeconds?: number; successTitleFadeEndSeconds?: number; successLogoStartSeconds?: number; successLogoFadeInEndSeconds?: number; successLogoFadeStartSeconds?: number; successLogoFadeEndSeconds?: number; successFinalBlackDurationSeconds?: number; successReturnFadeSeconds?: number; endingWordmark?: string | null; endingLogo?: string | null; entryPoster?: string | null; entryWordmark?: string | null; gameplayLoop?: string | null; roomTone?: string | null; creditsCue?: string | null; creditsDurationSeconds?: number; portraits?: { eames?: string; fischer?: string } };
 type PendingSend = { id: string; content: string };
+type SendPhase = 'idle' | 'sending' | 'checking';
 
 const startStorage = 'workshop-inception-start-intent';
 const startStorageFor = (actorScope: string) => `${startStorage}:${actorScope}`;
 const completedRoundStorage = 'workshop-inception-completed-round';
 const completedRoundStorageFor = (actorScope: string) => `${completedRoundStorage}:${actorScope}`;
+const sendCooldownStorageFor = (roundId: string) => `workshop-inception-send-cooldown:${roundId}`;
+const sendFailureStorageFor = (roundId: string) => `workshop-inception-send-failure:${roundId}`;
+const hasPersistedProviderFailure = (roundId: string) => {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(sendFailureStorageFor(roundId)) || 'null') as { at?: number } | null;
+    return Boolean(value && Number.isFinite(value.at) && value.at! <= Date.now() && value.at! >= Date.now() - 24 * 60 * 60 * 1000);
+  } catch { return false; }
+};
+const readSendCooldown = (roundId: string) => {
+  try {
+    const value = Number(sessionStorage.getItem(sendCooldownStorageFor(roundId)));
+    const now = Date.now();
+    return Number.isFinite(value) && value > now && value <= now + 7 * 24 * 60 * 60 * 1000 ? value : 0;
+  } catch { return 0; }
+};
 const sessionStorageKey = 'workshop-inception-session';
+const nextAttemptDraftStorageFor = (actorScope: string) => `workshop-inception-next-attempt-draft:${actorScope}`;
+const sendDraftStorageFor = (roundId: string) => `workshop-inception-send-draft:${roundId}`;
 const soundStorage = 'workshop-inception-sound';
 const DEFAULT_INTRO_DURATION_SECONDS = 25;
 const defaultSound = { muted: false, volume: 0.45 };
@@ -76,6 +94,7 @@ const getEndingCardPhase = (currentTime: number, manifest: MediaManifest, durati
 
 export function InceptionLevel({ directEntry = false }: { directEntry?: boolean } = {}) {
   const [config, setConfig] = useState<Configuration | null>(null);
+  const actorScopeRef = useRef<string | null>(null);
   const [manifest, setManifest] = useState<MediaManifest>({});
   const [session, setSession] = useState<Session | null>(null);
   const [selectedProfile, setSelectedProfile] = useState('standard');
@@ -100,6 +119,8 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
   const [messageText, setMessageText] = useState('');
   const [pendingSend, setPendingSend] = useState<PendingSend | null>(null);
   const [sendStatus, setSendStatus] = useState('');
+  const [sendPhase, setSendPhase] = useState<SendPhase>('idle');
+  const [failureNeedsNewAttempt, setFailureNeedsNewAttempt] = useState(false);
   const [activeModal, setActiveModal] = useState<'safe' | 'room' | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [successEnding, setSuccessEnding] = useState<'playing' | 'blocked' | 'error' | null>(null);
@@ -148,17 +169,17 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
   const endingFinalizationRef = useRef(false);
   const endingSkipAnimationRef = useRef<number | null>(null);
   const entryPosterRef = useRef<HTMLButtonElement | null>(null);
-  const leaveRef = useRef<() => Promise<void>>(async () => undefined);
+  const leaveRef = useRef<(archiveToMenu?: boolean) => Promise<void>>(async () => undefined);
   const leaveLockRef = useRef(false);
   const entryTransitionLockRef = useRef(false);
   const autoEndedRoundRef = useRef<string | null>(null);
   const endingWasShownRef = useRef(false);
   const introProgressRef = useRef({ at: Date.now(), time: 0 });
   const audioRef = useRef<InceptionAudio | null>(null);
-  const sendLock = useRef(false);
-  const actionLock = useRef(false);
-  const startLock = useRef(false);
-  const reviewLock = useRef(false);
+  const sendOperation = useRef<object | null>(null);
+  const actionOperation = useRef<object | null>(null);
+  const startOperation = useRef<object | null>(null);
+  const reviewOperation = useRef<object | null>(null);
   const introStartRequested = useRef(false);
   const audioDisposeRef = useRef<Promise<void> | null>(null);
   const composing = useRef(false);
@@ -229,17 +250,36 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
   }, [hasAmbient, closed, sound.muted, sound.volume, manifest.gameplayLoop, manifest.creditsCue, manifest.roomTone]);
   const install = useCallback((value: Session) => {
     roundGeneration.current++;
+    sendOperation.current = null;
+    actionOperation.current = null; startOperation.current = null; reviewOperation.current = null;
     endingGenerationRef.current++;
     checkingComposerHeight.current = null;
     checkingTextareaHeight.current = null;
     if (installedRoundId.current !== value.round.id) { followConversationRef.current = true; installedRoundId.current = value.round.id; }
     if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current);
     setCinematicPhase(null); setEndingCardPhase(null); setRevealedDigits(''); setImmersive(true); setEntryVisible(false); setSession(value); setRoundClock(Date.now()); setReview(value.state.review?.status === 'complete' ? value.state.review as Review : null); setSuccessEnding(null);
+    setBusy(false); setSendPhase('idle'); setFailureNeedsNewAttempt(hasPersistedProviderFailure(value.round.id));
     setMetricsPhase('read_think', value.round.id, value.round.accessToken);
-    setError(''); setActiveModal(null); setSendStatus('');
+    setError(''); setActiveModal(null); setSendStatus(''); setSendPhase('idle');
+    setRetryCooldownUntil(readSendCooldown(value.round.id));
     const stored = sessionStorage.getItem(`workshop-inception-send:${value.round.id}`);
-    if (stored) { try { const parsed = JSON.parse(stored) as PendingSend; setPendingSend(parsed); setMessageText(parsed.content); } catch { sessionStorage.removeItem(`workshop-inception-send:${value.round.id}`); } }
-    else setPendingSend(null);
+    if (stored) { try { const parsed = JSON.parse(stored) as PendingSend; setPendingSend(parsed); setMessageText(parsed.content); } catch { sessionStorage.removeItem(`workshop-inception-send:${value.round.id}`); setPendingSend(null); } }
+    else {
+      setPendingSend(null);
+      const actorScope = actorScopeRef.current;
+      const nextDraftKey = actorScope ? nextAttemptDraftStorageFor(actorScope) : null;
+      let nextDraft: string | null = null;
+      if (nextDraftKey) {
+        try {
+          const saved = JSON.parse(sessionStorage.getItem(nextDraftKey) || 'null') as { actorScope?: string; draft?: unknown; savedAt?: number } | null;
+          if (saved?.actorScope === actorScope && typeof saved.draft === 'string' && saved.draft.length <= 4000 && Number.isFinite(saved.savedAt) && saved.savedAt! <= Date.now() && saved.savedAt! >= Date.now() - 24 * 60 * 60 * 1000) nextDraft = saved.draft;
+          else sessionStorage.removeItem(nextDraftKey);
+        } catch { sessionStorage.removeItem(nextDraftKey); }
+      }
+      const savedDraft = sessionStorage.getItem(sendDraftStorageFor(value.round.id));
+      setMessageText(nextDraft ?? savedDraft ?? '');
+      if (nextDraft !== null) { sessionStorage.setItem(sendDraftStorageFor(value.round.id), nextDraft); if (nextDraftKey) sessionStorage.removeItem(nextDraftKey); }
+    }
     sessionStorage.setItem(sessionStorageKey, JSON.stringify({ id: value.round.id }));
     if (value.round.endedAt) setReview(value.state.review?.status === 'complete' ? value.state.review as Review : null);
   }, []);
@@ -469,7 +509,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
 
   const fetchSession = useCallback(async (id: string, acknowledgement?: CompletedRoundAcknowledgement | null, parkAtEntry = false) => {
     const generation = lifecycle.current, previousRoundToken = roundGeneration.current;
-    const value = await api<Session>(`/inception/rounds/${id}`);
+    const value = await api<Session>(`/inception/rounds/${id}`, { timeoutMs: 5000 });
     if (lifecycle.current !== generation || roundGeneration.current !== previousRoundToken) return;
     if (acknowledgement?.roundId === value.round.id && value.round.endedAt) {
       if (JSON.parse(sessionStorage.getItem(sessionStorageKey) || 'null')?.id === value.round.id) sessionStorage.removeItem(sessionStorageKey);
@@ -486,16 +526,18 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     }
     const roundToken = roundGeneration.current;
     if (value.round.endedAt) {
-      const result = await api<{ review: Review | null; state: InceptionState }>(`/inception/rounds/${id}/review`).catch(() => null);
+      const result = await api<{ review: Review | null; state: InceptionState }>(`/inception/rounds/${id}/review`, { timeoutMs: 5000 }).catch(() => null);
       if (result?.review && lifecycle.current === generation && roundGeneration.current === roundToken) setReview(result.review);
     }
   }, [install]);
 
   const recordingAuthorized = config?.recordingAuthorized ?? (config?.recordingNoticeRequired !== true || Boolean(config?.recordingAccepted));
   const startRound = useCallback(async (profileId: string, existing?: { clientStartId: string }, startAudio = true, storageKey = config ? startStorageFor(config.actorScope) : startStorage, alreadyAcknowledged = recordingAuthorized) => {
-    if (startLock.current) return;
+    if (startOperation.current) return;
     if (!recordingAuthorized && !alreadyAcknowledged && !consented) return;
-    startLock.current = true; setBusy(true); setEntryVisible(false); setError(''); setSendStatus('');
+    const operation = {};
+    startOperation.current = operation;
+    setBusy(true); setEntryVisible(false); setError(''); setSendStatus('');
     const generation = lifecycle.current;
     const receipt = existing || { clientStartId: crypto.randomUUID() };
     const intent = { profileId, ...receipt, ...(config?.entryPolicy ? {} : { consent: true as const }) };
@@ -503,11 +545,11 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     setPendingStart(intent); localStorage.setItem(storageKey, JSON.stringify(intent));
     try {
       if (!alreadyAcknowledged && !config?.entryPolicy) {
-        await api('/recording/acknowledge', { method: 'POST', body: { version: RECORDING_NOTICE_VERSION, accepted: true } });
+        await api('/recording/acknowledge', { method: 'POST', body: { version: RECORDING_NOTICE_VERSION, accepted: true }, timeoutMs: 10_000 });
         if (lifecycle.current !== generation) return;
         setRecordingAcknowledged(true);
       }
-      const value = await api<Session>('/inception/start', { method: 'POST', body: intent });
+      const value = await api<Session>('/inception/start', { method: 'POST', body: intent, timeoutMs: 30_000 });
       if (lifecycle.current !== generation) return;
       localStorage.removeItem(storageKey); sessionStorage.removeItem('workshop-inception-intro-at'); setPendingStart(null); if (!config?.entryPolicy) { setRecordingAcknowledged(true); setConfig(current => current ? { ...current, recordingAccepted: true, recordingAuthorized: true } : current); } setCinematicHandoff(intro && !reducedMotion); setHandoffInteractive(!intro || reducedMotion); install(value); setIntro(false); setFilmEnded(false);
     } catch (cause) {
@@ -517,13 +559,14 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
         if (intro) { setIntro(false); setFilmEnded(false); setEntryVisible(true); }
       }
       setError((cause as Error).message || 'The start receipt could not be confirmed.');
-    } finally { if (lifecycle.current === generation) setBusy(false); startLock.current = false; }
+    } finally { if (startOperation.current === operation) { startOperation.current = null; if (lifecycle.current === generation) setBusy(false); } }
   }, [config, consented, install, startAmbient, intro, filmEnded, reducedMotion, recordingAuthorized]);
 
   useEffect(() => {
     let active = true;
-    void Promise.all([api<Configuration>('/inception'), fetch('/inception-assets/manifest.json', { cache: 'no-store' }).then(response => response.ok ? response.json() as Promise<MediaManifest> : {})]).then(async ([nextConfig, nextManifest]) => {
+    void Promise.all([api<Configuration>('/inception', { timeoutMs: 10_000 }), fetch('/inception-assets/manifest.json', { cache: 'no-store', signal: AbortSignal.timeout(10_000) }).then(response => response.ok ? response.json() as Promise<MediaManifest> : {})]).then(async ([nextConfig, nextManifest]) => {
       if (!active) return;
+      actorScopeRef.current = nextConfig.actorScope;
       setConfig(nextConfig); setManifest(nextManifest); setConsented(Boolean(nextConfig.recordingAuthorized));
       if (directEntry) { setRecordingAcknowledged(false); setInceptionRecordingAuthorization(nextConfig.recordingAuthorized === true); }
       else { setInceptionRecordingAuthorization(false); setRecordingAcknowledged(Boolean(nextConfig.recordingAccepted)); }
@@ -542,7 +585,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
         if (receipt) { try { const saved = JSON.parse(receipt) as { id: string }; await fetchSession(saved.id, completedAcknowledgement, true); } catch { sessionStorage.removeItem(sessionStorageKey); } }
         if (!sessionStorage.getItem(sessionStorageKey) && nextConfig.activeRoundId) await fetchSession(nextConfig.activeRoundId, completedAcknowledgement, true).catch(() => undefined);
         if (!sessionStorage.getItem(sessionStorageKey)) {
-          const latest = await api<Session | null>('/inception/latest').catch(() => null);
+          const latest = await api<Session | null>('/inception/latest', { timeoutMs: 5_000 }).catch(() => null);
           if (latest && active) {
             if (completedAcknowledgement?.roundId === latest.round.id && latest.round.endedAt) {
               sessionStorage.removeItem(sessionStorageKey);
@@ -587,7 +630,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
       if (!active) return;
       attempts++;
       try {
-        const result = await api<{ review: Review | null; state: InceptionState }>(`/inception/rounds/${roundId}/review`);
+        const result = await api<{ review: Review | null; state: InceptionState }>(`/inception/rounds/${roundId}/review`, { timeoutMs: 5_000 });
         if (!active || lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
         if (result.review && result.review.status !== 'pending') {
           setReview(result.review);
@@ -635,16 +678,30 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     const confirmedEnding = review.status === 'complete' && review.verdict === 'recovered' && session.state.safeOpened && Boolean(session.state.revealedCombination);
     if (!confirmedEnding) void disposeAmbient();
   }, [session?.round.endedAt, session?.state.safeOpened, session?.state.revealedCombination, review?.status, review?.verdict, expired, disposeAmbient]);
-  useEffect(() => { if (!retryCooldownUntil) { setRetrySeconds(0); return; } const tick = () => { const seconds = Math.max(0, Math.ceil((retryCooldownUntil - Date.now()) / 1000)); setRetrySeconds(seconds); if (!seconds) setRetryCooldownUntil(0); }; tick(); const timer = window.setInterval(tick, 1000); return () => window.clearInterval(timer); }, [retryCooldownUntil]);
+  useEffect(() => {
+    if (!retryCooldownUntil) { setRetrySeconds(0); return; }
+    const tick = () => {
+      const seconds = Math.max(0, Math.ceil((retryCooldownUntil - Date.now()) / 1000));
+      setRetrySeconds(seconds);
+      if (!seconds) {
+        if (session) sessionStorage.removeItem(sendCooldownStorageFor(session.round.id));
+        setRetryCooldownUntil(0);
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') tick(); };
+    tick(); window.addEventListener('focus', tick); document.addEventListener('visibilitychange', onVisible);
+    const timer = window.setInterval(tick, 1000);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', tick); document.removeEventListener('visibilitychange', onVisible); };
+  }, [retryCooldownUntil, session?.round.id]);
   const enterFullscreen = async () => {
     setImmersive(true);
     try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); setFullscreen(Boolean(document.fullscreenElement)); }
     catch { setFullscreen(false); setImmersive(true); }
   };
-  const leave = async () => {
+  const leave = async (archiveToMenu = false) => {
     if (leaveLockRef.current) return;
     leaveLockRef.current = true;
-    const wasCompleted = Boolean(session?.round.endedAt && review?.status === 'complete');
+    const wasCompleted = archiveToMenu || Boolean(session?.round.endedAt && review?.status === 'complete');
     const confirmedFailure = Boolean(wasCompleted && (review?.verdict === 'not_recovered' || review?.verdict === 'partial'));
     const sessionProfileId = session ? (session.profile.profileRevision === 1 ? 'standard' : session.profile.profileId || selectedProfile) : null;
     if (wasCompleted && session && config) {
@@ -654,6 +711,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
       sessionStorage.removeItem(`workshop-inception-send:${session.round.id}`);
     }
     lifecycle.current++; endingGenerationRef.current++; endingFinalizationRef.current = true;
+    sendOperation.current = null; actionOperation.current = null; startOperation.current = null; reviewOperation.current = null;
     if (endingSkipAnimationRef.current !== null) window.cancelAnimationFrame(endingSkipAnimationRef.current);
     endingSkipAnimationRef.current = null;
     const returnGeneration = ++entryTransitionGenerationRef.current;
@@ -671,8 +729,8 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
       poster.src = manifest.entryPoster;
       await poster.decode().catch(() => undefined);
     }
-    setBusy(false); startLock.current = false;
-    setImmersive(false); setEntryTransition(false); setEntryReturning(false); setEntryPrompt(directEntry || confirmedFailure || Boolean(pendingStart) || Boolean(session && !session.round.endedAt) ? 'continue' : 'begin'); if (sessionProfileId) setSelectedProfile(sessionProfileId); setIntro(false); setFilmEnded(false); setCinematicPhase(null); setEndingCardPhase(null); setSuccessEnding(null); setActiveModal(null);
+    setBusy(false);
+    setImmersive(false); setEntryTransition(false); setEntryReturning(false); setEntryPrompt(archiveToMenu ? 'begin' : directEntry || confirmedFailure || Boolean(pendingStart) || Boolean(session && !session.round.endedAt) ? 'continue' : 'begin'); if (sessionProfileId) setSelectedProfile(sessionProfileId); setIntro(false); setFilmEnded(false); setCinematicPhase(null); setEndingCardPhase(null); setSuccessEnding(null); setActiveModal(null);
     if (wasCompleted) { setSession(null); setReview(null); setMessageText(''); setPendingSend(null); setSendStatus(''); }
     else if (session?.round.id) setEntryPrompt('continue');
     setEntryVisible(true);
@@ -824,21 +882,22 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
   useEffect(() => { if (intro && introTimeLeft <= 0 && (!manifest.introVideo || filmEnded) && !introStartRequested.current) { introStartRequested.current = true; void startRound(pendingStart?.profileId || selectedProfile, pendingStart ? { clientStartId: pendingStart.clientStartId } : undefined); } }, [introTimeLeft, intro, filmEnded, selectedProfile, pendingStart, startRound, manifest.introVideo]);
 
   const inspect = async (type: 'inspect_safe' | 'inspect_room' | 'present_safe') => {
-    if (!session || busy || actionLock.current || closed || session.state.safeOpened) return;
+    if (!session || busy || actionOperation.current || closed || session.state.safeOpened) return;
     const generation = lifecycle.current, roundToken = roundGeneration.current, roundId = session.round.id;
     recordMetricsInteraction('inspect', roundId, session.round.accessToken);
-    actionLock.current = true; setBusy(true); setError('');
+    const operation = {};
+    actionOperation.current = operation; setBusy(true); setError('');
     const action = { actionId: crypto.randomUUID(), revision: session.state.revision, type };
     try {
-      const result = await api<{ state: InceptionState }>(`/inception/rounds/${session.round.id}/action`, { method: 'POST', body: action });
+      const result = await api<{ state: InceptionState }>(`/inception/rounds/${session.round.id}/action`, { method: 'POST', body: action, timeoutMs: 15_000 });
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
       setSession(current => current?.round.id === roundId ? { ...current, state: result.state } : current);
     } catch (cause) { if (lifecycle.current === generation && roundGeneration.current === roundToken) { setError((cause as Error).message); if ((cause as ApiError).status === 409) await fetchSession(roundId).catch(() => undefined); } }
-    finally { if (lifecycle.current === generation) setBusy(false); actionLock.current = false; }
+    finally { if (actionOperation.current === operation) { actionOperation.current = null; if (lifecycle.current === generation && roundGeneration.current === roundToken) setBusy(false); } }
   };
 
   const send = async (retry = false) => {
-    if (!session || sendLock.current || (!retry && closed) || busy) return;
+    if (!session || sendOperation.current || (!retry && closed) || busy) return;
     if (!retry && Date.now() < retryCooldownUntil) return;
     const existing = pendingSend;
     if (retry && !existing) return;
@@ -851,13 +910,15 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     const roundId = session.round.id, generation = lifecycle.current, roundToken = roundGeneration.current;
     const pending = existing || { id: crypto.randomUUID(), content: messageText.trim() };
     if (!existing) { sessionStorage.setItem(`workshop-inception-send:${session.round.id}`, JSON.stringify(pending)); setPendingSend(pending); }
-    sendLock.current = true; setBusy(true); setError(''); setSendStatus('Sending to Fischer…');
+    const operation = {};
+    sendOperation.current = operation;
+    setBusy(true); setError(''); setSendStatus(''); setSendPhase(retry ? 'checking' : 'sending');
     try {
       const next = await api<Round>(`/rounds/${session.round.id}/messages`, { method: 'POST', body: { content: pending.content, requestId: pending.id } });
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
       setSession(current => current?.round.id === roundId ? { ...current, round: { ...next, accessToken: current.round.accessToken } } : current);
       recordMetricsReply(roundId, session.round.accessToken); recordMetricsInteraction('reply', roundId, session.round.accessToken);
-      setMessageText(''); setPendingSend(null); setSendStatus('Reply saved.'); sessionStorage.removeItem(`workshop-inception-send:${session.round.id}`);
+      setMessageText(''); setPendingSend(null); setSendStatus('Reply saved.'); setSendPhase('idle'); setFailureNeedsNewAttempt(false); sessionStorage.removeItem(sendFailureStorageFor(session.round.id)); sessionStorage.removeItem(`workshop-inception-send:${session.round.id}`); sessionStorage.removeItem(sendDraftStorageFor(session.round.id));
       requestAnimationFrame(() => {
         const active = document.activeElement;
         const sentFromComposer = focusAtSend === inputRef.current || (focusAtSend instanceof HTMLElement && focusAtSend.closest('.inception-composer'));
@@ -867,13 +928,54 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
       const apiError = cause as ApiError;
       const terminalReceipt = apiError.receiptConfirmed && ['failed', 'rejected', 'interrupted'].includes(apiError.submissionStatus || '');
-      if (terminalReceipt) { sessionStorage.removeItem(`workshop-inception-send:${session.round.id}`); setPendingSend(null); setSendStatus('The prompt was recorded, but Fischer could not reply. Send again to create a new attempt.'); }
-      else if (apiError.receiptConfirmed) setSendStatus(apiError.submissionStatus === 'succeeded' ? 'Reply received; refreshing the saved conversation…' : 'The receipt is still being checked. Retry this same message to recover its result.');
-      else setSendStatus('The response was not confirmed. Retry to check this same message.');
-      if (terminalReceipt && apiError.retryAfterSeconds) setRetryCooldownUntil(Date.now() + apiError.retryAfterSeconds * 1000);
-      if (terminalReceipt && apiError.failureCode === 'rate_limited') setSendStatus(apiError.rateLimitScope === 'tokens_daily' ? apiError.retryAfterSeconds ? 'Your prompt is saved, but the model service reached its daily token allowance. You can send again after the cooldown.' : 'Your prompt is saved, but the model service reached its daily token allowance. Wait before trying again.' : apiError.retryAfterSeconds ? 'Your prompt is saved, but the model service is temporarily rate limited. You can send again after the cooldown.' : 'Your prompt is saved, but the model service is temporarily rate limited. Wait before trying again.');
-      setError((cause as Error).message); if (apiError.receiptConfirmed && !terminalReceipt) await fetchSession(session.round.id).catch(() => undefined);
-    } finally { if (lifecycle.current === generation) setBusy(false); sendLock.current = false; }
+      if (terminalReceipt) {
+        sessionStorage.removeItem(`workshop-inception-send:${session.round.id}`); setPendingSend(null); setSendPhase('idle');
+        sessionStorage.setItem(sendDraftStorageFor(session.round.id), pending.content);
+        const capacityFailure = apiError.failureCode === 'rate_limited' || ['provider_auth', 'provider_unavailable', 'timeout', 'empty_response', 'provider_rejected'].includes(apiError.failureCode || '');
+        setFailureNeedsNewAttempt(capacityFailure);
+        if (capacityFailure) sessionStorage.setItem(sendFailureStorageFor(session.round.id), JSON.stringify({ at: Date.now() }));
+        else sessionStorage.removeItem(sendFailureStorageFor(session.round.id));
+        setSendStatus(capacityFailure ? 'This provider could not complete the prompt. Start a new attempt to check available capacity.' : 'The prompt was recorded, but Fischer could not reply. You can send it again as a new message.');
+      } else {
+        setSendStatus(apiError.receiptConfirmed ? apiError.submissionStatus === 'succeeded' ? 'Checking the saved reply…' : 'Checking this message receipt…' : 'The response was not confirmed. Retry checks this same message.');
+        setSendPhase('checking');
+      }
+      if (terminalReceipt && apiError.retryAfterSeconds) {
+        const until = Date.now() + Math.min(7 * 24 * 60 * 60, Math.max(1, apiError.retryAfterSeconds)) * 1000;
+        sessionStorage.setItem(sendCooldownStorageFor(session.round.id), String(until));
+        setRetryCooldownUntil(until);
+      }
+      setError((cause as Error).message);
+      if (apiError.receiptConfirmed && !terminalReceipt) {
+        try {
+          const recovered = await api<Session>(`/inception/rounds/${roundId}`, { timeoutMs: 5000 });
+          if (lifecycle.current !== generation || roundGeneration.current !== roundToken || sendOperation.current !== operation || recovered.round.id !== roundId) return;
+          setSession(current => current?.round.id === roundId ? { ...current, round: { ...recovered.round, accessToken: current.round.accessToken }, state: recovered.state } : current);
+        } catch { /* The receipt stays pending and can be checked again with the same request ID. */ }
+      }
+    } finally {
+      if (sendOperation.current === operation) {
+        sendOperation.current = null;
+        if (lifecycle.current === generation && roundGeneration.current === roundToken) { setBusy(false); setSendPhase('idle'); }
+      }
+    }
+  };
+
+  const startNewAttemptAfterProviderFailure = async () => {
+    if (!session || busy || pendingSend || !failureNeedsNewAttempt) return;
+    const oldRoundId = session.round.id, generation = lifecycle.current, roundToken = roundGeneration.current;
+    setBusy(true); setError('');
+    try {
+      await api<{ round: Round; state: InceptionState }>(`/inception/rounds/${oldRoundId}/finish`, { method: 'POST', body: { answer: '' }, timeoutMs: 10_000 });
+      if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
+      const actorScope = config?.actorScope;
+      if (actorScope) sessionStorage.setItem(nextAttemptDraftStorageFor(actorScope), JSON.stringify({ actorScope, draft: messageText.slice(0, 4000), savedAt: Date.now() }));
+      sessionStorage.removeItem(sendFailureStorageFor(oldRoundId));
+      setPendingSend(null); setSendPhase('idle'); setFailureNeedsNewAttempt(false);
+      await leaveRef.current(true);
+    } catch (cause) {
+      if (lifecycle.current === generation && roundGeneration.current === roundToken) setError((cause as Error).message || 'The earlier attempt could not be finished.');
+    } finally { if (lifecycle.current === generation && roundGeneration.current === roundToken) setBusy(false); }
   };
 
   const finish = async () => {
@@ -884,20 +986,21 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     recordMetricsInteraction('finish', roundId, session.round.accessToken);
     setCinematicPhase('checking'); setBusy(true); setError(''); setSendStatus('');
     try {
-      const result = await api<{ round: Round; state: InceptionState }>(`/inception/rounds/${roundId}/finish`, { method: 'POST', body: { answer: '' } });
+      const result = await api<{ round: Round; state: InceptionState }>(`/inception/rounds/${roundId}/finish`, { method: 'POST', body: { answer: '' }, timeoutMs: 10_000 });
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
       setSession(current => current?.round.id === roundId ? { ...current, round: result.round, state: result.state } : current); setRoundClock(Date.now());
       await requestReview(roundId);
     } catch (cause) { if (lifecycle.current === generation && roundGeneration.current === roundToken) { setCinematicPhase(null); setError((cause as Error).message); setSendStatus(''); } }
-    finally { if (lifecycle.current === generation) setBusy(false); }
+    finally { if (lifecycle.current === generation && roundGeneration.current === roundToken) setBusy(false); }
   };
   const requestReview = async (roundId = session?.round.id) => {
-    if (!roundId || reviewLock.current) return;
+    if (!roundId || reviewOperation.current) return;
     const generation = lifecycle.current, roundToken = roundGeneration.current;
     if (session?.round.id === roundId) recordMetricsInteraction('review', roundId, session.round.accessToken);
-    reviewLock.current = true; setReview({ status: 'pending' }); setCinematicPhase('checking');
+    const operation = {};
+    reviewOperation.current = operation; setReview({ status: 'pending' }); setCinematicPhase('checking');
     try {
-      const result = await api<{ review: Review | null; state: InceptionState }>(`/inception/rounds/${roundId}/review`, { method: 'POST', body: {} });
+      const result = await api<{ review: Review | null; state: InceptionState }>(`/inception/rounds/${roundId}/review`, { method: 'POST', body: {}, timeoutMs: 35_000 });
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
       setReview(result.review); if (result.state) setSession(current => current?.round.id === roundId ? { ...current, state: result.state } : current);
       if (result.state) void playConfirmedEnding(roundId, result.review, result.state);
@@ -905,7 +1008,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
       if (result.review?.status === 'complete') setSendStatus(result.review.verdict === 'recovered' ? 'Review complete. The safe is open.' : 'Review complete. Read the result below.');
     } catch (cause) {
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
-      const recovered = await api<{ review: Review | null; state: InceptionState }>(`/inception/rounds/${roundId}/review`).catch(() => null);
+      const recovered = await api<{ review: Review | null; state: InceptionState }>(`/inception/rounds/${roundId}/review`, { timeoutMs: 5_000 }).catch(() => null);
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
       if (recovered?.review && recovered.review.status !== 'pending') {
         setReview(recovered.review); setSession(current => current?.round.id === roundId ? { ...current, state: recovered.state } : current);
@@ -918,7 +1021,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
         setReview({ status: 'unavailable', retryable: true, errorCode: 'provider_error' }); setCinematicPhase(null); setError((cause as Error).message);
       }
     }
-    finally { reviewLock.current = false; }
+    finally { if (reviewOperation.current === operation) reviewOperation.current = null; }
   };
   const replay = () => {
     if (busy || review?.status === 'pending') return;
@@ -933,7 +1036,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     setBusy(true); setError('');
     try {
       if (!session.round.endedAt) {
-        const result = await api<{ round: Round; state: InceptionState }>(`/inception/rounds/${oldRoundId}/finish`, { method: 'POST', body: { answer: '' } });
+        const result = await api<{ round: Round; state: InceptionState }>(`/inception/rounds/${oldRoundId}/finish`, { method: 'POST', body: { answer: '' }, timeoutMs: 10_000 });
         if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
         setSession(current => current?.round.id === oldRoundId ? { ...current, round: result.round, state: result.state } : current);
       }
@@ -941,7 +1044,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
       await startRound('standard');
     } catch (cause) {
       if (lifecycle.current === generation && roundGeneration.current === roundToken) setError((cause as Error).message || 'The earlier attempt could not be finished.');
-    } finally { if (lifecycle.current === generation) setBusy(false); }
+    } finally { if (lifecycle.current === generation && roundGeneration.current === roundToken) setBusy(false); }
   };
   const keyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Escape' && activeModal) { setActiveModal(null); return; }
@@ -993,9 +1096,8 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
           {(expired && !session.round.endedAt || retainExpiredFinishControl) && <div className="inception-expired-controls" role="group" aria-label="Finish the expired conversation"><p>Time is up. Your saved conversation can still be reviewed.</p>{pendingSend && <><p role="status">Retry checks the same saved message receipt.</p><Button className="inception-secondary" disabled={busy} onClick={() => void send(true)}>Retry saved message</Button></>}{!pendingSend && <Button className="inception-primary" disabled={busy || checkingEndedRound} onClick={() => void finish()}>{busy ? 'Saving conversation…' : 'Finish and review'}</Button>}{error && <p role="alert" className="inception-inline-error">{error}</p>}</div>}
           {!session.round.endedAt || checkingEndedRound ? <div ref={composerRef} className="inception-composer" style={checkingEndedRound && checkingComposerHeight.current ? { minHeight: `${checkingComposerHeight.current}px` } : undefined}>
             <label htmlFor="inception-message" className="visually-hidden">Speak to Fischer</label>
-            <textarea id="inception-message" ref={inputRef} style={checkingEndedRound && checkingTextareaHeight.current ? { minHeight: `${checkingTextareaHeight.current}px` } : undefined} value={messageText} disabled={closed || busy || Boolean(pendingSend)} maxLength={4000} rows={2} onChange={event => setMessageText(event.target.value)} onFocus={() => setMetricsPhase('compose', session.round.id, session.round.accessToken)} onBlur={() => setMetricsPhase('read_think', session.round.id, session.round.accessToken)} onKeyDown={keyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} placeholder={closed ? 'This conversation has ended.' : 'Ask Fischer a question…'} />
-            {pendingSend && <p className="inception-send-status visually-hidden" role="status">This message has an unknown receipt. Retry checks the same saved request.</p>}
-            <div className="inception-composer-actions"><span className="inception-send-status visually-hidden" role="status">{sendStatus}{retrySeconds ? ` Try again in ${retrySeconds}s.` : ''}</span><div>{pendingSend ? <Button className="inception-secondary" disabled={busy} onClick={() => void send(true)}>Retry saved message</Button> : <Button className="inception-primary" disabled={closed || busy || !messageText.trim() || retrySeconds > 0} onClick={() => void send()}>Send<ArrowRight size={15} /></Button>}{(!session.round.endedAt && !expired || checkingEndedRound) && <Button className="inception-secondary" disabled={busy || Boolean(pendingSend) || checkingEndedRound} onClick={() => void finish()}>Finish and review</Button>}</div></div>
+            <textarea id="inception-message" ref={inputRef} style={checkingEndedRound && checkingTextareaHeight.current ? { minHeight: `${checkingTextareaHeight.current}px` } : undefined} value={messageText} disabled={closed || busy || Boolean(pendingSend)} maxLength={4000} rows={2} onChange={event => { setMessageText(event.target.value); sessionStorage.setItem(sendDraftStorageFor(session.round.id), event.target.value); }} onFocus={() => setMetricsPhase('compose', session.round.id, session.round.accessToken)} onBlur={() => setMetricsPhase('read_think', session.round.id, session.round.accessToken)} onKeyDown={keyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} placeholder={closed ? 'This conversation has ended.' : 'Ask Fischer a question…'} />
+            <div className="inception-composer-actions"><div>{pendingSend ? <Button className="inception-secondary inception-send-action" aria-live="polite" aria-label={busy ? sendPhase === 'checking' ? 'Checking message receipt' : 'Sending to Fischer' : 'Retry saved message'} disabled={busy} onClick={() => void send(true)}>{busy ? sendPhase === 'checking' ? 'Checking…' : 'Sending…' : 'Retry saved message'}</Button> : <Button className="inception-primary inception-send-action" aria-live="polite" aria-label={busy && sendPhase !== 'idle' ? sendPhase === 'checking' ? 'Checking message receipt' : 'Sending to Fischer' : retrySeconds > 0 ? `Retry in ${time(retrySeconds)}` : 'Send'} disabled={closed || busy || !messageText.trim() || retrySeconds > 0} onClick={() => void send()}>{busy && sendPhase !== 'idle' ? sendPhase === 'checking' ? 'Checking…' : 'Sending…' : retrySeconds > 0 ? `Retry in ${time(retrySeconds)}` : <>Send<ArrowRight size={15} /></>}</Button>}{failureNeedsNewAttempt && <Button className="inception-secondary inception-send-action" disabled={busy} onClick={() => void startNewAttemptAfterProviderFailure()}>Start a new attempt</Button>}{(!session.round.endedAt && !expired || checkingEndedRound) && <Button className="inception-secondary" disabled={busy || Boolean(pendingSend) || checkingEndedRound} onClick={() => void finish()}>{busy && cinematicPhase === 'checking' ? 'Saving conversation…' : 'Finish and review'}</Button>}</div></div>
             {error && !expired && <p className="inception-inline-error" role="alert">{error}</p>}
           </div> : <p className="inception-conversation-saved" role="status">Conversation saved.</p>}
           {(expired || session.round.endedAt) && !cinematicPhase && !successEnding && <div className="inception-result" role="status">

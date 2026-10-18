@@ -16,25 +16,27 @@ export class ApiError extends Error {
   constructor(message: string, status: number, submissionId?: string, submissionStatus?: string, receiptConfirmed = false, metadata: { failureCode?: string; retryAfterSeconds?: number; rateLimitScope?: ApiError['rateLimitScope'] } = {}) { super(message); this.name = 'ApiError'; this.status = status; this.submissionId = submissionId; this.submissionStatus = submissionStatus; this.receiptConfirmed = receiptConfirmed; Object.assign(this, metadata); }
 }
 
-export async function api<T>(path: string, options: { method?: string; body?: unknown; token?: string; signal?: AbortSignal } = {}): Promise<T> {
+export async function api<T>(path: string, options: { method?: string; body?: unknown; token?: string; signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
   const method = options.method || 'GET';
   let metrics: ReturnType<typeof beginMeasuredRequest> = null;
   if (recordingAcknowledged || inceptionRecordingAuthorized) try { metrics = beginMeasuredRequest(path, method, options.token); } catch { /* telemetry must never block a workshop request */ }
   const finishMetrics = (outcome: 'success' | 'error') => { try { finishMeasuredRequest(metrics, outcome); } catch { /* telemetry is best effort */ } };
   let recorded = false;
-  let messageController: AbortController | undefined;
-  let messageTimeout: ReturnType<typeof setTimeout> | undefined;
+  let requestController: AbortController | undefined;
+  let requestTimeout: ReturnType<typeof setTimeout> | undefined;
   let parentAbort: (() => void) | undefined;
   const isTargetMessage = method === 'POST' && /(?:^|\/)messages\/?$/.test(path);
   try {
     let signal = options.signal;
-    if (isTargetMessage) {
+    const timeoutMs = isTargetMessage ? Math.min(45_000, options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 45_000) : options.timeoutMs;
+    if (timeoutMs && timeoutMs > 0) {
       if (options.signal?.aborted) throw new DOMException('This request was cancelled before it was sent.', 'AbortError');
-      messageController = new AbortController();
-      signal = messageController.signal;
-      parentAbort = () => messageController?.abort(options.signal?.reason);
+      requestController = new AbortController();
+      parentAbort = () => requestController?.abort(options.signal?.reason);
       options.signal?.addEventListener('abort', parentAbort, { once: true });
-      messageTimeout = setTimeout(() => messageController?.abort(new DOMException('The server receipt is unknown because the request timed out.', 'TimeoutError')), 45_000);
+      signal = requestController.signal;
+      const timeoutMessage = isTargetMessage ? 'The server receipt is unknown because the request timed out.' : 'This request timed out.';
+      requestTimeout = setTimeout(() => requestController?.abort(new DOMException(timeoutMessage, 'TimeoutError')), timeoutMs);
     }
     const response = await fetch(`/api${path}`, {
       method, credentials: 'same-origin', signal,
@@ -49,7 +51,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     if (!recorded) finishMetrics('error');
     throw error;
   } finally {
-    if (messageTimeout !== undefined) clearTimeout(messageTimeout);
+    if (requestTimeout !== undefined) clearTimeout(requestTimeout);
     if (parentAbort) options.signal?.removeEventListener('abort', parentAbort);
   }
 }
