@@ -1,5 +1,5 @@
 {
-  "revision": 4,
+  "revision": 5,
   "presentation": {
     "type": "Film file browser opens current dark orange WebGL CRT interrogation",
     "upstream": "https://github.com/swordfish90/cool-retro-term",
@@ -7,62 +7,62 @@
     "preset": "Default Amber"
   },
   "opening": {
-    "file": "mission-intro-v7.mp4",
+    "file": "mission-intro-v8.mp4",
     "seconds": 10.5,
     "frames": 315,
     "fullDecode": "passed",
     "longestNearIdenticalFrameRun": 2,
     "faststart": true,
-    "bytes": 2710856,
-    "sha256": "222fd41fff66fa24167acd9092328f6bdbb79ac3865dd274d3a47d8d5d79c2c9",
-    "sourceResolution": "1280x720; active crop1280x528y96; proportionally upscaled1080, not native4K"
+    "bytes": 2735161,
+    "sha256": "121dd89723ec97b328e819158e6345ffa079997fd1069a13e3f789147f0a3a89",
+    "sourceResolution": "1280x720; active crop1280x528y96; proportionally upscaled1920x792, not native4K"
   },
   "successEnding": {
-    "file": "mission-success-v2.mp4",
+    "file": "mission-success-v3.mp4",
     "seconds": 15,
     "frames": 450,
     "fullDecode": "passed",
     "longestNearIdenticalFrameRun": 2,
     "faststart": true,
-    "bytes": 4255070,
-    "sha256": "582e0d36ec33a897f3a688a9a27e85f0ddd8a28658eced8f12a436d78f2822f6",
-    "sourceResolution": "1280x720; active crop1280x528y96; proportionally upscaled1080, not native4K"
+    "bytes": 4293012,
+    "sha256": "d1c128c3be268df1d6e887c1bd4dc049f5693c1f8f98e37954d4e6fa0283e07d",
+    "sourceResolution": "1280x720; active crop1280x528y96; proportionally upscaled1920x792, not native4K"
   },
   "media": [
     {
-      "file": "mission-intro-v7.mp4",
-      "bytes": 2710856,
-      "sha256": "222fd41fff66fa24167acd9092328f6bdbb79ac3865dd274d3a47d8d5d79c2c9"
+      "file": "mission-intro-v8.mp4",
+      "bytes": 2735161,
+      "sha256": "121dd89723ec97b328e819158e6345ffa079997fd1069a13e3f789147f0a3a89"
     },
     {
-      "file": "mission-intro-v7.vtt",
-      "bytes": 239,
-      "sha256": "44a22e347b4078c85ca1f4a63c4af6f41cf84e4af9fb095780cd3c2e4ffdd193"
+      "file": "mission-intro-v8.vtt",
+      "bytes": 211,
+      "sha256": "72b85d3bc6a4941c6bb81749ec95bf55392fb62e24bbff2b3cd34c6bee82bf1c"
     },
     {
-      "file": "mission-intro-v7-poster.webp",
-      "bytes": 63336,
-      "sha256": "a592220cd301b29f2f8b1120b275c54469a76d9176017ede49ee1e384ad18f67"
+      "file": "mission-intro-v8-poster.webp",
+      "bytes": 62294,
+      "sha256": "60117a4f4e0da49c4d47f7226b58a9e915647e4e31621cd06ed647fecd967d69"
     },
     {
-      "file": "mission-success-v2.mp4",
-      "bytes": 4255070,
-      "sha256": "582e0d36ec33a897f3a688a9a27e85f0ddd8a28658eced8f12a436d78f2822f6"
+      "file": "mission-success-v3.mp4",
+      "bytes": 4293012,
+      "sha256": "d1c128c3be268df1d6e887c1bd4dc049f5693c1f8f98e37954d4e6fa0283e07d"
     },
     {
-      "file": "mission-success-v2.vtt",
+      "file": "mission-success-v3.vtt",
       "bytes": 166,
       "sha256": "666d6f402a2e8b06a14b1ebf2702f29342ba5897535d5ce873db19a4d54865fb"
     },
     {
-      "file": "mission-success-v2-poster.webp",
-      "bytes": 47428,
-      "sha256": "8e3e2c9739131ae8e417ace3bddfacd02a8ea4f08d2f32562bfc1cc392cc6d4c"
+      "file": "mission-success-v3-poster.webp",
+      "bytes": 46600,
+      "sha256": "ca28a18bdb8913cec81a6ead700947db0c8f6a280d8388234a6248265449b2e3"
     },
     {
-      "file": "mission-screen-match-v1.webp",
-      "bytes": 132696,
-      "sha256": "0ac4410cf3c43961ac7fcb820ff3e3ad13efa5cd02702e262ccd7489395f5932"
+      "file": "mission-screen-match-v2.webp",
+      "bytes": 139302,
+      "sha256": "cc63e94af79a797880c2e8dfbaf3dbe01f5a28a76ec977770c538e2757a05295"
     },
     {
       "file": "mission-roomtone-v1.mp3",
