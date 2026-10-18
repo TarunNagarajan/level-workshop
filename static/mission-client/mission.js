@@ -12,6 +12,7 @@ let actorNamespace = null;
 let sessionKey = null;
 let profileKey = null;
 let startKeyStorage = null;
+let startKeyProfileStorage = null;
 const draftKey = field => `${sessionKey}:${current?.id || 'new'}:draft:${field}`;
 const finishIntentKey = roundId => `${sessionKey}:${roundId}:finish-intent`;
 const successPlaybackKey = roundId => `${sessionKey}:${roundId}:success-playback`;
@@ -34,6 +35,12 @@ let finishInProgress = false;
 let finishPromise = null;
 let finishIntentRoundId = null;
 let filmTransitionInFlight = false;
+let handoffGeneration = 0;
+let handoffFrameId = 0;
+let handoffRafId = 0;
+let handoffTimerId = 0;
+let handoffWaitResolve = null;
+let handoffStage = 'idle';
 let successFilmStarting = false;
 let successFilmCompleted = false;
 let successFilmGeneration = 0;
@@ -163,6 +170,8 @@ function savedTokenFor(roundId, token) {
   return token || sessionStorage.getItem(`${sessionKey}:${roundId}`) || null;
 }
 function attachRound(round) {
+  screens.archive.classList.remove('handoff-opening', 'handoff-expanded', 'handoff-connecting');
+  screens.archive.style.removeProperty('--launch-x'); screens.archive.style.removeProperty('--launch-y');
   current = { ...round, accessToken: savedTokenFor(round.id, round.accessToken) };
   finishIntentRoundId = sessionStorage.getItem(finishIntentKey(current.id)) === '1' ? current.id : null;
   followLatest = true;
@@ -171,6 +180,8 @@ function attachRound(round) {
   sessionStorage.setItem(sessionKey, current.id);
   $('#profile-label').textContent = current.profile?.label || 'Standard';
   $('#terminal-status').textContent = 'ONLINE';
+  $('#mission-status').textContent = 'The remote line is open.';
+  $('#handoff-retry').hidden = true; setHandoffStage('game');
   $('#terminal-input').value = sessionStorage.getItem(draftKey('terminal')) || '';
   const finalizedReview = current.state?.review?.status === 'complete' || current.state?.review?.status === 'unavailable';
   if (finalizedReview) clearFinishIntent(current.id);
@@ -198,30 +209,229 @@ function renderProfiles(items) {
   if (!items.some(profile => profile.id === selectedProfile)) selectedProfile = 'standard';
   const radio = host.querySelector(`input[value="${CSS.escape(selectedProfile)}"]`); if (radio) radio.checked = true;
 }
-function clearStartKey() { sessionStorage.removeItem(startKeyStorage); }
-function getStartKey() { let key = sessionStorage.getItem(startKeyStorage); if (!key) { key = randomId(); sessionStorage.setItem(startKeyStorage, key); } return key; }
-async function startMission() {
+function clearStartKey() { sessionStorage.removeItem(startKeyStorage); sessionStorage.removeItem(startKeyProfileStorage); }
+function getStartKey(profileId = selectedProfile) {
+  if (sessionStorage.getItem(startKeyProfileStorage) !== profileId) clearStartKey();
+  let key = sessionStorage.getItem(startKeyStorage);
+  if (!key) { key = randomId(); sessionStorage.setItem(startKeyStorage, key); sessionStorage.setItem(startKeyProfileStorage, profileId); }
+  return key;
+}
+async function startMission(generation = null) {
   if (startupInFlight) return false;
   startupInFlight = true; $('#watch-button').disabled = true; $('#begin-no-film').disabled = true;
-  const key = getStartKey(); $('#terminal-status').textContent = 'CONNECTING';
+  const profileId = selectedProfile;
+  const key = getStartKey(profileId); $('#terminal-status').textContent = 'CONNECTING'; $('#mission-status').textContent = 'Opening the secure archive link…'; updateControls();
   try {
-    const round = await api('/mission/start', { method: 'POST', body: { profileId: selectedProfile, startKey: key } });
+    const round = await api('/mission/start', { method: 'POST', body: { profileId, startKey: key }, timeout: true });
+    if (generation !== null && generation !== handoffGeneration) return false;
+    $('#handoff-retry').hidden = true;
     clearStartKey(); attachRound(round); return true;
   } catch (error) {
+    if (generation !== null && generation !== handoffGeneration) return false;
     $('#terminal-status').textContent = 'WAITING';
+    $('#mission-status').textContent = 'The field link is waiting. Retry the same connection or exit.';
     if (error.status === 409 || error.unknown) tell(`${error.message} The start key is saved, so retrying will resume the same archive session.`);
     else tell(error.message);
+    const retry = $('#handoff-retry'); if (retry) retry.hidden = false;
+    root.dataset.handoffStage = 'connecting-error';
     $('#watch-button').disabled = !configuration?.connected;
     $('#begin-no-film').disabled = !configuration?.connected;
+    updateControls();
     return false;
-  } finally { startupInFlight = false; }
+  } finally {
+    startupInFlight = false;
+    if (generation === null || generation === handoffGeneration) filmTransitionInFlight = false;
+    if (!current && !screens.welcome.hidden) {
+      $('#watch-button').disabled = !configuration?.connected;
+      $('#begin-no-film').disabled = !configuration?.connected;
+    }
+  }
+}
+function cancelHandoff() {
+  handoffGeneration++;
+  if (handoffFrameId && $('#mission-film').cancelVideoFrameCallback) $('#mission-film').cancelVideoFrameCallback(handoffFrameId);
+  handoffFrameId = 0; cancelAnimationFrame(handoffRafId); handoffRafId = 0; clearTimeout(handoffTimerId); handoffTimerId = 0;
+  if (handoffWaitResolve) { const resolve = handoffWaitResolve; handoffWaitResolve = null; resolve(); }
+  filmTransitionInFlight = false; handoffStage = 'idle'; root.dataset.handoffStage = 'idle';
+  if (!current) {
+    $('#watch-button').disabled = startupInFlight || !configuration?.connected;
+    $('#begin-no-film').disabled = startupInFlight || !configuration?.connected;
+  }
+  const stage = $('#film-browser-stage'); stage.hidden = true; stage.setAttribute('aria-hidden', 'true'); stage.classList.remove('is-full', 'is-launching');
+  const archive = screens.archive; archive.classList.remove('handoff-opening', 'handoff-expanded', 'handoff-connecting'); archive.style.removeProperty('--launch-x'); archive.style.removeProperty('--launch-y');
+}
+function setHandoffStage(name) { handoffStage = name; root.dataset.handoffStage = name; }
+function waitHandoff(milliseconds) {
+  clearTimeout(handoffTimerId);
+  return new Promise(resolve => {
+    handoffWaitResolve = resolve;
+    handoffTimerId = setTimeout(() => { handoffTimerId = 0; handoffWaitResolve = null; resolve(); }, milliseconds);
+  });
+}
+function mediaQuadToViewport(point, video) {
+  const rect = video.getBoundingClientRect();
+  const vw = video.videoWidth || 1920, vh = video.videoHeight || 1080;
+  const scale = Math.min(rect.width / vw, rect.height / vh);
+  const left = rect.left + (rect.width - vw * scale) / 2;
+  const top = rect.top + (rect.height - vh * scale) / 2;
+  return [left + point[0] * 1.5 * scale, top + point[1] * 1.5 * scale];
+}
+const monitorTrack = [
+  { t: 9.8, p: [[66, 186], [243, 147], [295, 417], [124, 485]] },
+  { t: 10.1, p: [[66, 185], [243, 147], [295, 416], [124, 484]] },
+  { t: 10.3, p: [[66, 184], [243, 147], [295, 416], [126, 485]] },
+  { t: 10.4667, p: [[66, 187], [241, 147], [296, 414], [125, 484]] },
+];
+function interpolatedMonitorQuad(time) {
+  let right = monitorTrack.findIndex(frame => frame.t >= time);
+  if (right < 0) return monitorTrack[monitorTrack.length - 1].p;
+  if (right <= 0) return monitorTrack[0].p;
+  const a = monitorTrack[right - 1], b = monitorTrack[right], ratio = Math.max(0, Math.min(1, (time - a.t) / (b.t - a.t)));
+  return a.p.map((point, index) => point.map((value, axis) => value + (b.p[index][axis] - value) * ratio));
+}
+function solveHomography(points, width, height) {
+  const source = [[0, 0], [1, 0], [1, 1], [0, 1]], rows = [];
+  source.forEach(([u, v], i) => {
+    const [x, y] = points[i];
+    rows.push([[u, v, 1, 0, 0, 0, -u * x, -v * x], x]);
+    rows.push([[0, 0, 0, u, v, 1, -u * y, -v * y], y]);
+  });
+  for (let column = 0; column < 8; column++) {
+    let pivot = column;
+    for (let row = column + 1; row < 8; row++) if (Math.abs(rows[row][0][column]) > Math.abs(rows[pivot][0][column])) pivot = row;
+    [rows[column], rows[pivot]] = [rows[pivot], rows[column]];
+    const divisor = rows[column][0][column];
+    for (let c = column; c < 8; c++) rows[column][0][c] /= divisor;
+    rows[column][1] /= divisor;
+    for (let row = 0; row < 8; row++) if (row !== column) {
+      const factor = rows[row][0][column];
+      for (let c = column; c < 8; c++) rows[row][0][c] -= factor * rows[column][0][c];
+      rows[row][1] -= factor * rows[column][1];
+    }
+  }
+  const [a, b, c, d, e, f, g, h] = rows.map(row => row[1]);
+  return `matrix3d(${a / width},${d / width},0,${g / width},${b / height},${e / height},0,${h / height},0,0,1,0,${c},${f},0,1)`;
+}
+function desktopRect() {
+  const desktop = $('#film-file-desktop'), width = desktop.offsetWidth, height = desktop.offsetHeight;
+  return { width, height };
+}
+function nativeBrowserQuad() {
+  const desktop = $('#film-file-desktop'), width = desktop.offsetWidth, height = desktop.offsetHeight;
+  const x = (innerWidth - width) / 2, y = (innerHeight - height) / 2;
+  return [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
+}
+function applyProjectedBrowser(timeOverride = null) {
+  const video = $('#mission-film'), desktop = $('#film-file-desktop');
+  if (screens.film.hidden || !video.videoWidth || handoffStage !== 'browser-tracking') return;
+  const { width, height } = desktopRect(); if (!width || !height) return;
+  const time = timeOverride ?? video.currentTime;
+  const measured = interpolatedMonitorQuad(time).map(point => mediaQuadToViewport(point, video));
+  const target = nativeBrowserQuad();
+  const linear = Math.max(0, Math.min(1, (time - 9.8) / 0.7));
+  const amount = linear * linear * (3 - 2 * linear);
+  const points = measured.map((point, index) => point.map((value, axis) => value + (target[index][axis] - value) * amount));
+  desktop.style.transform = solveHomography(points, width, height);
+  $('#film-browser-stage').style.opacity = String(Math.max(0, Math.min(1, (time - 9.78) / 0.12)));
+}
+function scheduleMonitorTracking() {
+  // Reduced motion goes from the moving film directly to the native browser
+  // at the cut. Do not animate the tracked quad while the film is playing.
+  if (reducedMotion) return;
+  const video = $('#mission-film');
+  const tick = (_now, metadata = {}) => {
+    handoffFrameId = 0; handoffRafId = 0;
+    if (screens.film.hidden || !['film', 'browser-tracking'].includes(handoffStage)) return;
+    const mediaTime = Number.isFinite(metadata.mediaTime) ? metadata.mediaTime : video.currentTime;
+    if (mediaTime >= 9.78) {
+      if (handoffStage === 'film') {
+        const stage = $('#film-browser-stage'); stage.hidden = false; stage.setAttribute('aria-hidden', 'false'); $('#film-caption').hidden = true; $('#file-browser-command').textContent = 'LOCATING NIGHTJAR…'; setHandoffStage('browser-tracking');
+      }
+      applyProjectedBrowser(mediaTime);
+    }
+    if (video.requestVideoFrameCallback) handoffFrameId = video.requestVideoFrameCallback(tick);
+    else handoffRafId = requestAnimationFrame(tick);
+  };
+  if (video.requestVideoFrameCallback) handoffFrameId = video.requestVideoFrameCallback(tick);
+  else handoffRafId = requestAnimationFrame(tick);
+}
+function fullBrowserTransform() {
+  const desktop = $('#film-file-desktop'), width = desktop.offsetWidth, height = desktop.offsetHeight;
+  return solveHomography(nativeBrowserQuad(), width, height);
+}
+function showFullBrowser({ fromFilm = false } = {}) {
+  const stage = $('#film-browser-stage'), desktop = $('#film-file-desktop'), video = $('#mission-film');
+  stage.hidden = false; stage.setAttribute('aria-hidden', 'false');
+  if (fromFilm && !reducedMotion) {
+    if (handoffStage !== 'browser-tracking') setHandoffStage('browser-tracking');
+    applyProjectedBrowser(10.5);
+    stage.style.opacity = '1'; stage.classList.add('is-full'); video.hidden = true;
+  } else {
+    desktop.style.transform = fullBrowserTransform(); stage.style.opacity = '1'; stage.classList.add('is-full'); video.hidden = true;
+  }
+  setHandoffStage('browser-full');
+}
+async function openArchiveFromBrowser(generation, { resume = false } = {}) {
+  if (generation !== handoffGeneration || screens.film.hidden) return;
+  const stage = $('#film-browser-stage'), desktop = $('#film-file-desktop'), archive = screens.archive;
+  $('#file-browser-command').textContent = 'OPENING ARCHIVE AI…';
+  const box = $('#nightjar-row')?.getBoundingClientRect();
+  const x = box ? box.left + box.width / 2 : innerWidth / 2, y = box ? box.top + box.height / 2 : innerHeight / 2;
+  archive.style.setProperty('--launch-x', `${x}px`); archive.style.setProperty('--launch-y', `${y}px`);
+  archive.hidden = false; archive.classList.add('handoff-opening');
+  setHandoffStage('console-opening');
+  if (reducedMotion) {
+    archive.classList.add('handoff-expanded');
+    await waitHandoff(60);
+  } else {
+    await waitHandoff(32);
+    archive.classList.add('handoff-expanded');
+    await waitHandoff(620);
+  }
+  if (generation !== handoffGeneration) return;
+  stage.hidden = true; stage.setAttribute('aria-hidden', 'true'); $('#mission-film').hidden = true;
+  if (resume && current && !current.endedAt) {
+    archive.classList.remove('handoff-opening', 'handoff-expanded', 'handoff-connecting');
+    screens.archive.hidden = false; showScreen('archive'); renderState(); updateClock(); trackPhase('read_think', true);
+    filmTransitionInFlight = false; setHandoffStage('game'); return;
+  }
+  archive.classList.add('handoff-connecting');
+  setHandoffStage('connecting');
+  void startMission(generation);
+}
+async function runArchiveHandoff({ filmEnded = false, filmless = false, returnToActive = false } = {}) {
+  if (filmTransitionInFlight) return;
+  filmTransitionInFlight = true;
+  const generation = ++handoffGeneration;
+  clearTimeout(filmControlsTimer); clearTimeout($('#mission-film').watchdog); clearTimeout($('#mission-film').bufferWatchdog);
+  screens.film.classList.remove('controls-dim');
+  const video = $('#mission-film');
+  if (!filmEnded) video.pause();
+  if (filmEnded) {
+    if (handoffFrameId && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(handoffFrameId);
+    handoffFrameId = 0; cancelAnimationFrame(handoffRafId); handoffRafId = 0;
+  }
+  $('#mission-roomtone').pause(); $('#film-message').hidden = true;
+  setHandoffStage(filmEnded ? 'browser-tracking' : 'browser-full');
+  showFullBrowser({ fromFilm: filmEnded && !filmless });
+  if (!filmEnded) video.hidden = true;
+  $('#nightjar-row')?.classList.add('selected');
+  $('#file-browser-command').textContent = 'NIGHTJAR SELECTED';
+  // The reconstructed browser remains readable for the same interval even
+  // when motion is reduced; only its entrance animation is removed.
+  await waitHandoff(1050);
+  if (generation !== handoffGeneration) return;
+  await openArchiveFromBrowser(generation, { resume: returnToActive && Boolean(current && !current.endedAt) });
 }
 async function enterFilm() {
-  filmTransitionInFlight = false;
+  cancelHandoff();
   showScreen('film');
   screens.film.classList.remove('controls-dim');
   const video = $('#mission-film'), roomtone = $('#mission-roomtone');
-  $('#film-message').hidden = true;
+  $('#film-message').hidden = true; $('#film-caption').hidden = false; video.hidden = false; video.poster = '../mission-assets/mission-intro-v7-poster.webp';
+  const stage = $('#film-browser-stage'); stage.hidden = true; stage.setAttribute('aria-hidden', 'true'); stage.classList.remove('is-full', 'is-launching');
+  $('#film-file-desktop').style.transform = '';
+  setHandoffStage('film'); scheduleMonitorTracking();
   video.muted = missionMuted; roomtone.muted = missionMuted;
   let fullScreenRequest = Promise.resolve();
   if (document.fullscreenEnabled && !document.fullscreenElement) fullScreenRequest = root.requestFullscreen();
@@ -236,6 +446,18 @@ async function enterFilm() {
   video.watchdog = setTimeout(() => { if (video.readyState < 2 || video.paused) showFilmError(); }, 18000);
   dimFilmControlsSoon();
 }
+function launchWithoutFilm() {
+  cancelHandoff();
+  showScreen('film');
+  $('#mission-film').hidden = true;
+  $('#film-message').hidden = true;
+  const stage = $('#film-browser-stage'); stage.hidden = true; stage.setAttribute('aria-hidden', 'true');
+  try {
+    if (document.fullscreenEnabled && !document.fullscreenElement) void root.requestFullscreen().catch(() => root.classList.add('immersive'));
+    else root.classList.add('immersive');
+  } catch { root.classList.add('immersive'); }
+  void runArchiveHandoff({ filmless: true, returnToActive: Boolean(current && !current.endedAt) });
+}
 function dimFilmControlsSoon(screen = screens.film) { clearTimeout(filmControlsTimer); filmControlsTimer = setTimeout(() => screen.classList.add('controls-dim'), 3200); }
 function revealFilmControls(screen) { screen.classList.remove('controls-dim'); dimFilmControlsSoon(screen); }
 function armBufferWatchdog() {
@@ -243,22 +465,12 @@ function armBufferWatchdog() {
   video.bufferWatchdog = setTimeout(showFilmError, 18000);
 }
 function showFilmError() { $('#film-message').hidden = false; $('#mission-film').pause(); }
-async function finishFilm() {
+async function finishFilm({ natural = false } = {}) {
   if (filmTransitionInFlight) return;
-  filmTransitionInFlight = true;
-  clearTimeout(filmControlsTimer);
-  screens.film.classList.remove('controls-dim');
-  const video = $('#mission-film'); clearTimeout(video.watchdog); clearTimeout(video.bufferWatchdog); video.pause();
-  $('#mission-roomtone').pause();
-  $('#film-message').hidden = true;
-  $('#film-caption').textContent = 'Connecting to Langley…';
-  if (video.duration) video.currentTime = Math.max(0, video.duration - 0.08);
-  if (replayingBrief && current) { replayingBrief = false; filmTransitionInFlight = false; showScreen('archive'); renderState(); updateClock(); trackPhase('read_think', true); return; }
-  if (!await startMission()) {
-    filmTransitionInFlight = false;
-    $('#film-caption').textContent = 'The field link is waiting. The final film frame will remain on screen.';
-    $('#film-message').hidden = false;
-  }
+  const video = $('#mission-film');
+  if (!natural) { handoffGeneration++; if (handoffFrameId && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(handoffFrameId); handoffFrameId = 0; cancelAnimationFrame(handoffRafId); handoffRafId = 0; }
+  await runArchiveHandoff({ filmEnded: natural, filmless: !natural, returnToActive: Boolean(current && !current.endedAt) });
+  if (replayingBrief && current) replayingBrief = false;
 }
 function syncFilmMuteButtons() {
   const intro = $('#mute-film'), ending = $('#mute-success-film');
@@ -674,14 +886,18 @@ async function retryReview() {
   finally { $('#retry-review').disabled = false; }
 }
 function exitArchive() {
+  cancelHandoff();
   clearInterval(timerId); stopMissionMedia();
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   $('#mission-roomtone').pause();
   root.classList.remove('immersive');
   if (current && !current.endedAt) tell('Mission suspended. Your archive session is saved and will resume when you return.');
   showScreen('welcome');
+  $('#watch-button').disabled = startupInFlight || !configuration?.connected;
+  $('#begin-no-film').disabled = startupInFlight || !configuration?.connected;
 }
 function prepareNewAttempt() {
+  cancelHandoff();
   stopMissionMedia();
   if (current) sessionStorage.removeItem(`${sessionKey}:${current.id}:draft:terminal`);
   currentRequest = null; current = null; clearStartKey(); sessionStorage.removeItem(sessionKey); showScreen('welcome');
@@ -700,6 +916,7 @@ async function initialize() {
     sessionKey = `mission-archive-v1:${actorNamespace}:session`;
     profileKey = `mission-archive-v1:${actorNamespace}:profile`;
     startKeyStorage = `mission-archive-v1:${actorNamespace}:start-key`;
+    startKeyProfileStorage = `mission-archive-v1:${actorNamespace}:start-key-profile`;
     selectedProfile = localStorage.getItem(profileKey) || 'standard';
     metricsTabId = sessionStorage.getItem(`${sessionKey}:metrics-tab`) || randomId();
     configuration = await api('/mission'); renderProfiles(configuration.profiles || []);
@@ -713,9 +930,9 @@ async function initialize() {
 }
 
 $('#watch-button').addEventListener('click', () => void enterFilm());
-$('#begin-no-film').addEventListener('click', () => { try { if (document.fullscreenEnabled && !document.fullscreenElement) void root.requestFullscreen().catch(() => root.classList.add('immersive')); else root.classList.add('immersive'); } catch { root.classList.add('immersive'); } void startMission(); });
-$('#skip-film').addEventListener('click', () => void finishFilm());
-$('#mission-film').addEventListener('ended', () => void finishFilm());
+$('#begin-no-film').addEventListener('click', launchWithoutFilm);
+$('#skip-film').addEventListener('click', () => void finishFilm({ natural: false }));
+$('#mission-film').addEventListener('ended', () => void finishFilm({ natural: true }));
 screens.film.addEventListener('pointermove', () => revealFilmControls(screens.film));
 screens.film.addEventListener('pointerdown', () => revealFilmControls(screens.film));
 screens.film.addEventListener('focusin', () => screens.film.classList.remove('controls-dim'));
@@ -726,7 +943,8 @@ $('#mission-film').addEventListener('waiting', armBufferWatchdog);
 $('#mission-film').addEventListener('stalled', armBufferWatchdog);
 $('#mission-film').addEventListener('playing', () => { const video = $('#mission-film'); clearTimeout(video.watchdog); clearTimeout(video.bufferWatchdog); });
 $('#retry-film').addEventListener('click', () => void enterFilm());
-$('#start-filmless').addEventListener('click', () => void startMission());
+$('#start-filmless').addEventListener('click', launchWithoutFilm);
+$('#handoff-retry').addEventListener('click', () => { $('#handoff-retry').hidden = true; setHandoffStage('connecting'); void startMission(handoffGeneration); });
 $('#fullscreen-film').addEventListener('click', async () => { try { await root.requestFullscreen(); root.classList.remove('immersive'); } catch { root.classList.add('immersive'); } });
 $('#mute-film').addEventListener('click', () => toggleFilmMute($('#mission-film')));
 $('#mute-success-film').addEventListener('click', () => toggleFilmMute($('#success-film')));
@@ -784,6 +1002,14 @@ $('#readable-toggle').addEventListener('click', () => {
 });
 $('#retry-review').addEventListener('click', () => void retryReview());
 $('#new-attempt').addEventListener('click', prepareNewAttempt);
+window.addEventListener('resize', () => {
+  if (handoffStage === 'browser-tracking') applyProjectedBrowser();
+  else if (handoffStage === 'browser-full') $('#film-file-desktop').style.transform = fullBrowserTransform();
+  else if (handoffStage === 'console-opening') {
+    const box = $('#nightjar-row')?.getBoundingClientRect();
+    if (box) { screens.archive.style.setProperty('--launch-x', `${box.left + box.width / 2}px`); screens.archive.style.setProperty('--launch-y', `${box.top + box.height / 2}px`); }
+  }
+});
 $('#return-workshop').addEventListener('click', returnToWorkshop);
 $('#history-older').addEventListener('click', () => scrollCrtHistory(-4));
 $('#history-newer').addEventListener('click', () => scrollCrtHistory(4));

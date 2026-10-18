@@ -20,10 +20,14 @@ async function openActiveMission(page: Page): Promise<FrameLocator> {
 }
 
 async function usePlayableSuccessFixture(page: Page) {
-  await page.route('**/mission-assets/mission-success-v1.mp4', route => route.fulfill({
+  await page.route('**/mission-assets/mission-success-v2.mp4', route => route.fulfill({
     path: 'static/mission-assets/mission-intro-v5.mp4',
     contentType: 'video/mp4',
   }));
+}
+async function closeConversationFixture(page: Page, round: { id: string; accessToken: string }) {
+  const response = await page.request.post(`/api/mission/rounds/${round.id}/finish`, { headers: { 'x-round-token': round.accessToken }, data: {} });
+  expect([200, 202, 409]).toContain(response.status());
 }
 
 test('verified recovery plays before completion, then skip/replay/reload never files twice', async ({ page }) => {
@@ -209,10 +213,175 @@ test('nonwinning saved review never starts the success film', async ({ page }) =
   expect(await mission.locator('#success-film').getAttribute('data-played')).toBeNull();
 });
 
+test('film browser tracks the monitor, holds the file index, then opens the live archive once', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  await signInOwner(page.request);
+  await page.goto('/mission');
+  const mission = page.frameLocator('iframe[title="Mission: Impossible archive"]');
+  await expect(mission.locator('#watch-button')).toBeEnabled({ timeout: 15000 });
+  const starts: string[] = [];
+  let startedRound: { id: string; accessToken: string } | null = null;
+  await page.route('**/api/mission/start', async route => {
+    starts.push(route.request().postData() || '');
+    const response = await route.fetch();
+    startedRound = await response.json() as { id: string; accessToken: string };
+    await route.fulfill({ response });
+  });
+  await mission.locator('#watch-button').click();
+  await expect(mission.locator('#film-screen')).toBeVisible();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'film');
+  await expect(mission.locator('#mission-film')).toHaveJSProperty('paused', false);
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'browser-tracking', { timeout: 15000 });
+  await expect(mission.locator('#film-file-desktop')).toBeVisible();
+  await expect(mission.locator('#film-file-desktop')).toHaveAttribute('aria-label', 'NIGHTJAR file browser');
+  await expect(mission.locator('.file-browser-columns .file-column')).toHaveCount(4);
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'browser-full', { timeout: 5000 });
+  await expect.poll(() => starts.length).toBe(0);
+  await expect(mission.locator('#nightjar-row')).toHaveClass(/selected/, { timeout: 5000 });
+  await page.screenshot({ path: test.info().outputPath('mission-file-browser-full.png') });
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'console-opening', { timeout: 5000 });
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'connecting', { timeout: 5000 });
+  await expect(mission.locator('#archive-screen')).toBeVisible({ timeout: 15000 });
+  await expect(mission.locator('#terminal-status')).toHaveText('ONLINE', { timeout: 15000 });
+  expect(starts).toHaveLength(1);
+  expect(pageErrors).toEqual([]);
+  expect(startedRound).not.toBeNull();
+  await closeConversationFixture(page, startedRound!);
+});
+
+test('reduced motion keeps the moving film untouched and opens the native browser at the cut', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await signInOwner(page.request);
+  await page.goto('/mission');
+  const mission = page.frameLocator('iframe[title="Mission: Impossible archive"]');
+  await expect(mission.locator('#watch-button')).toBeEnabled({ timeout: 15000 });
+  let startCount = 0;
+  let startedRound: { id: string; accessToken: string } | null = null;
+  await page.route('**/api/mission/start', async route => {
+    startCount++;
+    const response = await route.fetch();
+    startedRound = await response.json() as { id: string; accessToken: string };
+    await route.fulfill({ response });
+  });
+  await mission.locator('#watch-button').click();
+  await expect(mission.locator('#mission-film')).toHaveJSProperty('paused', false);
+  const midshot = await mission.locator('#mission-film').evaluate(video => new Promise<{ time: number; stage: string | null; browserHidden: boolean; transform: string }>((resolve, reject) => {
+    const element = video as HTMLVideoElement;
+    const timeout = setTimeout(() => reject(new Error('The intro did not reach its final moving shot.')), 15000);
+    const sample = (_now: number, metadata: VideoFrameCallbackMetadata) => {
+      if (metadata.mediaTime >= 9.9) {
+        clearTimeout(timeout);
+        const root = element.ownerDocument.querySelector('#mission-root') as HTMLElement;
+        const browser = element.ownerDocument.querySelector('#film-browser-stage') as HTMLElement;
+        const desktop = element.ownerDocument.querySelector('#film-file-desktop') as HTMLElement;
+        resolve({ time: metadata.mediaTime, stage: root.dataset.handoffStage || null, browserHidden: browser.hidden, transform: desktop.style.transform });
+        return;
+      }
+      element.requestVideoFrameCallback(sample);
+    };
+    element.requestVideoFrameCallback(sample);
+  }));
+  expect(midshot.time).toBeGreaterThanOrEqual(9.9);
+  expect(midshot.stage).toBe('film');
+  expect(midshot.browserHidden).toBe(true);
+  expect(midshot.transform).toBe('');
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'browser-full', { timeout: 5000 });
+  await expect(mission.locator('#mission-film')).toBeHidden();
+  await expect.poll(() => startCount).toBe(0);
+  await expect(mission.locator('#nightjar-row')).toHaveClass(/selected/, { timeout: 5000 });
+  await expect(mission.locator('#terminal-status')).toHaveText('ONLINE', { timeout: 15000 });
+  expect(startCount).toBe(1);
+  expect(startedRound).not.toBeNull();
+  await closeConversationFixture(page, startedRound!);
+});
+
+test('exiting an active archive leaves welcome actions usable and resumes the same round', async ({ page }) => {
+  const round = await startMission(page);
+  const mission = await openActiveMission(page);
+  let starts = 0;
+  await page.route('**/api/mission/start', async route => { starts++; await route.continue(); });
+  await mission.locator('#exit-game').click();
+  await expect(mission.locator('.welcome-screen')).toBeVisible();
+  await expect(mission.locator('#watch-button')).toBeEnabled();
+  await expect(mission.locator('#begin-no-film')).toBeEnabled();
+  await mission.locator('#begin-no-film').click();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'game', { timeout: 15000 });
+  await expect(mission.locator('#terminal-input')).toBeEnabled();
+  expect(starts).toBe(0);
+  await closeConversationFixture(page, round);
+});
+
+test('skipping the film still opens the browser before the orange console and never seeks the movie to its end', async ({ page }) => {
+  await signInOwner(page.request);
+  await page.goto('/mission');
+  const mission = page.frameLocator('iframe[title="Mission: Impossible archive"]');
+  await expect(mission.locator('#watch-button')).toBeEnabled({ timeout: 15000 });
+  const starts: string[] = [];
+  let startedRound: { id: string; accessToken: string } | null = null;
+  await page.route('**/api/mission/start', async route => {
+    starts.push(route.request().postData() || '');
+    const response = await route.fetch();
+    startedRound = await response.json() as { id: string; accessToken: string };
+    await route.fulfill({ response });
+  });
+  await mission.locator('#watch-button').click();
+  const video = mission.locator('#mission-film');
+  await expect.poll(() => video.evaluate(element => (element as HTMLVideoElement).currentTime)).toBeGreaterThan(0.2);
+  const beforeSkip = await video.evaluate(element => ({ currentTime: (element as HTMLVideoElement).currentTime, duration: (element as HTMLVideoElement).duration }));
+  await mission.locator('#skip-film').click();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'browser-full', { timeout: 5000 });
+  const afterSkip = await video.evaluate(element => ({ currentTime: (element as HTMLVideoElement).currentTime, paused: (element as HTMLVideoElement).paused }));
+  expect(afterSkip.paused).toBe(true);
+  expect(afterSkip.currentTime).toBeLessThan(beforeSkip.duration - 1);
+  await expect(mission.locator('#nightjar-row')).toHaveClass(/selected/, { timeout: 5000 });
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'game', { timeout: 15000 });
+  await expect(mission.locator('#terminal-status')).toHaveText('ONLINE', { timeout: 15000 });
+  expect(starts).toHaveLength(1);
+  expect(startedRound).not.toBeNull();
+  await closeConversationFixture(page, startedRound!);
+});
+
+test('return during a delayed connection leaves the menu usable and retries with the same profile key', async ({ page }) => {
+  await signInOwner(page.request);
+  await page.goto('/mission');
+  const mission = page.frameLocator('iframe[title="Mission: Impossible archive"]');
+  await expect(mission.locator('#watch-button')).toBeEnabled({ timeout: 15000 });
+  const startBodies: Record<string, string>[] = [];
+  let startedRound: { id: string; accessToken: string } | null = null;
+  let releaseFirst!: () => void;
+  const firstRequestSeen = new Promise<void>(resolve => { releaseFirst = resolve; });
+  await page.route('**/api/mission/start', async route => {
+    const body = route.request().postDataJSON() as Record<string, string>;
+    startBodies.push(body);
+    if (startBodies.length === 1) { releaseFirst(); await new Promise(resolve => setTimeout(resolve, 1200)); }
+    const response = await route.fetch();
+    startedRound = await response.json() as { id: string; accessToken: string };
+    await route.fulfill({ response });
+  });
+  await mission.locator('#begin-no-film').click();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'connecting', { timeout: 10000 });
+  await firstRequestSeen;
+  await expect(mission.locator('#terminal-input')).toBeDisabled();
+  await expect(mission.locator('#finish-interrogation')).toBeDisabled();
+  await mission.locator('#exit-game').click();
+  await expect(mission.locator('.welcome-screen')).toBeVisible();
+  await expect(mission.locator('#watch-button')).toBeEnabled({ timeout: 10000 });
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'idle');
+  await mission.locator('#begin-no-film').click();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'game', { timeout: 15000 });
+  await expect(mission.locator('#terminal-status')).toHaveText('ONLINE', { timeout: 15000 });
+  expect(startBodies).toHaveLength(2);
+  expect(startBodies[1].startKey).toBe(startBodies[0].startKey);
+  expect(startBodies[1].profileId).toBe(startBodies[0].profileId);
+  expect(startedRound).not.toBeNull();
+  await closeConversationFixture(page, startedRound!);
+});
+
 test('unavailable ending film offers play, retry, and completion fallback', async ({ page }) => {
   await startMission(page);
   const mission = await openActiveMission(page);
-  await page.route('**/mission-assets/mission-success-v1.mp4', route => route.abort('failed'));
+  await page.route('**/mission-assets/mission-success-v2.mp4', route => route.abort('failed'));
   const input = mission.locator('#terminal-input');
   await input.fill('Who is the full name behind NIGHTJAR?');
   await input.press('Enter');
@@ -231,7 +400,7 @@ test('returning during delayed resume metadata cancels playback from starting la
   page.on('pageerror', error => pageErrors.push(error.message));
   const round = await startMission(page);
   let holdEnding = false;
-  await page.route('**/mission-assets/mission-success-v1.mp4', async route => {
+  await page.route('**/mission-assets/mission-success-v2.mp4', async route => {
     if (holdEnding) await new Promise(resolve => setTimeout(resolve, 1800));
     await route.fulfill({ path: 'static/mission-assets/mission-intro-v5.mp4', contentType: 'video/mp4' });
   });
