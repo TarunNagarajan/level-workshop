@@ -38,7 +38,10 @@ export function openStore(path) {
     CREATE TABLE IF NOT EXISTS mission_start_locks (actor_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS inception_sessions (round_id TEXT PRIMARY KEY REFERENCES rounds(id) ON DELETE RESTRICT, state TEXT NOT NULL, start_key_hash TEXT NOT NULL, actor_key_hash TEXT NOT NULL UNIQUE, actor_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT, created_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS inception_start_locks (actor_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE RESTRICT, serial INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS inception_provider_health (provider_id TEXT PRIMARY KEY, observed_at INTEGER NOT NULL, last_success_at INTEGER, blocked_until INTEGER, last_error_code TEXT, daily_limit INTEGER, daily_used INTEGER, daily_observed_at INTEGER, app_tokens_today INTEGER NOT NULL DEFAULT 0, app_usage_day TEXT, failed_calls_today INTEGER NOT NULL DEFAULT 0, failed_calls_day TEXT);
+    CREATE TABLE IF NOT EXISTS inception_provider_health (provider_id TEXT PRIMARY KEY, observed_at INTEGER NOT NULL, last_success_at INTEGER, blocked_until INTEGER, last_error_code TEXT, daily_limit INTEGER, daily_used INTEGER, daily_observed_at INTEGER, app_tokens_today INTEGER NOT NULL DEFAULT 0, app_usage_day TEXT, failed_calls_today INTEGER NOT NULL DEFAULT 0, failed_calls_day TEXT, app_tokens_after_observation INTEGER NOT NULL DEFAULT 0, reserved_tokens INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS inception_provider_reservations (reservation_id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, tokens INTEGER NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, round_id TEXT REFERENCES rounds(id) ON DELETE SET NULL);
+    CREATE INDEX IF NOT EXISTS inception_provider_reservations_expiry ON inception_provider_reservations(expires_at);
+    CREATE INDEX IF NOT EXISTS inception_provider_reservations_round ON inception_provider_reservations(round_id);
     CREATE TABLE IF NOT EXISTS orchestration_configs (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), draft TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS orchestration_versions (id TEXT PRIMARY KEY, config_id TEXT NOT NULL REFERENCES orchestration_configs(id), number INTEGER NOT NULL, data TEXT NOT NULL, note TEXT NOT NULL, author_id TEXT NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL, UNIQUE(config_id, number));
     CREATE TABLE IF NOT EXISTS orchestration_runs (id TEXT PRIMARY KEY, config_id TEXT NOT NULL REFERENCES orchestration_configs(id), author_id TEXT NOT NULL REFERENCES users(id), snapshot TEXT NOT NULL, test_input TEXT NOT NULL, model TEXT NOT NULL, messages TEXT NOT NULL, board TEXT NOT NULL, event_seq INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
@@ -83,6 +86,9 @@ export function openStore(path) {
   }
   if (!db.prepare('PRAGMA table_info(rounds)').all().some(column => column.name === 'recording_accepted_at')) db.exec('ALTER TABLE rounds ADD COLUMN recording_accepted_at INTEGER');
   if (!db.prepare('PRAGMA table_info(rounds)').all().some(column => column.name === 'recording_notice_version')) db.exec('ALTER TABLE rounds ADD COLUMN recording_notice_version TEXT');
+  const providerHealthColumns = new Set(db.prepare('PRAGMA table_info(inception_provider_health)').all().map(column => column.name));
+  if (!providerHealthColumns.has('app_tokens_after_observation')) db.exec('ALTER TABLE inception_provider_health ADD COLUMN app_tokens_after_observation INTEGER NOT NULL DEFAULT 0');
+  if (!providerHealthColumns.has('reserved_tokens')) db.exec('ALTER TABLE inception_provider_health ADD COLUMN reserved_tokens INTEGER NOT NULL DEFAULT 0');
   return {
     dialect: 'sqlite',
     db,

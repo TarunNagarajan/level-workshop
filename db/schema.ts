@@ -415,4 +415,15 @@ export const inception_provider_health = sqliteTable('inception_provider_health'
   app_usage_day: text('app_usage_day'),
   failed_calls_today: integer('failed_calls_today').notNull().default(0),
   failed_calls_day: text('failed_calls_day'),
+  app_tokens_after_observation: integer('app_tokens_after_observation').notNull().default(0),
+  reserved_tokens: integer('reserved_tokens').notNull().default(0),
+});
+
+export const inception_provider_reservations = sqliteTable('inception_provider_reservations', {
+  reservation_id: text('reservation_id').primaryKey(),
+  provider_id: text('provider_id').notNull(),
+  tokens: integer('tokens').notNull(),
+  created_at: integer('created_at').notNull(),
+  expires_at: integer('expires_at').notNull(),
+  round_id: text('round_id').references(() => rounds.id, { onDelete: 'set null' }),
 });

@@ -222,22 +222,38 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
     const actorKey = `${actor.id}:${keyHash}`;
     const findReceipt = async () => get('SELECT round_id FROM inception_sessions WHERE actor_key_hash=?', inceptionIdempotencyHash(actorKey));
     const existing = await findReceipt();
-    if (existing) return res.json(await sessionFor(await get('SELECT * FROM rounds WHERE id=?', existing.round_id)));
+    if (existing) {
+      const round = await get('SELECT * FROM rounds WHERE id=?', existing.round_id);
+      let reservationId;
+      try { reservationId = JSON.parse(round?.config || '{}').capacityReservationId; } catch { reservationId = null; }
+      await capacity.attachReservation(reservationId, existing.round_id);
+      return res.json(await sessionFor(round));
+    }
     const latest = await get("SELECT r.id,r.started_at,r.ended_at,r.data FROM rounds r JOIN inception_sessions s ON s.round_id=r.id WHERE s.actor_id=? ORDER BY s.created_at DESC LIMIT 1", actor.id);
     if (latest && !latest.ended_at && Date.now() < latest.started_at + JSON.parse(latest.data).duration * 1000) fail(409, 'Finish or let the current strongroom attempt expire before starting a replay.');
     const versions = await ensureInception(store), version = versions.find(row => JSON.parse(row.data).inceptionProfile.id === input.profileId);
     if (!version) fail(503, 'This Inception profile is not available.');
     const selection = await capacity.selectForStart();
-    if (selection.config.providerId === 'groq' && !provider.apiKey) fail(503, 'The target model is not connected.');
+    if (selection.config.providerId === 'groq' && !provider.apiKey) {
+      await capacity.releaseReservation(selection.reservationId);
+      fail(503, 'The target model is not connected.');
+    }
     const now = Date.now();
     const state = { ...initialInceptionState(), ...(organizerPolicy ? { recordingPolicy: { id: INCEPTION_ORGANIZER_RECORDING_POLICY, establishedAt: now } } : {}) };
     const stateJson = JSON.stringify(state), actorKeyHash = inceptionIdempotencyHash(actorKey);
+    let allocatedRound = null;
     try {
-      const round = await createRound({ version, frozenConfig: { ...selection.config, selectionReason: selection.reason, selectionCheckedAt: selection.checkedAt }, tester: actor.name, userId: actor.id, source: 'inception-play', parentId: latest?.id || null, ...(!organizerPolicy && !previouslyAccepted ? { consentAt: now, recordingAckUserId: actor.id } : {}), ...(organizerPolicy ? { recordingPolicy: INCEPTION_ORGANIZER_RECORDING_POLICY } : {}), inceptionState: { state: stateJson, startKeyHash: keyHash, actorKeyHash, actorId: actor.id, createdAt: now } });
-      return res.status(201).json({ round, state: publicInceptionState(state), profile: publicInceptionProfile(JSON.parse(version.data)) });
+      allocatedRound = await createRound({ version, frozenConfig: { ...selection.config, selectionReason: selection.reason, selectionCheckedAt: selection.checkedAt }, tester: actor.name, userId: actor.id, source: 'inception-play', parentId: latest?.id || null, ...(!organizerPolicy && !previouslyAccepted ? { consentAt: now, recordingAckUserId: actor.id } : {}), ...(organizerPolicy ? { recordingPolicy: INCEPTION_ORGANIZER_RECORDING_POLICY } : {}), inceptionState: { state: stateJson, startKeyHash: keyHash, actorKeyHash, actorId: actor.id, createdAt: now } });
+      await capacity.attachReservation(selection.reservationId, allocatedRound.id);
+      return res.status(201).json({ round: allocatedRound, state: publicInceptionState(state), profile: publicInceptionProfile(JSON.parse(version.data)) });
     } catch (error) {
       const receipt = await findReceipt();
-      if (receipt) return res.json(await sessionFor(await get('SELECT * FROM rounds WHERE id=?', receipt.round_id)));
+      if (receipt) {
+        if (allocatedRound) await capacity.attachReservation(selection.reservationId, allocatedRound.id);
+        else await capacity.releaseReservation(selection.reservationId);
+        return res.json(await sessionFor(await get('SELECT * FROM rounds WHERE id=?', receipt.round_id)));
+      }
+      if (!allocatedRound) await capacity.releaseReservation(selection.reservationId);
       throw error;
     }
   });
@@ -314,17 +330,25 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
     const authorized = await accessRound(req);
     if (!isInceptionData(JSON.parse(authorized.data))) fail(404, 'Strongroom session not found.');
     if (!authorized.ended_at) fail(409, 'Finish the conversation before requesting review.');
-    if (!reviewEnabled) fail(503, 'Automated review is unavailable for this workspace.');
+    if (!reviewEnabled) {
+      await capacity.releaseRoundReservation(authorized.id);
+      fail(503, 'Automated review is unavailable for this workspace.');
+    }
     await requireRecording(req, authorized);
     const savedReview = await get('SELECT * FROM round_machine_reviews WHERE round_id=?', authorized.id);
-    if (savedReview?.status === 'complete') return res.json({ review: reviewView(savedReview), state: publicInceptionState(await stateFor(authorized.id)) });
+    if (savedReview?.status === 'complete') {
+      await capacity.releaseRoundReservation(authorized.id);
+      return res.json({ review: reviewView(savedReview), state: publicInceptionState(await stateFor(authorized.id)) });
+    }
     if (savedReview?.status === 'pending' && Date.now() - savedReview.started_at <= 45000) return res.json({ review: reviewView(savedReview), state: publicInceptionState(await stateFor(authorized.id)) });
-    if (Number(savedReview?.attempts || 0) >= 2) return res.json({ review: { status: 'unavailable', attempts: 2, retryable: false, errorCode: 'attempt_limit' }, state: publicInceptionState(await stateFor(authorized.id)) });
-    if (!provider.apiKey) fail(503, 'The review provider is not connected.');
+    if (Number(savedReview?.attempts || 0) >= 2) {
+      await capacity.releaseRoundReservation(authorized.id);
+      return res.json({ review: { status: 'unavailable', attempts: 2, retryable: false, errorCode: 'attempt_limit' }, state: publicInceptionState(await stateFor(authorized.id)) });
+    }
     const result = await withRoundLock(req, async current => {
       if (!current.ended_at) fail(409, 'Finish the conversation before requesting review.');
       const prior = await get('SELECT * FROM round_machine_reviews WHERE round_id=?', current.id);
-      if (prior?.status === 'complete') return { review: reviewView(prior), state: publicInceptionState(await stateFor(current.id)) };
+      if (prior?.status === 'complete') return { review: reviewView(prior), state: publicInceptionState(await stateFor(current.id)), terminal: true };
       const attempts = Number(prior?.attempts || 0) + 1, runId = randomUUID(), startedAt = Date.now();
       await run(`INSERT INTO round_machine_reviews (round_id,status,attempts,run_id,started_at,completed_at,verdict,reason,evidence,error_code,reviewer_protocol)
         VALUES (?,'pending',?,?,?,NULL,NULL,NULL,NULL,NULL,?) ON CONFLICT(round_id) DO UPDATE SET status='pending',attempts=excluded.attempts,run_id=excluded.run_id,started_at=excluded.started_at,completed_at=NULL,verdict=NULL,reason=NULL,evidence=NULL,error_code=NULL,reviewer_protocol=excluded.reviewer_protocol`, current.id, attempts, runId, startedAt, inceptionReviewProtocol);
@@ -350,8 +374,10 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
       }
       const saved = await get('SELECT * FROM round_machine_reviews WHERE round_id=?', current.id);
         await markCompletionSaved?.(metricsCallId);
-      return { review: reviewView(saved), state: publicInceptionState(await stateFor(current.id)) };
+      return { review: reviewView(saved), state: publicInceptionState(await stateFor(current.id)), terminal: true };
     });
+    if (result.terminal) await capacity.releaseRoundReservation(authorized.id);
+    delete result.terminal;
     res.json(result);
   });
 }

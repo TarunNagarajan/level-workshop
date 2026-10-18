@@ -119,20 +119,28 @@ async function completeGemini({ config, system, messages, temperature, responseS
     const retryDetail = details.find(item => item['@type']?.endsWith('.RetryInfo'));
     const delay = typeof retryDetail?.retryDelay === 'string' ? Number.parseFloat(retryDetail.retryDelay) : 0;
     const retryAfterSeconds = Number.isFinite(delay) && delay > 0 ? Math.min(86400, Math.max(1, Math.ceil(delay))) : undefined;
-    const quotaFailure = details.some(item => item['@type']?.endsWith('.QuotaFailure'));
+    const violations = details.filter(item => item['@type']?.endsWith('.QuotaFailure')).flatMap(item => Array.isArray(item.violations) ? item.violations : []);
+    const quotaText = violations.map(item => `${item.quotaId || ''} ${JSON.stringify(item.quotaDimensions || {})}`).join(' ').toLowerCase();
+    const rateLimitScope = /token/.test(quotaText) && /day/.test(quotaText) ? 'tokens_daily'
+      : /token/.test(quotaText) && /minute|per_minute/.test(quotaText) ? 'tokens_minute'
+      : /request|generatecontentrequests/.test(quotaText) && /day/.test(quotaText) ? 'requests_daily'
+      : /request|generatecontentrequests/.test(quotaText) && /minute|per_minute/.test(quotaText) ? 'requests_minute'
+      : 'unknown';
+    const quotaFailure = violations.length > 0;
     const rateLimited = status === 429 || quotaFailure;
     throw Object.assign(new Error(rateLimited ? 'The model service is temporarily rate limited. Wait before trying again.' : status === 401 || status === 403 ? 'The model service is unavailable right now.' : 'The provider could not complete this turn.'), {
       status: rateLimited ? 429 : 502,
       providerCode: rateLimited ? 'rate_limited' : [401, 403].includes(status) ? 'provider_auth' : status >= 500 ? 'provider_unavailable' : 'provider_rejected',
-      ...(rateLimited ? { rateLimitScope: 'unknown', ...(retryAfterSeconds ? { retryAfterSeconds } : {}) } : {}),
+      ...(rateLimited ? { rateLimitScope, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) } : {}),
     });
   }
   const candidate = result.candidates?.[0];
   if (candidate?.finishReason === 'MAX_TOKENS') throw Object.assign(new Error('The target reply was incomplete. Retry this turn.'), { status: 502, providerCode: 'provider_rejected' });
+  if (candidate?.finishReason !== 'STOP') throw Object.assign(new Error('The target did not return a complete visible reply. Retry this turn.'), { status: 502, providerCode: 'provider_rejected' });
   const text = Array.isArray(candidate?.content?.parts)
     ? candidate.content.parts.filter(part => typeof part?.text === 'string' && !part.thought).map(part => part.text).join('').trim()
     : '';
-  if (!text || candidate?.finishReason === 'SAFETY') throw Object.assign(new Error('The target returned no visible reply. Retry this turn.'), { status: 502, providerCode: 'empty_response' });
+  if (!text) throw Object.assign(new Error('The target returned no visible reply. Retry this turn.'), { status: 502, providerCode: 'empty_response' });
   const tokenCount = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
   const usage = result.usageMetadata || {};
   const details = { inputTokens: tokenCount(usage.promptTokenCount), outputTokens: tokenCount(usage.candidatesTokenCount), totalTokens: tokenCount(usage.totalTokenCount) };
