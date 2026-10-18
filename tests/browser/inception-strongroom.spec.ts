@@ -156,6 +156,119 @@ test.describe('Inception strongroom', () => {
     expect(starts).toBe(0);
   });
 
+  test('double-clicking the intro starts exactly once and keeps the paused film through a delayed receipt', async ({ page }) => {
+    await signInOwner(page.request);
+    let starts = 0, messagePosts = 0, releaseStart!: () => void, markStartReceived!: () => void;
+    const startReceived = new Promise<void>(resolve => { markStartReceived = resolve; });
+    const startGate = new Promise<void>(resolve => { releaseStart = resolve; });
+    await page.route('**/api/inception/start', async route => {
+      if (route.request().method() === 'POST') { starts++; markStartReceived(); await startGate; }
+      await route.continue();
+    });
+    page.on('request', request => { if (request.method() === 'POST' && /\/api\/rounds\/[^/]+\/messages$/.test(request.url())) messagePosts++; });
+    await page.goto('/inception');
+    await acceptInceptionRecordingNotice(page);
+    const entry = page.getByRole('button', { name: /Click (anywhere to begin|to continue)/ });
+    await entry.evaluate(button => button.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })));
+    await expect(entry).toBeVisible();
+    await expect(page.locator('.inception-intro-video')).toHaveCount(0);
+    expect(starts).toBe(0);
+
+    await entry.click();
+    await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+    const introVideo = page.locator('.inception-intro-video').first();
+    await introVideo.dblclick({ delay: 35 });
+    await startReceived;
+    expect(starts).toBe(1);
+    await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+    await expect(introVideo).toHaveJSProperty('paused', true);
+    await expect(page.getByText('Checking the saved start request…')).toHaveCount(0);
+    await expect(page.locator('.inception-entry-recovery, .inception-media-recovery')).toHaveCount(0);
+    releaseStart();
+    await expect(page.getByLabel('Speak to Fischer')).toBeEnabled({ timeout: 10000 });
+    await expect(page.locator('.inception-intro-video')).toHaveCount(0);
+    await page.getByRole('log', { name: 'Conversation transcript' }).dblclick();
+    await page.getByLabel('Speak to Fischer').dblclick();
+    expect(starts).toBe(1);
+    expect(messagePosts).toBe(0);
+  });
+
+  test('a definitive intro-skip start rejection returns to a usable poster with its error', async ({ page }) => {
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await acceptInceptionRecordingNotice(page);
+    await startFreshAttempt(page, false);
+    const intro = page.getByRole('region', { name: 'Strongroom approach' });
+    await expect(intro).toBeVisible();
+    let starts = 0;
+    await page.route('**/api/inception/start', async route => {
+      if (route.request().method() === 'POST') {
+        starts++;
+        await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'The fixture rejected this start.' }) });
+        return;
+      }
+      await route.continue();
+    });
+    await page.locator('.inception-intro-video').first().dblclick({ delay: 30 });
+    const entry = page.getByRole('button', { name: /Click (anywhere to begin|to continue)/ });
+    await expect(entry).toBeEnabled({ timeout: 10000 });
+    await expect(entry).toContainText('The fixture rejected this start.');
+    await expect(intro).toHaveCount(0);
+    expect(starts).toBe(1);
+    await entry.click();
+    await expect(intro).toBeVisible();
+  });
+
+  test('double-clicking an early success film frame fades to opaque black and returns once without extra requests', async ({ page }) => {
+    test.setTimeout(90000);
+    await signInOwner(page.request);
+    await page.addInitScript(() => localStorage.setItem('workshop-inception-sound', JSON.stringify({ muted: true, volume: 0.45 })));
+    const protectedPosts: string[] = [];
+    page.on('request', request => {
+      if (request.method() === 'POST' && /\/api\/(inception\/start|inception\/rounds\/[^/]+\/review|rounds\/[^/]+\/messages)$/.test(request.url())) protectedPosts.push(request.url());
+    });
+    await page.goto('/inception');
+    await acceptInceptionRecordingNotice(page);
+    await startFreshAttempt(page);
+    await page.getByLabel('Speak to Fischer').fill('[fixture:inception-disclosure]');
+    await page.getByLabel('Speak to Fischer').press('Enter');
+    await expect(page.getByText(/The combination is \d{6}\./)).toBeVisible();
+    await page.getByRole('button', { name: 'Finish and review' }).click();
+    const ending = page.locator('.inception-success-ending');
+    const video = ending.locator('video');
+    await expect(video).toBeVisible();
+    const videoHandle = await video.elementHandle();
+    expect(videoHandle).not.toBeNull();
+    await expect.poll(() => video.evaluate(element => (element as HTMLVideoElement).currentTime)).toBeGreaterThan(0.05);
+    await expect.poll(() => ending.evaluate(element => Number.parseFloat(getComputedStyle(element).opacity))).toBeLessThan(0.99);
+    const requestsAtSkip = [...protectedPosts];
+    await page.evaluate(() => {
+      const probe = { active: true, frames: [] as Array<{ className: string; opacity: number; parentIsBody: boolean; zIndex: number }> };
+      (window as any).__endingSkipCoverProbe = probe;
+      const sample = () => {
+        if (!probe.active) return;
+        const cover = document.querySelector<HTMLElement>('.inception-cinematic-cover');
+        if (cover) probe.frames.push({ className: cover.className, opacity: Number.parseFloat(getComputedStyle(cover).opacity), parentIsBody: cover.parentElement === document.body, zIndex: Number.parseInt(getComputedStyle(cover).zIndex, 10) });
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    await ending.dblclick({ delay: 30 });
+    await expect.poll(() => videoHandle!.evaluate(element => (element as HTMLVideoElement).volume)).toBe(0);
+    expect(await videoHandle!.evaluate(element => ({ muted: (element as HTMLVideoElement).muted, volume: (element as HTMLVideoElement).volume }))).toMatchObject({ muted: true, volume: 0 });
+    await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.inception-success-ending, .inception-result, .inception-play')).toHaveCount(0);
+    const coverFrames = await page.evaluate(() => { const probe = (window as any).__endingSkipCoverProbe; probe.active = false; return probe.frames as Array<{ className: string; opacity: number; parentIsBody: boolean; zIndex: number }>; });
+    const skipFrames = coverFrames.filter(frame => frame.className.includes('ending-skip'));
+    expect(skipFrames.length).toBeGreaterThan(0);
+    expect(skipFrames.every(frame => frame.parentIsBody)).toBeTruthy();
+    expect(skipFrames.every(frame => frame.zIndex > 2147483001)).toBeTruthy();
+    expect(protectedPosts).toEqual(requestsAtSkip);
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible();
+    await expect(page.locator('.inception-result, .inception-play')).toHaveCount(0);
+  });
+
   test('intro skip starts one round; inspection, conversation and review keep the saved state honest', async ({ page }) => {
     test.setTimeout(120000);
     await signInOwner(page.request);
@@ -601,13 +714,18 @@ test.describe('Inception strongroom', () => {
       if (Number.isFinite(video.duration) && video.duration > 0) video.currentTime = video.duration;
       video.dispatchEvent(new Event('ended', { bubbles: true }));
     });
-    await page.waitForFunction(() => Boolean(document.querySelector('.inception-cinematic-cover.return-reveal') && document.querySelector('.inception-entry-poster')));
+    await page.waitForFunction(() => Boolean(document.querySelector('.inception-cinematic-cover.return-black') && document.querySelector('.inception-entry-poster')));
     const returnedPoster = page.locator('.inception-entry-poster');
     await expect(returnedPoster).toBeDisabled();
+    await expect(returnedPoster).toHaveCSS('opacity', '1');
+    await page.waitForFunction(() => Boolean(document.querySelector('.inception-cinematic-cover.return-reveal') && document.querySelector('.inception-entry-poster')));
+    await expect(returnedPoster).toBeDisabled();
+    await expect(returnedPoster).toHaveCSS('opacity', '1');
     await page.keyboard.press('Enter');
     await expect(returnedPoster).toBeDisabled();
     await expect(page.locator('.inception-intro-video')).toHaveCount(0);
     await expect(returnedPoster).toBeEnabled({ timeout: 2000 });
+    await expect(returnedPoster).toHaveCSS('opacity', '1');
     await page.keyboard.press('Escape');
     await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible();
     await page.goto('/inception');
