@@ -22,6 +22,46 @@ async function startFreshAttempt(page: import('@playwright/test').Page, skipAppr
   if (skipApproach) await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/);
 }
 
+async function expectCaptionCenteredInEncodedBar(page: import('@playwright/test').Page, videoSelector: string, captionSelector = '.inception-film-caption') {
+  const values = await page.evaluate(({ videoSelector, captionSelector }) => {
+    const video = document.querySelector<HTMLVideoElement>(videoSelector)!;
+    const caption = document.querySelector<HTMLElement>(captionSelector)!;
+    const bands = caption.closest<HTMLElement>('.inception-film-caption-bands')!;
+    const rect = video.getBoundingClientRect(), captionRect = caption.getBoundingClientRect(), bandsRect = bands.getBoundingClientRect();
+    const width = video.videoWidth || 1920, height = video.videoHeight || 1080;
+    const scale = Math.min(rect.width / width, rect.height / height);
+    const drawnWidth = width * scale, drawnHeight = height * scale;
+    const left = rect.left + (rect.width - drawnWidth) / 2, top = rect.top + (rect.height - drawnHeight) / 2;
+    return {
+      text: caption.textContent?.trim() || '',
+      captionCenterX: (captionRect.left + captionRect.right) / 2,
+      captionCenterY: (captionRect.top + captionRect.bottom) / 2,
+      expectedCenterX: left + drawnWidth / 2,
+      expectedCenterY: top + drawnHeight * (1010 / 1080),
+      lowerBarTop: top + drawnHeight * (940 / 1080),
+      encodedBottom: top + drawnHeight,
+      captionTop: captionRect.top,
+      captionBottom: captionRect.bottom,
+      bandsLeft: bandsRect.left,
+      expectedBandsLeft: left,
+      bandsWidth: bandsRect.width,
+      expectedBandsWidth: drawnWidth,
+      fontSize: Number.parseFloat(getComputedStyle(caption).fontSize),
+      bandHeight: drawnHeight * (140 / 1080),
+    };
+  }, { videoSelector, captionSelector });
+  expect(values.text).not.toBe('');
+  expect(Math.abs(values.captionCenterX - values.expectedCenterX)).toBeLessThan(2);
+  expect(Math.abs(values.captionCenterY - values.expectedCenterY)).toBeLessThan(2);
+  expect(Math.abs(values.bandsLeft - values.expectedBandsLeft)).toBeLessThan(2);
+  expect(Math.abs(values.bandsWidth - values.expectedBandsWidth)).toBeLessThan(2);
+  expect(values.captionTop).toBeGreaterThanOrEqual(values.lowerBarTop - 1);
+  expect(values.captionBottom).toBeLessThanOrEqual(values.encodedBottom + 1);
+  expect(values.fontSize).toBeGreaterThanOrEqual(8);
+  expect(values.fontSize).toBeLessThanOrEqual(Math.min(30, values.bandHeight * .4) + .1);
+  return values.text;
+}
+
 test.describe('Inception strongroom', () => {
   test.use({ baseURL: 'http://127.0.0.1:4323' });
 
@@ -413,6 +453,21 @@ test.describe('Inception strongroom', () => {
     await expect(page.locator('.inception-success-ending')).toBeVisible();
     expect(await page.locator('.inception-success-ending source').getAttribute('src')).toBe(successManifest.successVideo);
     await expect.poll(async () => (await page.locator('.inception-success-ending video').evaluate(video => (video as HTMLVideoElement).currentTime)) > 0.1 || (await page.getByRole('button', { name: /Play ending/ }).count()) > 0, { timeout: 8000 }).toBe(true);
+    const successCaption = page.locator('.inception-success-ending .inception-film-caption');
+    await expect(successCaption).toHaveText('The safe opens.');
+    await page.locator('.inception-success-ending video').evaluate(video => (video as HTMLVideoElement).pause());
+    for (const viewport of [{ width: 1920, height: 1080 }, { width: 1440, height: 900 }, { width: 390, height: 600 }, { width: 844, height: 390 }]) {
+      await page.setViewportSize(viewport);
+      await page.waitForTimeout(80);
+      expect(await expectCaptionCenteredInEncodedBar(page, '.inception-success-ending video')).toBe('The safe opens.');
+    }
+    await page.setViewportSize({ width: 320, height: 600 });
+    await page.locator('.inception-success-ending video').evaluate(video => { (video as HTMLVideoElement).currentTime = 20.2; });
+    await expect(successCaption).toHaveText('Fischer understands what his father wanted him to know.');
+    const endingFit = await successCaption.evaluate(element => ({ height: element.clientHeight, contentHeight: element.scrollHeight }));
+    expect(endingFit.contentHeight).toBeLessThanOrEqual(endingFit.height + 1);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.waitForTimeout(80);
     await page.waitForTimeout(750);
     await page.screenshot({ path: join(snapshotDirectory, 'inception-success-ending-desktop.png') });
     const requestsAtWin = protectedActions.length;
@@ -518,6 +573,33 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled({ timeout: 10000 });
     expect(starts).toBe(1);
+  });
+
+  test('intro captions follow the encoded lower bar across desktop, portrait phone and landscape', async ({ page }) => {
+    await page.addInitScript(() => { Element.prototype.requestFullscreen = async function () { throw new Error('fullscreen denied by fixture'); }; });
+    await signInOwner(page.request);
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.goto('/inception');
+    await expect(page.locator('.inception-root')).toBeVisible();
+    await startFreshAttempt(page, false);
+    const caption = page.locator('.inception-intro .inception-film-caption');
+    await expect(caption).toHaveText('You are Eames.');
+    await page.locator('.inception-intro-video').evaluate(video => (video as HTMLVideoElement).pause());
+    const snapshotDirectory = join(process.cwd(), 'work', 'inception-production', 'acceptance-screenshots');
+    mkdirSync(snapshotDirectory, { recursive: true });
+    for (const viewport of [{ width: 1920, height: 1080 }, { width: 1440, height: 900 }, { width: 390, height: 600 }, { width: 844, height: 390 }]) {
+      await page.setViewportSize(viewport);
+      await page.waitForTimeout(80);
+      expect(await expectCaptionCenteredInEncodedBar(page, '.inception-intro-video')).toBe('You are Eames.');
+      if (viewport.width === 390) await page.screenshot({ path: join(snapshotDirectory, 'inception-intro-caption-phone-390x600.png') });
+    }
+    await page.setViewportSize({ width: 320, height: 600 });
+    await page.locator('.inception-intro-video').evaluate(video => { (video as HTMLVideoElement).currentTime = 12.2; });
+    await expect(caption).toHaveText('In this encounter, he cannot remember the combination.');
+    const introFit = await caption.evaluate(element => ({ height: element.clientHeight, contentHeight: element.scrollHeight }));
+    expect(introFit.contentHeight).toBeLessThanOrEqual(introFit.height + 1);
+    await page.keyboard.press('Escape');
+    await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
   });
 
   test('a failed intro shows recovery controls and can be retried or continued', async ({ page }) => {

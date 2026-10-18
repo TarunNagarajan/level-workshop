@@ -23,6 +23,24 @@ const soundStorage = 'workshop-inception-sound';
 const DEFAULT_INTRO_DURATION_SECONDS = 25;
 const defaultSound = { muted: false, volume: 0.45 };
 const parseSound = () => { try { return { ...defaultSound, ...JSON.parse(localStorage.getItem(soundStorage) || '{}') }; } catch { return defaultSound; } };
+const getFilmCaptionText = (track: TextTrack | null | undefined) => Array.from(track?.activeCues || [])
+  .map(cue => (cue as VTTCue).text.trim()).filter(Boolean).join('\n');
+const getFilmCaptionLayout = (video: HTMLVideoElement | null): CSSProperties | null => {
+  if (!video) return null;
+  const rect = video.getBoundingClientRect();
+  const width = video.videoWidth || 1920, height = video.videoHeight || 1080;
+  if (!rect.width || !rect.height) return null;
+  const scale = Math.min(rect.width / width, rect.height / height);
+  const drawnWidth = width * scale, drawnHeight = height * scale;
+  const left = rect.left + (rect.width - drawnWidth) / 2;
+  const top = rect.top + (rect.height - drawnHeight) / 2;
+  const lowerBandHeight = drawnHeight * (140 / 1080);
+  return {
+    left: `${left}px`, top: `${top}px`, width: `${drawnWidth}px`, height: `${drawnHeight}px`,
+    '--caption-band-height': `${lowerBandHeight}px`,
+    '--film-caption-size': `${Math.min(30, Math.max(8, lowerBandHeight * 0.4))}px`,
+  } as CSSProperties;
+};
 
 export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const [config, setConfig] = useState<Configuration | null>(null);
@@ -55,7 +73,10 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const [successEnding, setSuccessEnding] = useState<'playing' | 'blocked' | 'error' | 'closing' | null>(null);
   const [successEndingAttempt, setSuccessEndingAttempt] = useState(0);
   const [successEndingError, setSuccessEndingError] = useState('');
-  const [successCaptionsEnabled, setSuccessCaptionsEnabled] = useState(true);
+  const [introCaptionText, setIntroCaptionText] = useState('');
+  const [introCaptionLayout, setIntroCaptionLayout] = useState<CSSProperties | null>(null);
+  const [successCaptionText, setSuccessCaptionText] = useState('');
+  const [successCaptionLayout, setSuccessCaptionLayout] = useState<CSSProperties | null>(null);
   const [successTimeLeft, setSuccessTimeLeft] = useState(0);
   const [sound, setSound] = useState(parseSound);
   const [soundReady, setSoundReady] = useState(false);
@@ -76,6 +97,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const introVideoRef = useRef<HTMLVideoElement | null>(null);
   const successVideoRef = useRef<HTMLVideoElement | null>(null);
+  const introCaptionTrackRef = useRef<HTMLTrackElement | null>(null);
   const successCaptionTrackRef = useRef<HTMLTrackElement | null>(null);
   const successTitleRef = useRef<HTMLHeadingElement | null>(null);
   const cinematicTimerRef = useRef<number | null>(null);
@@ -148,7 +170,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     setActiveModal(null);
     autoEndedRoundRef.current = roundId;
     endingWasShownRef.current = true;
-    setSuccessEndingError(''); setSuccessCaptionsEnabled(true); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1); setSuccessEnding(null);
+    setSuccessEndingError(''); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1); setSuccessEnding(null);
     setCinematicPhase('entry'); setRevealedDigits(reducedMotion ? state.revealedCombination : '');
     if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current);
     if (reducedMotion) cinematicTimerRef.current = window.setTimeout(() => { setCinematicPhase('film'); setSuccessEnding('playing'); }, 450);
@@ -163,7 +185,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     if (!session || !manifest.successVideo || review?.status !== 'complete' || review.verdict !== 'recovered' || !session.state.safeOpened) return;
     setActiveModal(null);
     endingWasShownRef.current = true;
-    setSuccessEndingError(''); setSuccessCaptionsEnabled(true); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1); setCinematicPhase('film'); setSuccessEnding('playing');
+    setSuccessEndingError(''); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1); setCinematicPhase('film'); setSuccessEnding('playing');
   };
 
   useEffect(() => {
@@ -205,10 +227,73 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     video.muted = sound.muted;
   }, [sound.volume, sound.muted, successEnding]);
 
-  useEffect(() => {
-    const track = successCaptionTrackRef.current?.track;
-    if (track) track.mode = successCaptionsEnabled ? 'showing' : 'disabled';
-  }, [successCaptionsEnabled, successEnding]);
+  useLayoutEffect(() => {
+    const video = introVideoRef.current;
+    const trackElement = introCaptionTrackRef.current;
+    if (!intro || !video || !trackElement || !manifest.captions || introMediaIssue) {
+      setIntroCaptionText(''); setIntroCaptionLayout(null);
+      return;
+    }
+    const track = trackElement.track;
+    track.mode = 'hidden';
+    const syncText = () => setIntroCaptionText(getFilmCaptionText(track));
+    const syncLayout = () => setIntroCaptionLayout(getFilmCaptionLayout(video));
+    const refresh = () => { syncText(); syncLayout(); };
+    track.addEventListener('cuechange', syncText);
+    trackElement.addEventListener('load', refresh);
+    video.addEventListener('loadedmetadata', syncLayout);
+    video.addEventListener('timeupdate', syncText);
+    window.addEventListener('resize', syncLayout);
+    document.addEventListener('fullscreenchange', syncLayout);
+    const observer = new ResizeObserver(syncLayout);
+    observer.observe(video);
+    refresh();
+    return () => {
+      track.removeEventListener('cuechange', syncText);
+      trackElement.removeEventListener('load', refresh);
+      video.removeEventListener('loadedmetadata', syncLayout);
+      video.removeEventListener('timeupdate', syncText);
+      window.removeEventListener('resize', syncLayout);
+      document.removeEventListener('fullscreenchange', syncLayout);
+      observer.disconnect();
+      track.mode = 'disabled';
+      setIntroCaptionText(''); setIntroCaptionLayout(null);
+    };
+  }, [intro, introMediaAttempt, introMediaIssue, manifest.captions]);
+
+  useLayoutEffect(() => {
+    const video = successVideoRef.current;
+    const trackElement = successCaptionTrackRef.current;
+    if (successEnding !== 'playing' || !video || !trackElement || !manifest.successCaptions) {
+      setSuccessCaptionText(''); setSuccessCaptionLayout(null);
+      return;
+    }
+    const track = trackElement.track;
+    track.mode = 'hidden';
+    const syncText = () => setSuccessCaptionText(getFilmCaptionText(track));
+    const syncLayout = () => setSuccessCaptionLayout(getFilmCaptionLayout(video));
+    const refresh = () => { syncText(); syncLayout(); };
+    track.addEventListener('cuechange', syncText);
+    trackElement.addEventListener('load', refresh);
+    video.addEventListener('loadedmetadata', syncLayout);
+    video.addEventListener('timeupdate', syncText);
+    window.addEventListener('resize', syncLayout);
+    document.addEventListener('fullscreenchange', syncLayout);
+    const observer = new ResizeObserver(syncLayout);
+    observer.observe(video);
+    refresh();
+    return () => {
+      track.removeEventListener('cuechange', syncText);
+      trackElement.removeEventListener('load', refresh);
+      video.removeEventListener('loadedmetadata', syncLayout);
+      video.removeEventListener('timeupdate', syncText);
+      window.removeEventListener('resize', syncLayout);
+      document.removeEventListener('fullscreenchange', syncLayout);
+      observer.disconnect();
+      track.mode = 'disabled';
+      setSuccessCaptionText(''); setSuccessCaptionLayout(null);
+    };
+  }, [successEnding, successEndingAttempt, manifest.successCaptions]);
 
   useEffect(() => {
     if (successEnding) successTitleRef.current?.focus();
@@ -544,8 +629,9 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     <div className="inception-shade" aria-hidden="true" />
     {!session ? intro ? <section className="inception-intro" aria-label="Strongroom approach">
       {manifest.introVideo && !introMediaIssue ? <video ref={introVideoRef} key={`${manifest.introVideo}-${introMediaAttempt}`} className="inception-intro-video" autoPlay playsInline muted onTimeUpdate={event => { const video = event.currentTarget; setIntroTimeLeft(Math.max(0, Math.ceil(introDurationSeconds - video.currentTime))); introProgressRef.current = { at: Date.now(), time: video.currentTime }; }} onEnded={() => { setIntroTimeLeft(0); setFilmEnded(true); }} onError={() => setIntroMediaIssue('The approach could not play. Retry it or continue to the strongroom.')}>
-        <source src={manifest.introVideo} type="video/mp4" />{manifest.captions && <track kind="captions" src={manifest.captions} srcLang="en" label="English" default />}
+        <source src={manifest.introVideo} type="video/mp4" />{manifest.captions && <track ref={introCaptionTrackRef} kind="captions" src={manifest.captions} srcLang="en" label="English" />}
       </video> : manifest.bridgeVideo && !introMediaIssue ? <video key={`${manifest.bridgeVideo}-${filmEnded}`} className="inception-intro-video" autoPlay playsInline muted><source src={manifest.bridgeVideo} type="video/mp4" /></video> : <div className={`inception-intro-scene ${filmEnded ? 'handoff' : ''}`} style={(manifest.bridgeFrame || manifest.closedFrame) ? { backgroundImage: `url("${manifest.bridgeFrame || manifest.closedFrame}")` } : undefined}><p>THE DREAM IS BEGINNING TO SHIFT</p><div className="inception-intro-caption">Fischer is close. The safe is nearby.</div></div>}
+      {introCaptionLayout && <div className="inception-film-caption-bands" style={introCaptionLayout}>{introCaptionText && <span className="inception-film-caption" style={{ top: '93.5185%' }} aria-label="English captions" aria-live="polite">{introCaptionText}</span>}</div>}
       {introMediaIssue && <div className="inception-media-recovery" role="alert"><p>{introMediaIssue}</p><div><Button className="inception-quiet-button" disabled={busy} onClick={() => { introProgressRef.current = { at: Date.now(), time: 0 }; setIntroTimeLeft(introDurationSeconds); setIntroMediaIssue(''); setIntroMediaAttempt(value => value + 1); }}>Retry approach</Button><Button className="inception-quiet-button" disabled={busy} onClick={() => finishIntro(true)}>Continue</Button></div></div>}
       {pendingStart && !busy && <div className="inception-media-recovery" role="alert"><p>The start receipt could not be confirmed.</p><Button className="inception-quiet-button" onClick={() => void startRound(pendingStart.profileId, { clientStartId: pendingStart.clientStartId })}>Retry start</Button><Button className="inception-quiet-button" onClick={() => { setIntro(false); setFilmEnded(false); }}>Return to entry</Button></div>}
       {error && <p className="inception-inline-error" role="alert">{error}</p>}
@@ -604,8 +690,9 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
       </section></div>}
       {successEnding && <section className={`inception-success-ending ${successEnding === 'closing' ? 'is-closing' : ''}`} aria-label="Fischer's realization" aria-live="polite" inert={successEnding === 'closing' ? true : undefined}>
         <video ref={successVideoRef} key={`${manifest.successVideo}-${successEndingAttempt}`} className="inception-success-ending-video" playsInline preload="auto" muted={sound.muted} onTimeUpdate={event => setSuccessTimeLeft(Math.max(0, Math.ceil((manifest.successDurationSeconds || event.currentTarget.duration || 29) - event.currentTarget.currentTime)))} onEnded={() => { setSuccessEnding('closing'); setCinematicPhase(null); }} onError={() => { setSuccessEndingError('The ending video could not be played. Your saved result remains available.'); setSuccessEnding('error'); }}>
-          <source src={manifest.successVideo || undefined} type="video/mp4" />{manifest.successCaptions && <track ref={successCaptionTrackRef} kind="captions" src={manifest.successCaptions} srcLang="en" label="English scene captions" default={successCaptionsEnabled} />}
+          <source src={manifest.successVideo || undefined} type="video/mp4" />{manifest.successCaptions && <track ref={successCaptionTrackRef} kind="captions" src={manifest.successCaptions} srcLang="en" label="English scene captions" />}
         </video>
+        {successCaptionLayout && <div className="inception-film-caption-bands" style={successCaptionLayout}>{successCaptionText && <span className="inception-film-caption" style={{ top: '93.5185%' }} aria-label="English captions" aria-live="polite">{successCaptionText}</span>}</div>}
         <h2 ref={successTitleRef} tabIndex={-1} className="visually-hidden">Inside the strongroom</h2>
         {(successEnding === 'blocked' || successEnding === 'error') && <div className="inception-media-recovery" role={successEnding === 'error' ? 'alert' : 'status'}><p>{successEndingError || 'The ending could not start automatically.'}</p>{successEnding === 'blocked' && <Button className="inception-quiet-button" onClick={() => { setSuccessEndingError(''); setSuccessEndingAttempt(value => value + 1); setSuccessEnding('playing'); }}>Play ending</Button>}{successEnding === 'error' && <Button className="inception-quiet-button" onClick={() => { setSuccessEndingError(''); setSuccessEnding(null); setCinematicPhase(null); }}>Return to result</Button>}</div>}
       </section>}
