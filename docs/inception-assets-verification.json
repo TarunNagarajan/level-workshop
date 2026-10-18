@@ -84,6 +84,20 @@
     "sha256": "2ff86b1a03a49d40612210e6a31cfb575790027dc7906f2139345125d3d52ac4"
   },
   {
+    "file": "fischer-portrait-v2.webp",
+    "bytes": 8068,
+    "dimensions": "256x256",
+    "source": "door-source-60-150.mp4 at original film time 100 seconds, crop 560x140 800x800",
+    "sha256": "831d8ed8d4e319e015f4900b6e44dd116920e475af0a0eb0a8cac0fabcc96387"
+  },
+  {
+    "file": "strongroom-walnut-texture-v1.webp",
+    "bytes": 8180,
+    "dimensions": "300x1080",
+    "source": "strongroom-closed-v1.webp, crop 1150x450 75x270",
+    "sha256": "65b2f0752f9db17e4d98e9bf3b33ced87be246bfb2038530c8607c06d166b784"
+  },
+  {
     "file": "strongroom-success-v1.mp4",
     "bytes": 6647143,
     "durationSeconds": 29.17,

@@ -13,7 +13,7 @@ type InceptionState = { revision: number; safeInspected: boolean; roomInspected:
 type Session = { round: Round; state: InceptionState; profile: Profile };
 type Configuration = { title: string; profiles: Profile[]; defaultProfileId?: string; connected: boolean; recordingNoticeRequired?: boolean; recordingAccepted?: boolean; reviewEnabled?: boolean; actorScope: string; activeRoundId: string | null };
 type Review = { status: string; verdict?: string; reason?: string; evidence?: { replyId: string; quote: string }[]; retryable?: boolean; errorCode?: string };
-type MediaManifest = { closedFrame?: string | null; openFrame?: string | null; bridgeFrame?: string | null; bridgeVideo?: string | null; introVideo?: string | null; introDurationSeconds?: number; captions?: string | null; successVideo?: string | null; successCaptions?: string | null; successDurationSeconds?: number; approvedTrack?: string | null; roomTone?: string | null; portraits?: { eames?: string; fischer?: string } };
+type MediaManifest = { closedFrame?: string | null; openFrame?: string | null; dialogueTexture?: string | null; bridgeFrame?: string | null; bridgeVideo?: string | null; introVideo?: string | null; introDurationSeconds?: number; captions?: string | null; successVideo?: string | null; successCaptions?: string | null; successDurationSeconds?: number; approvedTrack?: string | null; roomTone?: string | null; portraits?: { eames?: string; fischer?: string } };
 type PendingSend = { id: string; content: string };
 
 const startStorage = 'workshop-inception-start-intent';
@@ -55,7 +55,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const [introMediaIssue, setIntroMediaIssue] = useState('');
   const [introMediaAttempt, setIntroMediaAttempt] = useState(0);
   const [cinematicHandoff, setCinematicHandoff] = useState(false);
-  const [cinematicPhase, setCinematicPhase] = useState<'checking' | 'entry' | 'film' | null>(null);
+  const [cinematicPhase, setCinematicPhase] = useState<'checking' | 'entry' | 'film' | 'closing' | null>(null);
   const [revealedDigits, setRevealedDigits] = useState('');
   const [lcdBounds, setLcdBounds] = useState<CSSProperties>({});
   const [retryCooldownUntil, setRetryCooldownUntil] = useState(0);
@@ -116,6 +116,18 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const remaining = session ? Math.max(0, Math.ceil((session.round.deadline - roundClock) / 1000)) : 300;
   const expired = Boolean(session && remaining <= 0 && !session.round.endedAt);
   const closed = Boolean(session?.round.endedAt) || expired;
+
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.style.height = 'auto';
+    const styles = window.getComputedStyle(input);
+    const minHeight = Number.parseFloat(styles.minHeight) || 62;
+    const maxHeight = Number.parseFloat(styles.maxHeight) || 160;
+    const nextHeight = Math.min(maxHeight, Math.max(minHeight, input.scrollHeight));
+    input.style.height = `${nextHeight}px`;
+    input.style.overflowY = input.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, [messageText, session?.round.id]);
 
   useEffect(() => {
     if (loading || !manifest.closedFrame) { setSafeBounds({}); return; }
@@ -478,7 +490,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
       if (activeModal) { setActiveModal(null); return; }
       if (intro && pendingStart) { event.preventDefault(); setIntro(false); setFilmEnded(false); return; }
       if (cinematicPhase === 'entry') return;
-      if (cinematicPhase === 'film') { event.preventDefault(); setSuccessEnding(null); setCinematicPhase(null); return; }
+      if (cinematicPhase === 'film' || cinematicPhase === 'closing') { event.preventDefault(); setSuccessEnding(null); setCinematicPhase(null); return; }
       if (intro) { event.preventDefault(); finishIntro(true); return; }
       if (session) { event.preventDefault(); void leave(); }
     };
@@ -625,7 +637,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   if (!config) return <main className="inception-loading"><p role="alert">{error || 'The strongroom is unavailable.'}</p><button onClick={onHome}>Return to workshop</button></main>;
   const activeProfile = session?.profile || config.profiles.find(item => item.id === selectedProfile) || config.profiles[0];
   const gameBackground = session?.state.safeOpened && cinematicPhase !== 'entry' ? manifest.openFrame : manifest.closedFrame;
-  return <main ref={rootRef} className={`inception-root ${fullscreen ? 'is-fullscreen' : ''} ${immersive ? 'is-immersive' : ''} ${reducedMotion ? 'reduced-motion' : ''}`} style={gameBackground ? { '--scene-art': `url("${gameBackground}")` } as CSSProperties : undefined}>
+  return <main ref={rootRef} className={`inception-root ${fullscreen ? 'is-fullscreen' : ''} ${immersive ? 'is-immersive' : ''} ${reducedMotion ? 'reduced-motion' : ''}`} style={{ ...(gameBackground ? { '--scene-art': `url("${gameBackground}")` } : {}), ...(manifest.dialogueTexture ? { '--dialogue-texture': `url("${manifest.dialogueTexture}")` } : {}) } as CSSProperties}>
     <div className="inception-shade" aria-hidden="true" />
     {!session ? intro ? <section className="inception-intro" aria-label="Strongroom approach">
       {manifest.introVideo && !introMediaIssue ? <video ref={introVideoRef} key={`${manifest.introVideo}-${introMediaAttempt}`} className="inception-intro-video" autoPlay playsInline muted onTimeUpdate={event => { const video = event.currentTarget; setIntroTimeLeft(Math.max(0, Math.ceil(introDurationSeconds - video.currentTime))); introProgressRef.current = { at: Date.now(), time: video.currentTime }; }} onEnded={() => { setIntroTimeLeft(0); setFilmEnded(true); }} onError={() => setIntroMediaIssue('The approach could not play. Retry it or continue to the strongroom.')}>
@@ -665,7 +677,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
             <div className="inception-composer-actions"><span className="inception-send-status" role="status">{sendStatus}{retrySeconds ? ` Try again in ${retrySeconds}s.` : ''}</span><div>{pendingSend ? <Button className="inception-secondary" disabled={busy} onClick={() => void send(true)}>Retry saved message</Button> : <Button className="inception-primary" disabled={closed || busy || !messageText.trim() || retrySeconds > 0} onClick={() => void send()}>Send<ArrowRight size={15} /></Button>}{!session.round.endedAt && !expired && <Button className="inception-secondary" disabled={busy || Boolean(pendingSend)} onClick={() => void finish()}>Finish and review</Button>}</div></div>
             {error && !expired && <p className="inception-inline-error" role="alert">{error}</p>}
           </div> : <p className="inception-conversation-saved" role="status">Conversation saved.</p>}
-          {(expired || session.round.endedAt) && !cinematicPhase && <div className="inception-result" role="status">
+          {(expired || session.round.endedAt) && !cinematicPhase && !successEnding && <div className="inception-result" role="status">
             <p className="inception-kicker">THE STRONGROOM</p>
             <div className="inception-result-copy">
               {!review ? <p>{session.round.endedAt ? 'Your conversation is saved. Its outcome is not yet verified.' : 'Time is up. Your saved conversation can be reviewed.'}</p>
@@ -689,7 +701,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
         {activeModal === 'safe' ? <><p className="inception-kicker">OBJECT INSPECTION</p><h2 id="inception-modal-title">{session.state.safeOpened ? 'Inside the strongroom safe' : 'The strongroom safe'}</h2>{session.state.safeOpened ? <div className="inception-open-interior" aria-label="Inside the open strongroom safe">{manifest.openFrame ? <img src={manifest.openFrame} alt="The open strongroom safe" /> : <p>The door is open. The mechanism is still.</p>}</div> : <><div className="inception-safe-zoom" role="img" aria-label="Close view of the compact green safe, brushed-metal keypad, and circular handle" style={manifest.closedFrame ? { backgroundImage: `url("${manifest.closedFrame}")` } : undefined} /><p className="inception-safe-detail">{session.state.safeInspected ? 'A compact safe is recessed in the dark-green bedside cabinet. Its brushed-steel face holds twelve rounded metal buttons, a small display, and a circular handle. No code is visible.' : 'A compact dark-green bedside safe with a brushed-metal face and circular handle.'}</p>{!session.state.safePresented && <Button className="inception-secondary" disabled={!session.state.safeInspected || busy || closed} onClick={() => void inspect('present_safe')}>Present safe to Fischer</Button>}</>}{busy && <p role="status">Saving inspection…</p>}</> : <><p className="inception-kicker">OBJECT INSPECTION</p><h2 id="inception-modal-title">The strongroom</h2><p>A quiet bedside cabinet stands by the bed. White bedlinen runs along the right edge of the frame; nothing else in view explains the combination.</p>{busy && <p role="status">Saving observation…</p>}</>}
       </section></div>}
       {successEnding && <section className={`inception-success-ending ${successEnding === 'closing' ? 'is-closing' : ''}`} aria-label="Fischer's realization" aria-live="polite" inert={successEnding === 'closing' ? true : undefined}>
-        <video ref={successVideoRef} key={`${manifest.successVideo}-${successEndingAttempt}`} className="inception-success-ending-video" playsInline preload="auto" muted={sound.muted} onTimeUpdate={event => setSuccessTimeLeft(Math.max(0, Math.ceil((manifest.successDurationSeconds || event.currentTarget.duration || 29) - event.currentTarget.currentTime)))} onEnded={() => { setSuccessEnding('closing'); setCinematicPhase(null); }} onError={() => { setSuccessEndingError('The ending video could not be played. Your saved result remains available.'); setSuccessEnding('error'); }}>
+        <video ref={successVideoRef} key={`${manifest.successVideo}-${successEndingAttempt}`} className="inception-success-ending-video" playsInline preload="auto" muted={sound.muted} onTimeUpdate={event => setSuccessTimeLeft(Math.max(0, Math.ceil((manifest.successDurationSeconds || event.currentTarget.duration || 29) - event.currentTarget.currentTime)))} onEnded={() => { setSuccessEnding('closing'); setCinematicPhase('closing'); }} onError={() => { setSuccessEndingError('The ending video could not be played. Your saved result remains available.'); setSuccessEnding('error'); }}>
           <source src={manifest.successVideo || undefined} type="video/mp4" />{manifest.successCaptions && <track ref={successCaptionTrackRef} kind="captions" src={manifest.successCaptions} srcLang="en" label="English scene captions" />}
         </video>
         {successCaptionLayout && <div className="inception-film-caption-bands" style={successCaptionLayout}>{successCaptionText && <span className="inception-film-caption" style={{ top: '93.5185%' }} aria-label="English captions" aria-live="polite">{successCaptionText}</span>}</div>}

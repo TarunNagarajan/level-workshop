@@ -245,6 +245,35 @@ test.describe('Inception strongroom', () => {
     allowResponse();
     await expect(transcript.locator('article')).toHaveCount(count + 2);
     await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThan(6);
+
+    const originalViewport = page.viewportSize()!;
+    for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+      await page.setViewportSize(viewport);
+      const rows = await transcript.locator('article').evaluateAll(elements => elements.map(element => {
+        const portrait = element.querySelector('img')!.getBoundingClientRect();
+        const text = element.querySelector('p')!.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return { portraitLeft: portrait.left, portraitWidth: portrait.width, textLeft: text.left, textWidth: text.width, display: style.display, background: style.backgroundColor, borderTop: style.borderTopWidth };
+      }));
+      expect(rows.length).toBeGreaterThan(2);
+      for (const row of rows) {
+        expect(row.display).toBe('grid');
+        expect(row.portraitWidth).toBe(38);
+        expect(row.background).toBe('rgba(0, 0, 0, 0)');
+        expect(row.borderTop).toBe('0px');
+        expect(row.portraitLeft).toBeCloseTo(rows[0].portraitLeft, 1);
+        expect(row.textLeft).toBeCloseTo(rows[0].textLeft, 1);
+        expect(row.textWidth).toBeCloseTo(rows[0].textWidth, 1);
+      }
+      expect(await page.locator('body').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    }
+    await page.setViewportSize(originalViewport);
+    await composer.fill(Array.from({ length: 12 }, (_, index) => `Long thought ${index + 1}`).join('\n'));
+    const expanded = await composer.evaluate(element => ({ height: element.getBoundingClientRect().height, max: Number.parseFloat(getComputedStyle(element).maxHeight), resize: getComputedStyle(element).resize, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }));
+    expect(expanded.resize).toBe('none');
+    expect(expanded.height).toBeLessThanOrEqual(expanded.max + 1);
+    expect(expanded.scrollHeight).toBeGreaterThan(expanded.clientHeight);
+    await composer.fill('');
   });
 
   test('an expired pending message recovers the same receipt and can still finish for review', async ({ page }) => {
@@ -472,10 +501,17 @@ test.describe('Inception strongroom', () => {
     await page.screenshot({ path: join(snapshotDirectory, 'inception-success-ending-desktop.png') });
     const requestsAtWin = protectedActions.length;
     await expect(page.locator('.inception-success-ending button, .inception-success-ending input, .inception-success-ending video[controls]')).toHaveCount(0);
-    await page.keyboard.press('Escape');
-    await expect(page.locator('.inception-success-ending')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Rewatch ending' })).toBeVisible();
-    await page.getByRole('button', { name: 'Rewatch ending' }).click();
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.locator('.inception-success-ending video').evaluate(video => video.dispatchEvent(new Event('ended')));
+    await expect(page.locator('.inception-success-ending')).toHaveClass(/is-closing/);
+    await expect(page.locator('.inception-result')).toHaveCount(0);
+    await page.waitForTimeout(120);
+    await expect(page.locator('.inception-success-ending')).toBeVisible();
+    await expect(page.locator('.inception-result')).toHaveCount(0);
+    await expect(page.locator('.inception-success-ending')).toHaveCount(0, { timeout: 2000 });
+    await expect(page.locator('.inception-result')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Rewatch ending/ })).toBeVisible();
+    await page.getByRole('button', { name: /Rewatch ending/ }).click();
     await expect(page.locator('.inception-success-ending')).toBeVisible();
     expect(protectedActions).toHaveLength(requestsAtWin);
     await page.keyboard.press('Escape');
@@ -486,7 +522,7 @@ test.describe('Inception strongroom', () => {
     await expect(page.locator('.inception-root')).toHaveClass(/is-immersive/);
     await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
     await expect(page.locator('.inception-success-ending')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Rewatch ending' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Rewatch ending/ })).toBeVisible();
 
     await page.screenshot({ path: join(snapshotDirectory, 'inception-open-desktop.png') });
     await page.getByRole('button', { name: 'Inspect the inside' }).click();
