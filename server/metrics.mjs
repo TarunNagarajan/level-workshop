@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { buildCompletionBody } from './model.mjs';
+import { buildCompletionBody, buildGeminiCompletionBody } from './model.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const now = () => Date.now();
@@ -23,7 +23,7 @@ export function createMetricsService({ store, enabled = false }) {
     if (!enabled) return completion(providerInput);
     const config = providerInput.config || {};
     let body;
-    try { body = buildCompletionBody(providerInput); } catch { body = null; }
+    try { body = config.providerId === 'google-gemini' ? buildGeminiCompletionBody(providerInput) : buildCompletionBody(providerInput); } catch { body = null; }
     const fingerprint = hash(JSON.stringify({ context: metricsContext, body }));
     const startedAt = now(), callId = randomUUID();
     const context = {

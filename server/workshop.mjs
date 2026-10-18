@@ -14,6 +14,7 @@ import { MACHINE_REVIEW_SYSTEM, MACHINE_REVIEW_PROTOCOL_VERSION, makeReviewPromp
 import { RIDDLE_DIARY_LEVEL_ID, RIDDLE_DIARY_SCENARIO_ID, addRiddleDiaryRoutes, diaryPromptContext, isRiddleDiaryData, publicDiaryProfile } from './riddle-diary.mjs';
 import { addMissionArchiveRoutes, isMissionRound } from './mission-archive.mjs';
 import { INCEPTION_ORGANIZER_RECORDING_POLICY, INCEPTION_SCENARIO_ID, addInceptionRoutes, inceptionPromptContext, isInceptionData, publicInceptionProfile } from './inception.mjs';
+import { inceptionProviderCapacity } from './inception-capacity.mjs';
 const scrypt = promisify(scryptCallback);
 const id = () => randomUUID();
 const token = () => randomBytes(32).toString('base64url');
@@ -34,7 +35,7 @@ async function verifyPassword(password, stored) {
     const actual = Buffer.from(await scrypt(password, salt, 64));
     return timingSafeEqual(actual, Buffer.from(expected, 'hex'));
 }
-export function createWorkshop({ store, provider = modelConfig(), completion = complete, ownerKey = '', sharingKey = '', rootEntry = false, secureCookies = false, publicOrigin = '', researchWorlds = false, researchWorldId = '', metricsEnabled = false, metricsSessionCreationLimit = 120, passportReviewEnabled = false, passportScenarioRotation = true, recordingNoticeRequired = false } = {}) {
+export function createWorkshop({ store, provider = modelConfig(), completion = complete, ownerKey = '', sharingKey = '', rootEntry = false, secureCookies = false, publicOrigin = '', researchWorlds = false, researchWorldId = '', metricsEnabled = false, metricsSessionCreationLimit = 120, passportReviewEnabled = false, passportScenarioRotation = true, recordingNoticeRequired = false, env = process.env } = {}) {
     if (!store)
         throw new Error('A persistent store is required.');
     const cookieOptions = { httpOnly: true, sameSite: 'strict', path: '/', secure: secureCookies, maxAge: 30 * 86400000 };
@@ -78,6 +79,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     };
     const admin = (req, res, next) => req.user?.role === 'admin' ? next() : res.status(403).json({ error: 'Only the workspace owner can do this.' });
     const metrics = createMetricsService({ store, enabled: metricsEnabled });
+    const inceptionCapacity = inceptionProviderCapacity({ store, primary: provider, env });
     const journal = createSubmissionJournal(store);
     const recordingAccepted = async userId => Boolean(userId && await get('SELECT user_id FROM user_recording_acknowledgements WHERE user_id = ? AND version = ?', userId, RECORDING_NOTICE_VERSION));
     const requireRecording = async (req, round = null, organizerStart = false) => {
@@ -91,6 +93,19 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
       fail(428, round ? 'Accept the recording notice for this test before submitting a question.' : 'Acknowledge the recording notice before submitting model questions.');
     };
     const instrumentedCompletion = input => metrics.recordCompletion(completion, input);
+    const inceptionCompletion = async input => {
+      const inceptionCall = input.metricsContext?.source === 'inception-play';
+      if (!inceptionCall) return instrumentedCompletion(input);
+      const providerId = input.config?.providerId || 'groq';
+      try {
+        const result = await instrumentedCompletion(input);
+        try { await inceptionCapacity.observe(providerId, { usage: result.usageDetails || { total: result.usage } }); } catch { /* Provider completion remains usable if telemetry storage is temporarily unavailable. */ }
+        return result;
+      } catch (error) {
+        try { await inceptionCapacity.observe(providerId, { error }); } catch { /* Capacity telemetry must not replace the provider failure. */ }
+        throw error;
+      }
+    };
     const owner = async (req, levelId) => {
         const row = await get('SELECT * FROM levels WHERE id = ?', levelId);
         if (!row)
@@ -628,8 +643,8 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         try { return await action(await accessRound(req), lease); }
         finally { await run('DELETE FROM round_locks WHERE round_id = ? AND token = ?', initial.id, lease); }
     };
-    addInceptionRoutes(app, { store, member, inceptionMember, provider, createRound, accessRound, withRoundLock, publicRound, requireRecording, recordingNoticeRequired, reviewEnabled: Boolean(passportReviewEnabled), completion: instrumentedCompletion, markCompletionSaved: metrics.markSaved });
-    const collectionModels = createCollectionModelServices({ store, provider, completion: instrumentedCompletion, metrics });
+    addInceptionRoutes(app, { store, member, inceptionMember, provider, capacity: inceptionCapacity, createRound, accessRound, withRoundLock, publicRound, requireRecording, recordingNoticeRequired, reviewEnabled: Boolean(passportReviewEnabled), completion: inceptionCompletion, markCompletionSaved: metrics.markSaved });
+    const collectionModels = createCollectionModelServices({ store, provider, completion: inceptionCompletion, metrics });
     app.post('/api/rounds/:id/messages', async (req, res) => {
       const authorized = await accessRound(req), content = z.string().trim().min(1).max(4000).parse(req.body.content);
       if (isPassportVersion(authorized.version_id)) fail(409, 'Continue this interview at the interactive reference desk.');
@@ -669,7 +684,8 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (!(await journal.claim(entry.id)).changes) fail(409, 'This request was already received and will not be sent twice.');
         const config = JSON.parse(row.config);
         const collectionSystem = await collectionModels.systemForRound(row);
-        if (!collectionSystem && config.baseUrl !== provider.baseUrl)
+        const inceptionConfig = inceptionMode ? inceptionCapacity.credentialsForFrozen(config) : null;
+        if (!inceptionMode && !collectionSystem && config.baseUrl !== provider.baseUrl)
             fail(409, 'The provider changed since this test started. Start a fresh test.');
             const playerMessage = { id: id(), role: 'user', content, createdAt: Date.now() };
             const data = JSON.parse(row.data);
@@ -694,7 +710,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             }
             const system = `${collectionSystem || compilePrompt(data)}${verifiedContext ? `\n\n${verifiedContext}` : ''}`;
             let requested;
-            try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user || (inceptionMode ? req.inceptionEntry?.actor : undefined), profileId: diaryProfileId || inceptionProfileId }); }
+            try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user || (inceptionMode ? req.inceptionEntry?.actor : undefined), profileId: diaryProfileId || inceptionProfileId, configOverride: inceptionConfig }); }
             catch (error) { await journal.fail(entry.id, error); error.submissionId = entry.id; throw error; }
             const { result, callId } = requested;
             const replyId = id();
@@ -857,7 +873,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const failureCode = publicFailureCodes.has(error.providerCode) ? error.providerCode : undefined;
         const retryAfterSeconds = publicRetryAfter(error.retryAfterSeconds);
         const rateLimitScope = publicRateLimitScopes.has(error.rateLimitScope) ? error.rateLimitScope : undefined;
-        res.status(status).json({ error: status === 500 ? 'The request could not be completed.' : error.message, ...(error.submissionId ? { submissionId: error.submissionId, submissionStatus: error.submissionStatus, receiptConfirmed: Boolean(error.receiptConfirmed), ...(error.transcriptSaved === undefined ? {} : { transcriptSaved: error.transcriptSaved }), ...(failureCode ? { failureCode } : {}), ...(retryAfterSeconds ? { retryAfterSeconds } : {}), ...(rateLimitScope ? { rateLimitScope } : {}) } : {}) });
+        res.status(status).json({ error: status === 500 ? 'The request could not be completed.' : error.message, ...(error.submissionId ? { submissionId: error.submissionId, submissionStatus: error.submissionStatus, receiptConfirmed: Boolean(error.receiptConfirmed), ...(error.transcriptSaved === undefined ? {} : { transcriptSaved: error.transcriptSaved }) } : {}), ...(failureCode ? { failureCode } : {}), ...(retryAfterSeconds ? { retryAfterSeconds } : {}), ...(rateLimitScope ? { rateLimitScope } : {}) });
     });
     return { app, store };
 }

@@ -401,3 +401,29 @@ export const inception_start_locks = sqliteTable('inception_start_locks', {
   actor_id: text('actor_id').primaryKey().references(() => users.id, { onDelete: 'restrict' }),
   serial: integer('serial').notNull().default(0),
 });
+
+export const inception_provider_health = sqliteTable('inception_provider_health', {
+  provider_id: text('provider_id').primaryKey(),
+  observed_at: integer('observed_at').notNull(),
+  last_success_at: integer('last_success_at'),
+  blocked_until: integer('blocked_until'),
+  last_error_code: text('last_error_code'),
+  daily_limit: integer('daily_limit'),
+  daily_used: integer('daily_used'),
+  daily_observed_at: integer('daily_observed_at'),
+  app_tokens_today: integer('app_tokens_today').notNull().default(0),
+  app_usage_day: text('app_usage_day'),
+  failed_calls_today: integer('failed_calls_today').notNull().default(0),
+  failed_calls_day: text('failed_calls_day'),
+  app_tokens_after_observation: integer('app_tokens_after_observation').notNull().default(0),
+  reserved_tokens: integer('reserved_tokens').notNull().default(0),
+});
+
+export const inception_provider_reservations = sqliteTable('inception_provider_reservations', {
+  reservation_id: text('reservation_id').primaryKey(),
+  provider_id: text('provider_id').notNull(),
+  tokens: integer('tokens').notNull(),
+  created_at: integer('created_at').notNull(),
+  expires_at: integer('expires_at').notNull(),
+  round_id: text('round_id').references(() => rounds.id, { onDelete: 'set null' }),
+});

@@ -1,3 +1,4 @@
 static/inception-assets/inception-wordmark-v1.svg text eol=lf
 static/inception-assets/inception-wordmark-red-v1.svg text eol=lf
-static/inception-assets/strongroom-intro-v5.vtt text eol=lf
+static/inception-assets/strongroom-intro-v5.vtt -text
+static/inception-assets/strongroom-success-v1.vtt -text
