@@ -31,6 +31,7 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const [pendingRound, setPendingRound] = useState<DiarySession | null>(null);
   const [bookPages, setBookPages] = useState<DiaryPageSegment[][]>([[]]);
   const [bookPageIndex, setBookPageIndex] = useState(0);
+  const [continuationFocus, setContinuationFocus] = useState<{ messageId: string; offset: number } | null>(null);
   const bookPageIndexRef = useRef(bookPageIndex);
   bookPageIndexRef.current = bookPageIndex;
   const [mobileBook, setMobileBook] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches);
@@ -227,10 +228,14 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
       const width = Math.max(80, activeScroll.clientWidth - horizontalPadding(activeScroll));
       const height = Math.max(0, activeScroll.clientHeight - verticalPadding(activeScroll));
       const next = paginateDiaryMessages(latestMessages, width, height, plainText);
-      // Resize and breakpoint changes can briefly collapse the flex scroll area. Keep the
-      // last measured book until a real page can fit content instead of printing one glyph
-      // per zero-height page while layout settles.
-      if (!next) return;
+      // A collapsed layout cannot produce meaningful page geometry. Hide segments measured
+      // for the previous viewport until the resized book can be paginated again.
+      if (!next) {
+        // Do not leave text measured for a larger page visible inside a collapsed
+        // viewport while the book settles after a resize or orientation change.
+        setBookPages(current => current.length === 1 && current[0].length === 0 ? current : [[]]);
+        return;
+      }
       setBookPages(current => sameBookPages(current, next) ? current : next);
       const anchor = readingAnchor.current;
       const messagesChanged = lastPaginatedMessages.current !== latestMessages;
@@ -274,7 +279,17 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     }
   }, [bookPageIndex, bookPages]);
 
-  function goToBookPage(target: number) {
+  useLayoutEffect(() => {
+    if (!continuationFocus) return;
+    const target = Array.from(bookRef.current?.querySelectorAll<HTMLElement>('.diary-entry[data-message-id]') || [])
+      .find(entry => entry.dataset.messageId === continuationFocus.messageId && Number(entry.dataset.offsetStart) === continuationFocus.offset);
+    if (!target) return;
+    setContinuationFocus(null);
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+  }, [bookPageIndex, bookPages, continuationFocus]);
+
+  function goToBookPage(target: number, anchorOverride?: { messageId: string; offset: number }) {
     const last = mobileBook ? bookPages.length - 1 : Math.floor((bookPages.length - 1) / 2) * 2;
     const next = Math.max(0, Math.min(last, target));
     manualPageSelection.current = true;
@@ -282,9 +297,16 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     if (replyNavigation && replyNavigation.roundId === session?.round.id) replyNavigation.navigatedAway = true;
     bringLatestAfterUpdate.current = false;
     const segment = bookPages[next]?.[0] || bookPages[next + 1]?.[0];
-    readingAnchor.current = segment ? { messageId: segment.message.id, offset: segment.start } : null;
+    readingAnchor.current = anchorOverride || (segment ? { messageId: segment.message.id, offset: segment.start } : null);
     setBookPageIndex(mobileBook ? next : Math.floor(next / 2) * 2);
     scrollRef.current?.scrollTo({ top: 0 }); rightScrollRef.current?.scrollTo({ top: 0 });
+  }
+
+  function continueMessage(messageId: string, offset: number) {
+    const target = bookPages.findIndex(page => page.some(segment => segment.message.id === messageId && segment.start === offset));
+    if (target < 0) return;
+    setContinuationFocus({ messageId, offset });
+    goToBookPage(target, { messageId, offset });
   }
 
   function latestBookPage() {
@@ -606,10 +628,17 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
     return segments.map((segment, index) => {
       const item = segment.message;
       const displayItem = item.role === 'assistant' ? { ...item, content: segment.text } : item;
-      return <article key={`${item.id}:${segment.start}`} className={`diary-entry ${item.role === 'user' ? 'from-reader' : 'from-diary'} ${item.opening ? 'diary-opening' : ''} ${segment.continued ? 'diary-entry-continuation' : ''}`} data-message-id={item.id} data-offset-start={segment.start} data-offset-end={segment.end}>
+      const continuationPage = segment.end < item.content.length
+        ? bookPages.findIndex(page => page.some(next => next.message.id === item.id && next.start === segment.end)) + 1
+        : 0;
+      return <article key={`${item.id}:${segment.start}`} tabIndex={-1} className={`diary-entry ${item.role === 'user' ? 'from-reader' : 'from-diary'} ${item.opening ? 'diary-opening' : ''} ${segment.continued ? 'diary-entry-continuation' : ''}`} data-message-id={item.id} data-offset-start={segment.start} data-offset-end={segment.end}>
         <div className="diary-entry-label"><span>{item.role === 'user' ? 'YOUR QUESTION' : item.opening ? 'FIRST ENTRY' : 'RIDDLE'}{segment.continued ? ' · CONTINUED' : ''}</span>{item.role === 'assistant' && !item.opening && <button className="diary-keep-button" aria-label={session?.state.keptReplyIds.includes(item.id) ? 'Remove reply from evidence tray' : 'Keep reply as evidence'} aria-pressed={session?.state.keptReplyIds.includes(item.id) || false} disabled={actionBusy || Boolean(session?.round.endedAt)} onClick={() => void runAction({ type: session?.state.keptReplyIds.includes(item.id) ? 'remove_kept_reply' : 'keep_reply', replyId: item.id })}>{session?.state.keptReplyIds.includes(item.id) ? <Check size={13} /> : <Feather size={13} />}</button>}</div>
         {item.role === 'assistant' ? displayReply(displayItem) : <p className={`diary-reader-text ${plainText ? 'diary-plain-text' : ''}`}>{segment.text}</p>}
-        {index === segments.length - 1 && <span className="diary-entry-rule" aria-hidden="true" />}
+        {continuationPage > 0
+          ? <button type="button" className="diary-entry-continuation-link" aria-label={`Continue ${item.role === 'assistant' ? 'reply' : 'question'} on page ${continuationPage}`} onClick={() => continueMessage(item.id, segment.end)}>
+              Continue {item.role === 'assistant' ? 'reply' : 'question'} <span aria-hidden="true">· page {continuationPage} ›</span>
+            </button>
+          : index === segments.length - 1 && <span className="diary-entry-rule" aria-hidden="true" />}
       </article>;
     });
   }
@@ -723,6 +752,10 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
               </div>}
             </section>
             {session.state.sceneVersion === 2 ? <img className="diary-pen-art diary-quill-art" src={`${ASSETS}/quill-ink-r2.webp`} alt="A quill and inkwell beside the diary" /> : <img className="diary-pen-art" src={`${ASSETS}/pen.webp`} alt="" />}
+            <nav className="diary-on-book-turns" aria-label="Turn diary pages">
+              <button type="button" onClick={() => goToBookPage(bookPageIndex - (mobileBook ? 1 : 2))} disabled={bookPageIndex === 0}><ChevronLeft size={13} />Previous</button>
+              <button type="button" onClick={() => goToBookPage(bookPageIndex + (mobileBook ? 1 : 2))} disabled={mobileBook ? bookPageIndex >= bookPages.length - 1 : bookPageIndex + 2 >= bookPages.length}>Next<ChevronRight size={13} /></button>
+            </nav>
           </> : <div className="diary-cover-prompt"><p className="eyebrow">A PRIVATE ACCOUNT</p><h2>Open to the first entry</h2><p>The saved account is here. Read it before deciding what to ask.</p><Button className="diary-paper-button" disabled={actionBusy} loading={actionBusy} onClick={() => void runAction({ type: 'open_diary' })}><BookOpen size={15} />Open the diary</Button></div>}
         </div>
         </div>
@@ -1074,7 +1107,18 @@ function measureDiaryEntry(probe: HTMLElement, message: Message, text: string, c
   } else { paragraph.className = `diary-reader-text ${plainText ? 'diary-plain-text' : ''}`; paragraph.textContent = text; }
   entry.append(paragraph);
   if (message.role === 'assistant' && !message.opening && latest && !plainText) { const skip = document.createElement('button'); skip.className = 'diary-skip-writing'; skip.textContent = 'Show entire reply'; entry.append(skip); }
-  const rule = document.createElement('span'); rule.className = 'diary-entry-rule'; entry.append(rule);
+  if (latest) { const rule = document.createElement('span'); rule.className = 'diary-entry-rule'; entry.append(rule); }
+  else {
+    const continuation = document.createElement('button');
+    continuation.type = 'button';
+    continuation.className = 'diary-entry-continuation-link';
+    continuation.append(`Continue ${message.role === 'assistant' ? 'reply' : 'question'} `);
+    const destination = document.createElement('span');
+    destination.setAttribute('aria-hidden', 'true');
+    destination.textContent = '· page 999 ›';
+    continuation.append(destination);
+    entry.append(continuation);
+  }
   probe.append(entry);
   const entryStyle = getComputedStyle(entry);
   const marginBottom = Number.parseFloat(entryStyle.marginBottom) || 0;
