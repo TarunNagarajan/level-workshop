@@ -21,9 +21,9 @@ test('diary page segments reflow within the paper and continue from the saved of
   const messages = [...opening, question, original];
   session.round.messages = messages;
   await page.route('**/api/diary/active', route => route.fulfill({ json: session }));
-  const modelRequests: string[] = [];
+  const replyPosts: string[] = [];
   page.on('request', request => {
-    if (request.method() === 'POST' && /\/rounds\/[^/]+\/(messages|review)$/.test(new URL(request.url()).pathname)) modelRequests.push(request.url());
+    if (request.method() === 'POST' && /\/rounds\/[^/]+\/messages$/.test(new URL(request.url()).pathname)) replyPosts.push(request.url());
   });
   await page.goto('/diary');
   await expect(page.getByLabel('Ask the diary')).toBeVisible();
@@ -36,32 +36,54 @@ test('diary page segments reflow within the paper and continue from the saved of
     { width: 390, height: 844 },
     { width: 390, height: 600 },
     { width: 844, height: 390 },
+    { width: 844, height: 530 },
   ]) {
     console.log(`Checking ${viewport.width}×${viewport.height}`);
     await page.setViewportSize(viewport);
     const navigation = page.getByRole('navigation', { name: 'Book pages' });
-    await navigation.getByRole('button', { name: 'First page', exact: true }).click();
+    const firstPage = navigation.getByRole('button', { name: 'First page', exact: true });
+    if (!(await firstPage.isDisabled())) await firstPage.click();
     const mobile = viewport.width <= 640;
+    const activeHeading = page.locator(mobile ? '.diary-page.mobile-page-current .diary-page-heading' : '.diary-page-left .diary-page-heading');
+    await activeHeading.scrollIntoViewIfNeeded();
     if (viewport.width === 844) {
-      await page.evaluate(() => window.scrollTo(0, 0));
-      const onBookNext = page.getByRole('navigation', { name: 'Turn diary pages' }).getByRole('button', { name: 'Next', exact: true });
+      await page.locator('.diary-page-left .diary-page-heading').scrollIntoViewIfNeeded();
+      const onBookNext = page.getByRole('navigation', { name: 'Turn diary spreads' }).getByRole('button', { name: 'Next spread', exact: true });
       const bounds = await onBookNext.boundingBox();
       expect(bounds).not.toBeNull();
       expect(bounds!.y).toBeGreaterThanOrEqual(0);
       expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
-      await onBookNext.click();
-      await expect(navigation.locator('span')).toHaveText(/^Pages 3[–-]4/);
-      await navigation.getByRole('button', { name: 'First page', exact: true }).click();
+      if (!(await onBookNext.isDisabled())) {
+        await onBookNext.click();
+        await expect(navigation.locator('span')).toHaveText(/^Pages 3[–-]4/);
+      }
+      if (!(await navigation.getByRole('button', { name: 'First page', exact: true }).isDisabled())) await navigation.getByRole('button', { name: 'First page', exact: true }).click();
+    }
+    if (viewport.width === 390 && viewport.height === 600 || viewport.width === 844 || viewport.width === 1440) {
+      const activePage = mobile ? '.diary-page.mobile-page-current' : '.diary-page-left';
+      const layout = await page.locator(activePage).evaluate(node => {
+        const heading = node.querySelector<HTMLElement>('.diary-page-heading')!;
+        const nav = heading.querySelector<HTMLElement>('.diary-on-book-turns')!;
+        const labels = [...heading.children].filter(child => child !== nav).map(child => child.getBoundingClientRect());
+        const buttons = [...nav.querySelectorAll('button')].map(button => button.getBoundingClientRect());
+        const firstEntry = [...node.querySelectorAll<HTMLElement>('.diary-entry')].find(entry => entry.getBoundingClientRect().height > 0)!;
+        const firstInk = firstEntry.querySelector<HTMLElement>('.diary-ink-text, .diary-reader-text')!.getBoundingClientRect();
+        return { labels: labels.map(rect => ({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })), buttons: buttons.map(rect => ({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })), firstInkTop: firstInk.top };
+      });
+      const headingHeights = await page.locator('.diary-page-heading').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
+      expect(Math.max(...headingHeights) - Math.min(...headingHeights)).toBeLessThanOrEqual(1);
+      expect(layout.buttons).toHaveLength(2);
+      for (const button of layout.buttons) {
+        for (const label of layout.labels) expect(button.right <= label.left || button.left >= label.right || button.bottom <= label.top || button.top >= label.bottom).toBeTruthy();
+        expect(button.bottom).toBeLessThanOrEqual(layout.firstInkTop + 1);
+      }
     }
     const selector = mobile ? '.diary-page.mobile-page-current .diary-entry' : '.diary-page .diary-entry';
     const all = new Map(messages.map(message => [message.id, [] as Array<{ start: number; end: number; text: string }> ]));
     let turns = 0;
     for (;;) {
       await expect(page.locator(selector).first()).toBeVisible();
-      const measurements = await page.locator(selector).evaluateAll(nodes => nodes.filter(node => {
-        const bounds = node.getBoundingClientRect();
-        return bounds.width > 0 && bounds.height > 0 && getComputedStyle(node).visibility !== 'hidden';
-      }).map(node => {
+      const measurements = await page.locator(selector).evaluateAll(nodes => nodes.filter(node => node.closest('.diary-page-scroll') && getComputedStyle(node).visibility !== 'hidden').map(node => {
         const paper = node.closest('.diary-page-scroll')!;
         const bounds = node.getBoundingClientRect();
         const paperBounds = paper.getBoundingClientRect();
@@ -107,7 +129,7 @@ test('diary page segments reflow within the paper and continue from the saved of
     if (viewport.width === 844) {
       const bookWidth = await page.locator('.diary-open-book').evaluate(node => node.getBoundingClientRect().width);
       expect(bookWidth).toBeGreaterThan(600);
-      await page.screenshot({ path: 'verification/diary-clipping-844x390.png', fullPage: false, animations: 'disabled' });
+      await page.screenshot({ path: `verification/diary-clipping-${viewport.width}x${viewport.height}.png`, fullPage: false, animations: 'disabled' });
     }
     await expect(page.getByLabel('Ask the diary')).toHaveValue('Keep this draft while reading.');
   }
@@ -188,5 +210,40 @@ test('diary page segments reflow within the paper and continue from the saved of
   await expect(page.locator(`.diary-page-right [data-message-id="${sourceId}"][data-offset-start="${nextOffset}"]`)).toBeVisible();
   await expect.poll(() => page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.offsetStart)).toBe(String(nextOffset));
   await expect(page.getByLabel('Ask the diary')).toHaveValue('Keep this draft while reading.');
-  expect(modelRequests).toEqual([]);
+  expect(replyPosts).toEqual([]);
+
+  await page.getByRole('button', { name: 'Handwritten view', exact: true }).click();
+  await page.getByRole('button', { name: 'Quick', exact: true }).click();
+  const animatedReply = {
+    id: 'clipping-animated-reply', role: 'assistant', opening: false,
+    content: `${'The handwriting remains inside the page while the diary reveals each part. '.repeat(48)}\n\nThe reply ends with a complete sentence.`, timestamp: Date.now(),
+  };
+  const submittedQuestion = { id: 'clipping-animated-question', role: 'user', opening: false, content: '[local mocked reply]', timestamp: Date.now() };
+  const mockedRound = { ...session.round, messages: [...messages, submittedQuestion, animatedReply] };
+  await page.route(url => url.pathname.endsWith('/messages'), route => route.fulfill({ status: 200, json: mockedRound }));
+  const mockedResponse = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/messages'));
+  await page.getByLabel('Ask the diary').fill('[local mocked reply]');
+  await page.getByLabel('Ask the diary').press('Enter');
+  await mockedResponse;
+  await expect(page.locator(`[data-message-id="${animatedReply.id}"] .is-writing`).first()).toBeVisible();
+  const skipReply = page.getByRole('button', { name: 'Show entire reply', exact: true });
+  await expect(skipReply).toHaveCount(1);
+  const animatedSegments = await page.locator(`.diary-page [data-message-id="${animatedReply.id}"]`).evaluateAll(nodes => nodes.filter(node => {
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && getComputedStyle(node.closest('.diary-page')!).visibility !== 'hidden';
+  }).map(node => {
+    const entry = node.getBoundingClientRect();
+    const paper = node.closest('.diary-page-scroll')!.getBoundingClientRect();
+    return { start: Number(node.getAttribute('data-offset-start')), end: Number(node.getAttribute('data-offset-end')), text: node.querySelector('.diary-ink-text')?.textContent ?? '', top: entry.top, bottom: entry.bottom, paperTop: paper.top, paperBottom: paper.bottom, hasCue: Boolean(node.querySelector('.diary-entry-continuation-link')) };
+  }));
+  expect(animatedSegments.length).toBeGreaterThan(0);
+  for (const segment of animatedSegments) {
+    expect(segment.text).toBe(animatedReply.content.slice(segment.start, segment.end));
+    expect(segment.top).toBeGreaterThanOrEqual(segment.paperTop - 2);
+    expect(segment.bottom).toBeLessThanOrEqual(segment.paperBottom + 2);
+  }
+  expect(animatedSegments.some(segment => segment.hasCue)).toBeTruthy();
+  await expect(skipReply).toHaveCount(0, { timeout: 8000 });
+  await expect(page.locator(`[data-message-id="${animatedReply.id}"] .diary-entry-continuation-link`).first()).toBeVisible();
+  expect(replyPosts).toEqual([`http://127.0.0.1:4398/api/rounds/${session.round.id}/messages`]);
 });
