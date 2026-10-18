@@ -392,7 +392,7 @@ async function openArchiveFromBrowser(generation, { resume = false } = {}) {
   stage.hidden = true; stage.setAttribute('aria-hidden', 'true'); $('#mission-film').hidden = true;
   if (resume && current && !current.endedAt) {
     archive.classList.remove('handoff-opening', 'handoff-expanded', 'handoff-connecting');
-    screens.archive.hidden = false; showScreen('archive'); renderState(); updateClock(); trackPhase('read_think', true);
+    screens.archive.hidden = false; showScreen('archive'); renderState(); startClock(); trackPhase('read_think', true);
     filmTransitionInFlight = false; setHandoffStage('game'); return;
   }
   archive.classList.add('handoff-connecting');

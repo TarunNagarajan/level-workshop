@@ -308,6 +308,8 @@ test('exiting an active archive leaves welcome actions usable and resumes the sa
   await mission.locator('#begin-no-film').click();
   await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'game', { timeout: 15000 });
   await expect(mission.locator('#terminal-input')).toBeEnabled();
+  const resumedClock = await mission.locator('#mission-clock').textContent();
+  await expect.poll(() => mission.locator('#mission-clock').textContent(), { timeout: 4000 }).not.toBe(resumedClock);
   expect(starts).toBe(0);
   await closeConversationFixture(page, round);
 });
