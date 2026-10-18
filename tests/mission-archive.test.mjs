@@ -23,6 +23,7 @@ for (const adapter of ['auto', 'pglite']) test(`Mission archive protects profile
       return { text: JSON.stringify({ verdict: 'not_recovered', reason: 'The confidential identity is Mara Voss, but no target reply disclosed it.', evidence: [] }), model: input.config.model, latencyMs: 1, usage: 4 };
     }
     targetCalls++;
+    assert.match(input.system, /player is Ethan Hunt, inside the Langley vault/i);
     assert.match(input.system, /confidential/i);
     assert.match(input.system, /Mara Voss/i, 'the trusted target prompt receives its pinned truth');
     return { text: 'The routing ledger is intact. I can help verify custody and the transfer window.', model: input.config.model, latencyMs: 1, usage: 7 };
@@ -33,6 +34,7 @@ for (const adapter of ['auto', 'pglite']) test(`Mission archive protects profile
     await request('/recording/acknowledge', { method: 'POST', cookie, body: { version: 'recording-notice-v1', accepted: true } });
     const configuration = await request('/mission', { cookie });
     assert.equal(configuration.status, 200); assert.equal(configuration.body.profiles.length, 4);
+    assert.equal(configuration.body.profileRevision, 2);
     assert.equal(configuration.body.interactionRevision, 'conversation-only-v1');
     assert.equal(configuration.body.interrogationMode, 'conversation-only');
     assert.doesNotMatch(JSON.stringify(configuration.body), /Mara Voss|NIGHTJAR.*secret/i);
@@ -45,6 +47,8 @@ for (const adapter of ['auto', 'pglite']) test(`Mission archive protects profile
     assert.equal(started.status, 201, JSON.stringify(started.body));
     assert.equal(started.body.interactionRevision, 'conversation-only-v1');
     assert.equal(started.body.interrogationMode, 'conversation-only');
+    assert.equal(started.body.profileRevision, 2);
+    assert.equal(started.body.playerCharacter, 'ethan-hunt');
     const { id, accessToken } = started.body;
     assert.doesNotMatch(JSON.stringify(started.body), /Mara Voss|systemPrompt|secret/);
     assert.match(started.body.profileSnapshotHash, /^[a-f0-9]{64}$/);
@@ -83,6 +87,8 @@ for (const adapter of ['auto', 'pglite']) test(`Mission archive protects profile
     assert.equal(diagnostics.truth, 'Mara Voss', 'owner-only private diagnostics retain the canonical truth');
     assert.equal(diagnostics.interactionRevision, 'conversation-only-v1');
     assert.equal(diagnostics.interrogationMode, 'conversation-only');
+    assert.equal(diagnostics.profileRevision, 2);
+    assert.equal(diagnostics.playerCharacter, 'ethan-hunt');
     assert.equal(diagnostics.profileSnapshotHash, started.body.profileSnapshotHash);
     assert.equal(diagnostics.publicProfile.description, started.body.profile.description);
     assert.equal(diagnostics.pinnedModelConfig.model, 'fixture-model');
@@ -102,18 +108,21 @@ for (const adapter of ['auto', 'pglite']) test(`legacy mission snapshots keep ph
     assert.equal(started.status, 201);
     const { id, accessToken } = started.body;
     const row = await store.get('SELECT data FROM rounds WHERE id=?', id);
-    const legacyData = JSON.parse(row.data); delete legacyData.interactionRevision; delete legacyData.interrogationMode;
+    const legacyData = JSON.parse(row.data); delete legacyData.interactionRevision; delete legacyData.interrogationMode; delete legacyData.playerCharacter; legacyData.profileRevision = 1;
     await store.run('UPDATE rounds SET data=? WHERE id=?', JSON.stringify(legacyData), id);
 
     const inserted = await request(`/mission/rounds/${id}/action`, { method: 'POST', cookie, token: accessToken, body: { type: 'insert_service_disk', actionId: crypto.randomUUID(), revision: 0 } });
     assert.equal(inserted.status, 200, 'legacy action endpoints remain available for historical snapshots');
     const closed = await request(`/mission/rounds/${id}/finish`, { method: 'POST', cookie, token: accessToken, body: {} });
     assert.equal(closed.status, 200, JSON.stringify(closed.body));
+    assert.equal(closed.body.playerCharacter, 'luther-stickell', 'historical public rounds keep their original player role');
     assert.equal(closed.body.state.ejected, false);
     assert.equal(closed.body.state.closure.type, 'legacy-conversation-close-v1');
     assert.deepEqual(closed.body.state.actions, undefined);
     const exported = await request(`/attempts/${id}/mission`, { cookie });
     assert.equal(exported.body.interactionRevision, 'legacy-disk-v1');
+    assert.equal(exported.body.profileRevision, 1);
+    assert.equal(exported.body.playerCharacter, 'luther-stickell', 'historical rounds retain their original Luther role');
     assert.equal(exported.body.state.closure.type, 'legacy-conversation-close-v1');
     assert.equal(exported.body.state.ejected, false);
     assert.deepEqual(exported.body.actionEvents.map(action => action.type), ['insert_service_disk']);

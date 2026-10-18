@@ -7,13 +7,15 @@
 import { createCrtRenderer } from './crt-renderer.js';
 const $ = selector => document.querySelector(selector);
 const root = $('#mission-root');
-const screens = { welcome: $('.welcome-screen'), film: $('#film-screen'), archive: $('#archive-screen'), result: $('#result-screen') };
+const screens = { welcome: $('.welcome-screen'), film: $('#film-screen'), successFilm: $('#success-film-screen'), archive: $('#archive-screen'), success: $('#success-screen'), result: $('#result-screen') };
 let actorNamespace = null;
 let sessionKey = null;
 let profileKey = null;
 let startKeyStorage = null;
 const draftKey = field => `${sessionKey}:${current?.id || 'new'}:draft:${field}`;
 const finishIntentKey = roundId => `${sessionKey}:${roundId}:finish-intent`;
+const successPlaybackKey = roundId => `${sessionKey}:${roundId}:success-playback`;
+const successFilmPositionKey = roundId => `${sessionKey}:${roundId}:success-film-position`;
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 let configuration = null;
 let current = null;
@@ -26,11 +28,16 @@ let preserveLatestDuringLayout = false;
 let currentRequest = null;
 let toastTimer = 0;
 let filmControlsTimer = 0;
+let successFilmWatchdog = 0;
 let replayingBrief = false;
 let finishInProgress = false;
 let finishPromise = null;
 let finishIntentRoundId = null;
 let filmTransitionInFlight = false;
+let successFilmStarting = false;
+let successFilmCompleted = false;
+let successFilmGeneration = 0;
+let missionMuted = false;
 let metricsSessionId = null;
 let metricsTabId = null;
 let metricsPageId = randomId();
@@ -169,10 +176,10 @@ function attachRound(round) {
   showScreen(finalizedReview ? 'result' : 'archive');
   renderMessages();
   renderState();
-  if (finalizedReview) showResult();
+  if (finalizedReview) showFinalizedRound();
   else startClock();
   if (currentRequest) void recoverPendingMessage();
-  if (current.state?.review?.status === 'pending') setTimeout(() => void reloadCurrent(), 2500);
+  if (current.state?.review?.status === 'pending') { preloadSuccessFilm(); setTimeout(() => void reloadCurrent(), 2500); }
   else if (current.state?.closedAt && !finalizedReview) setTimeout(() => void fileConversation(), 100);
   else if (finishIntentRoundId === current.id) setTimeout(() => void fileConversation(), 100);
 }
@@ -214,6 +221,7 @@ async function enterFilm() {
   screens.film.classList.remove('controls-dim');
   const video = $('#mission-film'), roomtone = $('#mission-roomtone');
   $('#film-message').hidden = true;
+  video.muted = missionMuted; roomtone.muted = missionMuted;
   let fullScreenRequest = Promise.resolve();
   if (document.fullscreenEnabled && !document.fullscreenElement) fullScreenRequest = root.requestFullscreen();
   else if (!document.fullscreenEnabled) root.classList.add('immersive');
@@ -250,6 +258,108 @@ async function finishFilm() {
     $('#film-message').hidden = false;
   }
 }
+function syncFilmMuteButtons() {
+  const intro = $('#mute-film'), ending = $('#mute-success-film');
+  if (intro) { intro.textContent = $('#mission-film').muted ? 'Unmute' : 'Mute'; intro.setAttribute('aria-pressed', String($('#mission-film').muted)); }
+  if (ending) { ending.textContent = $('#success-film').muted ? 'Unmute' : 'Mute'; ending.setAttribute('aria-pressed', String($('#success-film').muted)); }
+}
+function setFilmMuted(muted, persist = true) {
+  missionMuted = Boolean(muted);
+  $('#mission-film').muted = missionMuted; $('#mission-roomtone').muted = missionMuted; $('#success-film').muted = missionMuted;
+  if (persist && actorNamespace) localStorage.setItem(`mission-video-muted:${actorNamespace}`, missionMuted ? '1' : '0');
+  syncFilmMuteButtons();
+}
+function preloadSuccessFilm() {
+  const video = $('#success-film');
+  if (video.preload !== 'auto') { video.preload = 'auto'; video.load(); }
+}
+function showSuccessFilmError(message = 'The ending film could not play. You can retry, play it directly, or skip it.') {
+  if (screens.successFilm.hidden) return;
+  successFilmGeneration++; clearTimeout(successFilmWatchdog); $('#success-film').pause(); successFilmStarting = false;
+  $('#success-film-error').textContent = message;
+  $('#success-film-message').hidden = false;
+}
+async function playSuccessFilm({ replay = false, resume = false } = {}) {
+  if (!verifiedSuccess()) return showResult();
+  if (successFilmStarting) return;
+  const roundId = current.id, video = $('#success-film');
+  if (!replay && sessionStorage.getItem(successPlaybackKey(roundId)) === 'seen') return showSuccessCompletion();
+  const generation = ++successFilmGeneration;
+  successFilmCompleted = false; successFilmStarting = true;
+  screens.film.classList.remove('controls-dim');
+  $('#mission-film').pause(); $('#mission-roomtone').pause();
+  clearTimeout($('#mission-film').watchdog); clearTimeout($('#mission-film').bufferWatchdog);
+  showScreen('successFilm');
+  video.focus({ preventScroll: true });
+  $('#success-film-message').hidden = true;
+  sessionStorage.setItem(successPlaybackKey(roundId), 'playing');
+  if (video.error) video.load();
+  video.preload = 'auto'; video.muted = missionMuted;
+  if (video.readyState === 0) video.load();
+  const resumeAt = resume && !replay ? Number(sessionStorage.getItem(successFilmPositionKey(roundId)) || 0) : 0;
+  if (video.readyState >= 1) video.currentTime = Math.min(Math.max(0, resumeAt), Math.max(0, Number.isFinite(video.duration) ? video.duration - 0.1 : resumeAt));
+  else if (resumeAt > 0) {
+    await new Promise(resolve => {
+      const done = () => { video.removeEventListener('loadedmetadata', done); video.removeEventListener('error', done); resolve(); };
+      video.addEventListener('loadedmetadata', done, { once: true }); video.addEventListener('error', done, { once: true });
+      setTimeout(done, 2500);
+    });
+    if (video.readyState >= 1) video.currentTime = Math.min(resumeAt, Math.max(0, Number.isFinite(video.duration) ? video.duration - 0.1 : resumeAt));
+  } else video.currentTime = 0;
+  clearTimeout(successFilmWatchdog);
+  successFilmWatchdog = setTimeout(() => {
+    if (screens.successFilm.hidden) return;
+    if (video.readyState < 2 || video.paused) showSuccessFilmError('The ending film is taking too long to start. Retry, use Play, or skip the ending.');
+  }, 18000);
+  try {
+    await video.play();
+    if (generation !== successFilmGeneration || current?.id !== roundId || !verifiedSuccess()) return;
+  } catch (firstError) {
+    if (generation !== successFilmGeneration) return;
+    if (!missionMuted && current?.id === roundId) {
+      video.muted = true; syncFilmMuteButtons();
+      try {
+        await video.play();
+        if (generation !== successFilmGeneration || current?.id !== roundId || !verifiedSuccess()) return;
+        tell('The ending started muted. Use Unmute if you want sound.');
+      } catch { showSuccessFilmError(); }
+    } else showSuccessFilmError();
+  } finally { if (generation === successFilmGeneration) successFilmStarting = false; }
+}
+function completeSuccessFilm() {
+  if (!verifiedSuccess()) return showResult();
+  successFilmGeneration++;
+  clearTimeout(successFilmWatchdog);
+  $('#success-film').pause();
+  successFilmCompleted = true;
+  sessionStorage.setItem(successPlaybackKey(current.id), 'seen');
+  sessionStorage.removeItem(successFilmPositionKey(current.id));
+  showSuccessCompletion();
+}
+async function replaySuccessFilm() {
+  if (!current?.id) return;
+  try {
+    const saved = await api(`/mission/rounds/${current.id}`);
+    updateRound(saved);
+    if (!verifiedSuccess()) return showResult();
+    void playSuccessFilm({ replay: true });
+  } catch (error) { tell(`The saved review could not be checked: ${error.message}`); }
+}
+function retrySuccessFilm() {
+  const video = $('#success-film');
+  clearTimeout(successFilmWatchdog); video.pause(); video.preload = 'auto'; video.load();
+  void playSuccessFilm({ replay: true });
+}
+function toggleFilmMute(video) { setFilmMuted(!video.muted); }
+function stopMissionMedia() {
+  successFilmGeneration++;
+  clearTimeout(filmControlsTimer); clearTimeout(successFilmWatchdog);
+  for (const video of [$('#mission-film'), $('#success-film')]) {
+    clearTimeout(video.watchdog); clearTimeout(video.bufferWatchdog); video.pause();
+  }
+  $('#mission-roomtone').pause();
+  successFilmStarting = false;
+}
 function returnToWorkshop() {
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   root.classList.remove('immersive');
@@ -259,7 +369,7 @@ function enterResult(round) {
   current = round;
   showResult();
 }
-function roleName(message) { return message.role === 'assistant' ? (message.opening ? 'ARCHIVE SYSTEM' : 'ARCHIVE AI') : message.role === 'user' ? 'LUTHER' : 'SYSTEM'; }
+function roleName(message) { return message.role === 'assistant' ? (message.opening ? 'ARCHIVE SYSTEM' : 'ARCHIVE AI') : message.role === 'user' ? (current?.playerCharacter === 'ethan-hunt' ? 'ETHAN HUNT' : 'LUTHER') : 'SYSTEM'; }
 function scrollToLatestMessageStart(log = $('#terminal-log')) {
   if (!followLatest) return;
   const latest = log.querySelector('.message:last-child');
@@ -415,12 +525,13 @@ async function fileConversation() {
       if (current?.id !== filingRoundId) return false;
       if (currentRequest) throw new Error('The archive is processing a message. Check its receipt before filing.');
       void trackInteraction('finish');
+      preloadSuccessFilm();
       const filed = await api(`/mission/rounds/${filingRoundId}/finish`, { method: 'POST', body: {} });
       if (current?.id !== filingRoundId) return false;
       current = { ...current, ...filed, accessToken: current.accessToken };
       renderState();
       if (filed.state?.review?.status === 'pending') { showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); return true; }
-      if (filed.state?.review?.status === 'complete' || filed.state?.review?.status === 'unavailable') { clearFinishIntent(filingRoundId); showResult(); }
+      if (filed.state?.review?.status === 'complete' || filed.state?.review?.status === 'unavailable') { clearFinishIntent(filingRoundId); showFinalizedRound(); }
       return true;
     } catch (error) {
       if (current?.id === filingRoundId) {
@@ -428,7 +539,7 @@ async function fileConversation() {
           const saved = await api(`/mission/rounds/${filingRoundId}`);
           if (current?.id !== filingRoundId) return false;
           updateRound(saved);
-          if (saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') { clearFinishIntent(filingRoundId); showResult(); return true; }
+          if (saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') { clearFinishIntent(filingRoundId); showFinalizedRound(); return true; }
           if (saved.state?.review?.status === 'pending') { showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); return true; }
           if (saved.state?.closedAt) { showScreen('archive'); setStatus('The saved conversation is closed. Checking its review status…'); setTimeout(() => void fileConversation(), 2000); return true; }
         } catch { /* Keep the filing intent so reload can reconcile the saved round. */ }
@@ -455,7 +566,7 @@ async function reconcileFinishIntent(roundId) {
     const saved = await api(`/mission/rounds/${roundId}`);
     if (current?.id !== roundId) return;
     updateRound(saved);
-    if (saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') { clearFinishIntent(roundId); showResult(); return; }
+    if (saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') { clearFinishIntent(roundId); showFinalizedRound(); return; }
     if (saved.state?.review?.status === 'pending' || saved.state?.closedAt) { showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); return; }
     void fileConversation();
   } catch (error) {
@@ -464,15 +575,50 @@ async function reconcileFinishIntent(roundId) {
 }
 async function reloadCurrent() {
   if (!current) return;
-  try { const round = await api(`/mission/rounds/${current.id}`); updateRound(round); if (round.state?.review?.status === 'pending') setTimeout(() => void reloadCurrent(), 2500); else if (round.state?.review?.status === 'complete' || round.state?.review?.status === 'unavailable') showResult(); else if (round.state?.closedAt) void fileConversation(); }
+  try { const round = await api(`/mission/rounds/${current.id}`); updateRound(round); if (round.state?.review?.status === 'pending') setTimeout(() => void reloadCurrent(), 2500); else if (round.state?.review?.status === 'complete' || round.state?.review?.status === 'unavailable') showFinalizedRound(); else if (round.state?.closedAt) void fileConversation(); }
   catch (error) { tell(error.message); }
 }
+function verifiedSuccess(round = current) { return round?.state?.review?.status === 'complete' && round.state.review.verdict === 'recovered'; }
+function renderSavedTranscript(target) {
+  const transcript = $(target); transcript.replaceChildren();
+  for (const message of current?.messages || []) {
+    const row = document.createElement('div'); row.className = 'transcript-entry';
+    const role = document.createElement('strong'); role.textContent = roleName(message);
+    const body = document.createElement('span'); body.textContent = message.content;
+    row.append(role, body); transcript.append(row);
+  }
+}
+function showFinalizedRound() {
+  if (verifiedSuccess()) {
+    clearInterval(timerId);
+    const playback = sessionStorage.getItem(successPlaybackKey(current.id));
+    if (playback === 'seen') showSuccessCompletion();
+    else void playSuccessFilm({ resume: playback === 'playing' });
+    return;
+  }
+  showResult();
+}
+function showSuccessCompletion() {
+  if (!verifiedSuccess()) return showResult();
+  successFilmGeneration++;
+  clearInterval(timerId); clearTimeout(successFilmWatchdog);
+  const video = $('#success-film'); video.pause();
+  sessionStorage.setItem(successPlaybackKey(current.id), 'seen');
+  successFilmCompleted = true; successFilmStarting = false;
+  renderSavedTranscript('#success-transcript');
+  showScreen('success');
+  $('#success-title').focus({ preventScroll: true });
+}
 function showResult() {
+  if (verifiedSuccess()) return showFinalizedRound();
   clearInterval(timerId); showScreen('result');
   const review = current?.state?.review;
-  const title = { recovered: 'Identity recovered', partial: 'Partial recovery', not_recovered: 'Identity not recovered', uncertain: 'Recovery uncertain' };
-  $('#result-title').textContent = review?.status === 'complete' ? title[review.verdict] || 'Review filed' : 'Review unavailable';
-  $('#result-reason').textContent = review?.status === 'complete' ? review.reason : 'The full archive transcript and filed packet are saved. The automated review could not complete.';
+  const labels = { partial: 'Mission incomplete', not_recovered: 'Mission incomplete', uncertain: 'Review inconclusive' };
+  $('#result-title').textContent = review?.status === 'complete' ? labels[review.verdict] || 'Mission filed' : 'Mission filed';
+  $('#result-outcome').textContent = review?.status === 'complete'
+    ? 'The archive session is saved. The source identity was not verified in an eligible AI reply.'
+    : 'The archive session is saved, but its review could not finish. You can inspect the transcript or retry the review if available.';
+  $('#result-reason').textContent = review?.status === 'complete' ? review.reason : 'The automated review could not complete.';
   const evidence = $('#result-evidence'); evidence.replaceChildren();
   for (const item of review?.evidence || []) {
     const quote = document.createElement('blockquote'); quote.className = 'evidence-quote';
@@ -480,13 +626,7 @@ function showResult() {
     const body = document.createElement('span'); body.textContent = item.quote;
     quote.append(source, body); evidence.append(quote);
   }
-  const transcript = $('#result-transcript'); transcript.replaceChildren();
-  for (const message of current?.messages || []) {
-    const row = document.createElement('div'); row.className = 'transcript-entry';
-    const role = document.createElement('strong'); role.textContent = roleName(message);
-    const body = document.createElement('span'); body.textContent = message.content;
-    row.append(role, body); transcript.append(row);
-  }
+  renderSavedTranscript('#result-transcript');
   const retry = $('#retry-review'); retry.hidden = !(review?.status === 'unavailable' && review.retryable && review.attempts < 3);
 }
 async function retryReview() {
@@ -495,14 +635,20 @@ async function retryReview() {
     await api(`/mission/rounds/${current.id}/review/retry`, { method: 'POST', body: {} });
     const result = await api(`/mission/rounds/${current.id}/finish`, { method: 'POST', body: {} });
     current = { ...current, ...result, accessToken: current.accessToken };
-    if (result.state?.review?.status === 'pending') { showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); }
-    else if (result.state?.review?.status === 'complete' || result.state?.review?.status === 'unavailable') showResult();
-  } catch (error) { tell(error.message); }
+    if (result.state?.review?.status === 'pending') { preloadSuccessFilm(); showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); }
+    else if (result.state?.review?.status === 'complete' || result.state?.review?.status === 'unavailable') showFinalizedRound();
+  } catch (error) {
+    try {
+      const saved = await api(`/mission/rounds/${current.id}`); updateRound(saved);
+      if (saved.state?.review?.status === 'pending') { preloadSuccessFilm(); showScreen('archive'); setStatus('The saved conversation is under review…'); setTimeout(() => void reloadCurrent(), 2500); }
+      else if (saved.state?.review?.status === 'complete' || saved.state?.review?.status === 'unavailable') showFinalizedRound();
+      else tell(error.message);
+    } catch { tell(error.message); }
+  }
   finally { $('#retry-review').disabled = false; }
 }
 function exitArchive() {
-  clearInterval(timerId); $('#mission-film').pause();
-  $('#mission-roomtone').pause();
+  clearInterval(timerId); stopMissionMedia();
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   $('#mission-roomtone').pause();
   root.classList.remove('immersive');
@@ -510,6 +656,7 @@ function exitArchive() {
   showScreen('welcome');
 }
 function prepareNewAttempt() {
+  stopMissionMedia();
   if (current) sessionStorage.removeItem(`${sessionKey}:${current.id}:draft:terminal`);
   currentRequest = null; current = null; clearStartKey(); sessionStorage.removeItem(sessionKey); showScreen('welcome');
   $('#begin-no-film').disabled = !configuration?.connected; $('#watch-button').disabled = !configuration?.connected;
@@ -523,6 +670,7 @@ async function initialize() {
     if (!identity.user?.id) throw new Error('Sign in to continue to the archive.');
     actorNamespace = String(identity.user.id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
     if (!actorNamespace) throw new Error('The signed-in archive identity is unavailable.');
+    missionMuted = localStorage.getItem(`mission-video-muted:${actorNamespace}`) === '1'; syncFilmMuteButtons();
     sessionKey = `mission-archive-v1:${actorNamespace}:session`;
     profileKey = `mission-archive-v1:${actorNamespace}:profile`;
     startKeyStorage = `mission-archive-v1:${actorNamespace}:start-key`;
@@ -551,7 +699,34 @@ $('#mission-film').addEventListener('playing', () => { const video = $('#mission
 $('#retry-film').addEventListener('click', () => void enterFilm());
 $('#start-filmless').addEventListener('click', () => void startMission());
 $('#fullscreen-film').addEventListener('click', async () => { try { await root.requestFullscreen(); root.classList.remove('immersive'); } catch { root.classList.add('immersive'); } });
-$('#mute-film').addEventListener('click', () => { const mute = !$('#mission-film').muted; $('#mission-film').muted = mute; $('#mission-roomtone').muted = mute; $('#mute-film').textContent = mute ? 'Unmute' : 'Mute'; $('#mute-film').setAttribute('aria-pressed', String(mute)); });
+$('#mute-film').addEventListener('click', () => toggleFilmMute($('#mission-film')));
+$('#mute-success-film').addEventListener('click', () => toggleFilmMute($('#success-film')));
+$('#skip-success-film').addEventListener('click', completeSuccessFilm);
+$('#skip-success-film-fallback').addEventListener('click', completeSuccessFilm);
+$('#success-film').addEventListener('ended', completeSuccessFilm);
+$('#success-film').addEventListener('error', () => showSuccessFilmError());
+$('#success-film').addEventListener('waiting', () => {
+  clearTimeout(successFilmWatchdog);
+  successFilmWatchdog = setTimeout(() => showSuccessFilmError('The ending film stopped buffering. Retry, use Play, or skip the ending.'), 18000);
+});
+$('#success-film').addEventListener('stalled', () => {
+  clearTimeout(successFilmWatchdog);
+  successFilmWatchdog = setTimeout(() => showSuccessFilmError('The ending film stopped buffering. Retry, use Play, or skip the ending.'), 18000);
+});
+$('#success-film').addEventListener('playing', () => clearTimeout(successFilmWatchdog));
+$('#success-film').addEventListener('timeupdate', event => {
+  const video = event.currentTarget;
+  if (verifiedSuccess() && !successFilmCompleted && !video.paused) sessionStorage.setItem(successFilmPositionKey(current.id), String(video.currentTime));
+});
+$('#success-film').addEventListener('pause', () => { if (screens.successFilm.hidden || successFilmCompleted) return; });
+$('#play-success-film').addEventListener('click', () => { $('#success-film-message').hidden = true; void playSuccessFilm({ replay: true }); });
+$('#retry-success-film').addEventListener('click', retrySuccessFilm);
+$('#fullscreen-success-film').addEventListener('click', async () => { try { await root.requestFullscreen(); root.classList.remove('immersive'); } catch { root.classList.add('immersive'); } });
+$('#return-success-film').addEventListener('click', exitArchive);
+screens.successFilm.addEventListener('pointermove', () => { screens.successFilm.classList.remove('controls-dim'); dimFilmControlsSoon(); });
+$('#replay-success-film').addEventListener('click', () => void replaySuccessFilm());
+$('#success-new-attempt').addEventListener('click', prepareNewAttempt);
+$('#success-return-workshop').addEventListener('click', returnToWorkshop);
 $('#return-film').addEventListener('click', exitArchive);
 $('#fullscreen-game').addEventListener('click', async () => { try { await root.requestFullscreen(); root.classList.remove('immersive'); } catch { root.classList.add('immersive'); tell('Fullscreen is unavailable. The archive remains open in this window.'); } });
 $('#exit-game').addEventListener('click', exitArchive);
@@ -627,5 +802,15 @@ $('.crt-effect').addEventListener('keydown', event => {
   else if (event.key === 'Home') { event.preventDefault(); scrollCrtHistory(-Number.MAX_SAFE_INTEGER); }
   else if (event.key === 'End') { event.preventDefault(); scrollCrtHistory(Number.MAX_SAFE_INTEGER); }
 });
-window.addEventListener('pagehide', () => { clearInterval(timerId); void flushMissionMetrics('page_exit', true); const video = $('#mission-film'); video.pause(); $('#mission-roomtone').pause(); clearTimeout(video.watchdog); clearTimeout(video.bufferWatchdog); });
+window.addEventListener('pagehide', () => {
+  clearInterval(timerId); void flushMissionMetrics('page_exit', true);
+  const intro = $('#mission-film'), ending = $('#success-film');
+  if (!screens.successFilm.hidden && verifiedSuccess() && !ending.paused) sessionStorage.setItem(successFilmPositionKey(current.id), String(ending.currentTime));
+  intro.pause(); ending.pause(); $('#mission-roomtone').pause();
+  clearTimeout(intro.watchdog); clearTimeout(intro.bufferWatchdog); clearTimeout(successFilmWatchdog);
+});
+window.addEventListener('pageshow', event => {
+  if (!event.persisted || screens.successFilm.hidden || !verifiedSuccess()) return;
+  if (sessionStorage.getItem(successPlaybackKey(current.id)) === 'playing') void playSuccessFilm({ resume: true });
+});
 void initialize();
