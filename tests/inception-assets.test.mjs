@@ -20,7 +20,30 @@ test('Inception film and portrait manifest hashes match versioned assets while a
   assert.deepEqual(manifest.provenance.introVideo.sourceSegmentsSeconds, [[66.25, 68.65], [77.5, 79.5], [88.5, 91.5], [15.6, 26.2]]);
   assert.equal(manifest.provenance.successVideo.sha256, '8f387fdbcad3bffd9c1bee6666ed02f37d583966fb8ea70dd1d4cb1e0bea0bf8');
   assert.equal(manifest.provenance.successCaptions.sha256, 'd2d637e7a36ec244fb3ea4d1606ffa2b149bc5cba8051a33d2b89eb89d3dfb24');
+  assert.equal(manifest.endingWordmark, '/inception-assets/inception-wordmark-v1.svg');
+  const wordmark = await readFile(resolve(assets, 'inception-wordmark-v1.svg'));
+  assert.equal(digest(wordmark), manifest.provenance.endingWordmark.sha256);
+  assert.match(wordmark.toString('utf8'), /fill:#f4f3ef/);
+  assert.match(manifest.provenance.endingWordmark.source, /commons\.wikimedia\.org/);
   assert.doesNotMatch(JSON.stringify(manifest), /528491/);
+  assert.equal(manifest.creditsCue, '/inception-assets/strongroom-score-credits-v1.mp3');
+  assert.equal(manifest.provenance.musicCues.credits.looped, false);
+  assert.deepEqual(manifest.provenance.musicCues.credits.sourceSeconds, [120, 144.256]);
+  assert.equal(manifest.provenance.musicCues.cues.calm.durationSeconds, 32);
+  assert.equal(manifest.provenance.musicCues.cues.developing.durationSeconds, 36);
+  assert.equal(manifest.provenance.musicCues.cues.urgent.durationSeconds, 34);
+  for (const cue of Object.values(manifest.provenance.musicCues.cues)) {
+    assert.equal(cue.decodedSeconds, cue.durationSeconds, `${cue.path} decoded duration`);
+    assert.ok(cue.loopBoundaryJumpRatio < 2.5, `${cue.path} has a smooth decoded loop boundary`);
+    assert.ok(cue.loopEdgeRmsDifferenceDb < 4, `${cue.path} loop edges have comparable energy`);
+  }
+  for (const cue of [...Object.values(manifest.provenance.musicCues.cues), manifest.provenance.musicCues.credits]) {
+    assert.ok(cue.path.endsWith('.mp3'));
+    const audioBytes = await readFile(resolve(assets, cue.path.split('/').at(-1)));
+    assert.equal(audioBytes.length, cue.bytes, `${cue.path} byte count`);
+    assert.equal(digest(audioBytes), cue.sha256, `${cue.path} hash`);
+    assert.doesNotMatch(cue.path, /528491|Hans|Zimmer/i, 'public cue names reveal no protected title');
+  }
   for (const [name, path] of Object.entries(manifest.portraits)) {
     const provenance = manifest.provenance.portraits[name];
     assert.equal(digest(await readFile(resolve(assets, path.split('/').at(-1)))), provenance.sha256);

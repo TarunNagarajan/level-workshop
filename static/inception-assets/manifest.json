@@ -34,8 +34,16 @@
       "kind": "walnut-only material crop from the existing closed strongroom frame; no safe keypad, handle, or bed is included",
       "source": "strongroom-closed-v1.webp",
       "sourceSha256": "9eef7b9f19ea069a9a7d1f10cd3a4466b5e370a2953439b66fcd00c265f936f3",
-      "crop": [1150, 450, 75, 270],
-      "dimensions": [300, 1080],
+      "crop": [
+        1150,
+        450,
+        75,
+        270
+      ],
+      "dimensions": [
+        300,
+        1080
+      ],
       "quality": 92,
       "sha256": "65b2f0752f9db17e4d98e9bf3b33ced87be246bfb2038530c8607c06d166b784"
     },
@@ -49,7 +57,24 @@
       "durationSeconds": 25,
       "actualFilmExcerptSeconds": 18,
       "generatedBridgeSeconds": 7.6,
-      "sourceSegmentsSeconds": [[66.25, 68.65], [77.5, 79.5], [88.5, 91.5], [15.6, 26.2]],
+      "sourceSegmentsSeconds": [
+        [
+          66.25,
+          68.65
+        ],
+        [
+          77.5,
+          79.5
+        ],
+        [
+          88.5,
+          91.5
+        ],
+        [
+          15.6,
+          26.2
+        ]
+      ],
       "sourceDescription": "Existing film-first75.mp4 and cached door-source-60-150.mp4, source offsets converted to original film seconds",
       "sha256": "2403afb956d7ca412f33e4fe911afc8ac3602fe42d851c3928e69cd3d359093e"
     },
@@ -60,7 +85,10 @@
     },
     "successVideo": {
       "kind": "versioned win-only film ending; source audio retained; immutable after publication",
-      "sourceSeconds": [39.5, 68.65],
+      "sourceSeconds": [
+        39.5,
+        68.65
+      ],
       "durationSeconds": 29.17,
       "sha256": "8f387fdbcad3bffd9c1bee6666ed02f37d583966fb8ea70dd1d4cb1e0bea0bf8"
     },
@@ -73,8 +101,16 @@
       "kind": "square character portraits cropped from inspected source-film frames for conversation avatars",
       "eames": {
         "source": "film-first75.mp4 at 66.8 seconds",
-        "crop": [530, 140, 800, 800],
-        "dimensions": [256, 256],
+        "crop": [
+          530,
+          140,
+          800,
+          800
+        ],
+        "dimensions": [
+          256,
+          256
+        ],
         "sha256": "4464d24f00611a73c67939124aac906c6caee4c33788daee296c3547625ff031"
       },
       "fischer": {
@@ -82,17 +118,146 @@
         "sourceTimeSeconds": 100,
         "cacheWindowStartSeconds": 60,
         "cacheOffsetSeconds": 40,
-        "crop": [560, 140, 800, 800],
-        "dimensions": [256, 256],
+        "crop": [
+          560,
+          140,
+          800,
+          800
+        ],
+        "dimensions": [
+          256,
+          256
+        ],
         "quality": 92,
         "sha256": "831d8ed8d4e319e015f4900b6e44dd116920e475af0a0eb0a8cac0fabcc96387"
       },
       "fischerV1": {
         "source": "film-first75.mp4 at 45.5 seconds",
-        "crop": [330, 140, 800, 800],
-        "dimensions": [256, 256],
+        "crop": [
+          330,
+          140,
+          800,
+          800
+        ],
+        "dimensions": [
+          256,
+          256
+        ],
         "sha256": "2ff86b1a03a49d40612210e6a31cfb575790027dc7906f2139345125d3d52ac4"
       }
+    },
+    "musicCues": {
+      "kind": "versioned loop-ready edits of a user-supplied licensed score; licensing assertion supplied by the user and not independently verified",
+      "sourceDescription": "User-supplied latest download; no local path is published",
+      "sourceSha256": "64c6a8cde658e3ebac33b560ce82a832bd1ed3a6e44068894fade70a0c2c0975",
+      "sourceDurationSeconds": 144.29,
+      "decodedSourceDurationSeconds": 144.256,
+      "loopSeamSeconds": 2,
+      "crossfadeCurve": "sample-accurate equal-power two-second tail-to-head crossfade, followed by the uninterrupted middle; original tempo and pitch preserved",
+      "credits": {
+        "path": "/inception-assets/strongroom-score-credits-v1.mp3",
+        "sourceSeconds": [
+          120,
+          144.256
+        ],
+        "durationSeconds": 24.256,
+        "fadeInSeconds": 1.2,
+        "fadeOutSeconds": 6,
+        "bytes": 486284,
+        "sha256": "0c37dd27dde159bd934bd8df6a11b9c137735ba8ef6005520335c9477300e453",
+        "looped": false,
+        "decodedSeconds": 24.256,
+        "rmsDbfs": -21.27,
+        "peakDbfs": -7.23
+      },
+      "sampleRate": 48000,
+      "channels": 2,
+      "bitrate": "160 kbit/s MP3",
+      "cues": {
+        "calm": {
+          "path": "/inception-assets/strongroom-score-calm-v1.mp3",
+          "sourceSeconds": [
+            12,
+            46
+          ],
+          "durationSeconds": 32,
+          "bytes": 641324,
+          "sha256": "4045a517e55e4986d49803305efc74c358fbe659a4be21fc47b5b53f5206b1b2",
+          "decodedSeconds": 32,
+          "rmsDbfs": -29.81,
+          "peakDbfs": -14.45,
+          "loopBoundaryJump": 0.00045376,
+          "localDerivativeP99": 0.00473726,
+          "loopBoundaryJumpRatio": 0.096,
+          "loopEdgeRmsDbfs": [
+            -25.7,
+            -25.51
+          ],
+          "loopEdgeRmsDifferenceDb": 0.19
+        },
+        "developing": {
+          "path": "/inception-assets/strongroom-score-developing-v1.mp3",
+          "sourceSeconds": [
+            54,
+            92
+          ],
+          "durationSeconds": 36,
+          "bytes": 721004,
+          "sha256": "13dfe5945a031d93551f01c3e00c91461cfee05d4b1ddab6efc9e292c95c282f",
+          "decodedSeconds": 36,
+          "rmsDbfs": -24.55,
+          "peakDbfs": -8.34,
+          "loopBoundaryJump": 0.00063459,
+          "localDerivativeP99": 0.00946438,
+          "loopBoundaryJumpRatio": 0.067,
+          "loopEdgeRmsDbfs": [
+            -21.94,
+            -23.01
+          ],
+          "loopEdgeRmsDifferenceDb": 1.07
+        },
+        "urgent": {
+          "path": "/inception-assets/strongroom-score-urgent-v1.mp3",
+          "sourceSeconds": [
+            103,
+            139
+          ],
+          "durationSeconds": 34,
+          "bytes": 681164,
+          "sha256": "8ed86c324adfbe4de9885b850790b91b23fedc87f535fe4ffeee643f7083ed20",
+          "decodedSeconds": 34,
+          "rmsDbfs": -20.02,
+          "peakDbfs": -6.95,
+          "loopBoundaryJump": 0.00090847,
+          "localDerivativeP99": 0.00254175,
+          "loopBoundaryJumpRatio": 0.357,
+          "loopEdgeRmsDbfs": [
+            -31.02,
+            -29.57
+          ],
+          "loopEdgeRmsDifferenceDb": 1.45
+        }
+      }
+    },
+    "endingWordmark": {
+      "kind": "white recolor of the public-domain simple text logo sourced from Wikimedia Commons; source license category is public domain for simple text-logo artwork, with trademark caveat noted on the source page",
+      "source": "https://commons.wikimedia.org/wiki/File:Inception-wordmark.svg",
+      "author": "Know-World",
+      "sourceDate": "2011-01-25",
+      "sourceSha1": "954fb7372a7ec96e11876639c88c91cec6115968",
+      "dimensions": [
+        1130.6,
+        144.8
+      ],
+      "fill": "#f4f3ef",
+      "sha256": "069ae9505e1e9db8491cd5f62564740830bebc62298d2dac7acfaf66ba6fe5a2"
     }
-  }
+  },
+  "musicCues": {
+    "calm": "/inception-assets/strongroom-score-calm-v1.mp3",
+    "developing": "/inception-assets/strongroom-score-developing-v1.mp3",
+    "urgent": "/inception-assets/strongroom-score-urgent-v1.mp3"
+  },
+  "creditsCue": "/inception-assets/strongroom-score-credits-v1.mp3",
+  "endingWordmark": "/inception-assets/inception-wordmark-v1.svg"
 }
