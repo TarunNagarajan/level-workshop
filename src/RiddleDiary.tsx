@@ -34,6 +34,11 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const [continuationFocus, setContinuationFocus] = useState<{ messageId: string; offset: number } | null>(null);
   const bookPageIndexRef = useRef(bookPageIndex);
   bookPageIndexRef.current = bookPageIndex;
+  const paginationPagesRef = useRef(bookPages);
+  paginationPagesRef.current = bookPages;
+  const paginationInputRef = useRef<{ messages: Message[]; width: number; height: number; plainText: boolean; mobile: boolean; fontGeneration: number } | null>(null);
+  const paginationFontGeneration = useRef(0);
+  const paginationFontsReady = useRef(false);
   const [mobileBook, setMobileBook] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches);
   const [showConversation, setShowConversation] = useState(false);
   const readingAnchor = useRef<{ messageId: string; offset: number } | null>(null);
@@ -223,23 +228,50 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
   const displayedMobilePage = mobileBook ? bookPageIndex % 2 === 0 ? 'left' : 'right' : '';
   useLayoutEffect(() => {
     const book = bookRef.current, left = scrollRef.current, right = rightScrollRef.current;
-    if (!session?.state.diaryOpen || !book || !left || !right) { setBookPages([[]]); return; }
+    if (!session?.state.diaryOpen || !book || !left || !right) {
+      paginationInputRef.current = null;
+      paginationPagesRef.current = [[]];
+      setBookPages([[]]);
+      return;
+    }
     let active = true;
+    let frame = 0;
     const paginate = () => {
       if (!active) return;
-      const activeScroll = mobileBook && bookPageIndexRef.current % 2 === 0 ? left : mobileBook ? right : left;
+      const isMobile = window.matchMedia('(max-width: 640px)').matches;
+      if (isMobile !== mobileBook) setMobileBook(isMobile);
+      const activeScroll = isMobile && bookPageIndexRef.current % 2 === 1 ? right : left;
       const width = Math.max(80, activeScroll.clientWidth - horizontalPadding(activeScroll));
       const height = Math.max(0, activeScroll.clientHeight - verticalPadding(activeScroll));
+      if (!height) {
+        paginationInputRef.current = null;
+        paginationPagesRef.current = [[]];
+        setBookPages(current => current.length === 1 && current[0].length === 0 ? current : [[]]);
+        return;
+      }
+      const previous = paginationInputRef.current;
+      const sameInput = previous?.messages === latestMessages && previous.width === width && previous.height === height && previous.plainText === plainText && previous.mobile === isMobile && previous.fontGeneration === paginationFontGeneration.current;
+      if (sameInput) {
+        applyPaginationTarget(paginationPagesRef.current, isMobile);
+        return;
+      }
       const next = paginateDiaryMessages(latestMessages, width, height, plainText);
       // A collapsed layout cannot produce meaningful page geometry. Hide segments measured
       // for the previous viewport until the resized book can be paginated again.
       if (!next) {
         // Do not leave text measured for a larger page visible inside a collapsed
         // viewport while the book settles after a resize or orientation change.
+        paginationInputRef.current = null;
+        paginationPagesRef.current = [[]];
         setBookPages(current => current.length === 1 && current[0].length === 0 ? current : [[]]);
         return;
       }
+      paginationInputRef.current = { messages: latestMessages, width, height, plainText, mobile: isMobile, fontGeneration: paginationFontGeneration.current };
+      paginationPagesRef.current = next;
       setBookPages(current => sameBookPages(current, next) ? current : next);
+      applyPaginationTarget(next, isMobile);
+    };
+    const applyPaginationTarget = (next: DiaryPageSegment[][], isMobile: boolean) => {
       const anchor = readingAnchor.current;
       const messagesChanged = lastPaginatedMessages.current !== latestMessages;
       if (messagesChanged) lastPaginatedMessages.current = latestMessages;
@@ -252,22 +284,36 @@ export function RiddleDiary({ blindToken, canShare = false, onHome }: { blindTok
       }
       else if (anchor) target = next.findIndex(page => page.some(segment => segment.message.id === anchor.messageId && anchorFitsSegment(segment, anchor.offset)));
       if (target < 0) target = Math.min(bookPageIndexRef.current, next.length - 1);
-      if (mobileBook) setBookPageIndex(Math.max(0, target));
+      if (isMobile) setBookPageIndex(Math.max(0, target));
       else setBookPageIndex(Math.floor(Math.max(0, target) / 2) * 2);
       if (bringLatestAfterUpdate.current && messagesChanged && !manualPageSelection.current) bringLatestAfterUpdate.current = false;
     };
+    const schedulePagination = () => {
+      if (!active || frame) return;
+      frame = window.requestAnimationFrame(() => { frame = 0; paginate(); });
+    };
     const syncComposerReserve = () => {
-      if (composerRef.current) book.style.setProperty('--diary-composer-height', `${Math.ceil(composerRef.current.getBoundingClientRect().height)}px`);
-      else book.style.setProperty('--diary-composer-height', '0px');
-      paginate();
+      const reserve = composerRef.current ? `${Math.ceil(composerRef.current.getBoundingClientRect().height)}px` : '0px';
+      if (book.style.getPropertyValue('--diary-composer-height') !== reserve) book.style.setProperty('--diary-composer-height', reserve);
+      schedulePagination();
+    };
+    const fontsLoaded = () => {
+      paginationFontGeneration.current += 1;
+      schedulePagination();
     };
     const observer = new ResizeObserver(syncComposerReserve);
     observer.observe(book); observer.observe(left); observer.observe(right);
     if (composerRef.current) observer.observe(composerRef.current);
-    window.addEventListener('resize', paginate);
-    void document.fonts.ready.then(paginate);
+    window.addEventListener('resize', syncComposerReserve);
+    document.fonts.addEventListener('loadingdone', fontsLoaded);
+    void document.fonts.ready.then(() => {
+      if (!active || paginationFontsReady.current) return;
+      paginationFontsReady.current = true;
+      paginationFontGeneration.current += 1;
+      schedulePagination();
+    });
     syncComposerReserve();
-    return () => { active = false; observer.disconnect(); window.removeEventListener('resize', paginate); };
+    return () => { active = false; observer.disconnect(); window.removeEventListener('resize', syncComposerReserve); document.fonts.removeEventListener('loadingdone', fontsLoaded); if (frame) window.cancelAnimationFrame(frame); };
   }, [session?.round.id, session?.round.messages, session?.round.endedAt, session?.state.diaryOpen, plainText, expired, pendingSubmission, sending, mobileBook]);
 
   useEffect(() => {
