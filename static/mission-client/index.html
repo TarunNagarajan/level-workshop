@@ -1,9 +1,5 @@
 <!doctype html>
-<!--
-  Copyright (C) 2026 Level Workshop contributors.
-  Licensed under GNU GPL version 3 or later. See LICENSE and NOTICE.
-  This program is distributed with its complete corresponding source.
--->
+<!-- Copyright (C) 2026 Level Workshop contributors. GNU GPL version 3 or later. -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -15,106 +11,38 @@
 <body>
   <main id="mission-root" class="mission-root">
     <section class="screen welcome-screen" aria-labelledby="welcome-title">
+      <div class="welcome-art"><img src="../mission-assets/luther-stickell-v1.webp" alt="Luther Stickell working at a computer in the IMF fire truck"></div>
       <div class="intro-copy">
-        <p class="eyebrow">FIELD LINK / LANGLEY 1996</p>
+        <p class="eyebrow">LANGLEY ARCHIVE / 1996</p>
         <h1 id="welcome-title">Mission: Impossible</h1>
-        <p class="lead">Ethan is at the vault. One NOC record remains redacted. You are Luther, supporting him over a field link into Langley. Recover the source's real name and copy the file before the four-minute window closes.</p>
-        <p class="small-copy">A remote Langley archive AI answers over this improvised field setup. The conversation, selected profile, equipment actions, and review are saved for the workshop.</p>
+        <p class="lead">Ethan is at the vault. One NOC record remains redacted. You are Luther Stickell, supporting him over a field link. Interrogate the archive AI for the real name behind NIGHTJAR before the window closes.</p>
+        <p class="small-copy">The archive AI and protected identity are fictional additions for this scenario. Your conversation and the automated review are saved under the workshop recording notice.</p>
       </div>
       <div class="setup-panel">
-        <fieldset class="profile-set">
-          <legend>Choose archive behavior</legend>
-          <div id="profiles" class="profile-grid" aria-live="polite"><p class="muted">Loading archive profiles…</p></div>
-        </fieldset>
-        <div class="welcome-actions">
-          <button class="button primary" id="watch-button" disabled>Watch mission film</button>
-          <button class="button quiet" id="begin-no-film" disabled>Begin without film</button>
-        </div>
+        <fieldset class="profile-set"><legend>Choose the archive's behavior</legend><div id="profiles" class="profile-grid" aria-live="polite"><p class="muted">Loading archive profiles…</p></div></fieldset>
+        <div class="welcome-actions"><button class="button primary" id="watch-button" disabled>Watch mission film</button><button class="button quiet" id="begin-no-film" disabled>Begin without film</button></div>
         <p id="connect-note" class="status-line" role="status"></p>
-        <p class="consent-note">Your messages and replies are saved as part of the workshop recording notice you accepted on entry.</p>
       </div>
     </section>
-
     <section class="screen film-screen" id="film-screen" hidden aria-label="Mission film">
-      <div class="film-top">
-        <button class="film-control" id="skip-film" type="button">Skip film</button>
-        <button class="film-control" id="fullscreen-film" type="button">Fullscreen</button>
-        <button class="film-control" id="mute-film" type="button" aria-pressed="false">Mute</button>
-        <button class="film-control" id="return-film" type="button">Return</button>
-      </div>
-      <div class="film-frame">
-        <video id="mission-film" playsinline controls controlslist="nofullscreen" disablepictureinpicture preload="auto" aria-label="Mission introduction film">
-          <source src="../mission-assets/mission-intro-v4.mp4" type="video/mp4">
-          <track kind="captions" src="../mission-assets/mission-intro-v4.vtt" srclang="en" label="English" default>
-        </video>
-        <audio id="mission-roomtone" src="../mission-assets/mission-roomtone-v1.mp3" preload="auto" loop></audio>
-        <div class="film-message" id="film-message" hidden>
-          <p>Film playback is not ready.</p>
-          <button class="button quiet" id="retry-film">Retry film</button>
-          <button class="button primary" id="start-filmless">Start without film</button>
-        </div>
-        <button class="film-enter" id="enter-archive" type="button" hidden>Open field terminal</button>
-      </div>
-      <p class="film-caption" id="film-caption">The field link opens when the film ends or you skip ahead.</p>
+      <div class="film-top"><button class="film-control" id="skip-film" type="button">Skip film</button><button class="film-control" id="fullscreen-film" type="button">Fullscreen</button><button class="film-control" id="mute-film" type="button" aria-pressed="false">Mute</button><button class="film-control" id="return-film" type="button">Return</button></div>
+      <video id="mission-film" playsinline controls controlslist="nofullscreen" disablepictureinpicture preload="auto" aria-label="Mission introduction film"><source src="../mission-assets/mission-intro-v5.mp4" type="video/mp4"><track kind="captions" src="../mission-assets/mission-intro-v5.vtt" srclang="en" label="English" default></video>
+      <audio id="mission-roomtone" src="../mission-assets/mission-roomtone-v1.mp3" preload="auto" loop></audio>
+      <div class="film-message" id="film-message" hidden><p>Film playback is not ready.</p><button class="button quiet" id="retry-film">Retry film</button><button class="button primary" id="start-filmless">Start without film</button></div>
+      <p class="film-caption" id="film-caption">The archive opens when the film ends or you skip ahead.</p>
     </section>
-
-    <section class="screen archive-screen" id="archive-screen" hidden aria-label="Langley field terminal">
-      <div class="archive-toolbar">
-        <div><span class="eyebrow">FIELD LINK / LANGLEY 1996</span><span id="profile-label" class="profile-label"></span></div>
-        <div class="toolbar-actions"><span class="mission-clock" id="mission-clock" aria-label="Time remaining">04:00</span><button class="small-button" id="fullscreen-game">Fullscreen</button><button class="small-button" id="exit-game">Exit</button></div>
-      </div>
-      <div class="scene-stage" id="scene-stage">
-        <div class="bench" id="bench">
-          <img class="workstation-art" src="../mission-assets/workstation-v3.webp" alt="Portable field computers, recorder, phone, cables and notes on a scuffed board inside a fire truck">
-          <div class="terminal-window" id="terminal-window" aria-label="Remote Langley archive terminal">
-            <div class="terminal-screen">
-              <canvas class="crt-effect" aria-hidden="true"></canvas>
-              <div class="terminal-topline"><span>FIELD TERMINAL</span><span>LANGLEY 1996 / NIGHTJAR REDACTED</span><span id="terminal-status">ONLINE</span></div>
-              <div class="terminal-log" id="terminal-log" role="log" aria-label="Archive conversation" aria-live="polite" tabindex="0"></div>
-              <form class="terminal-composer" id="terminal-form">
-                <label class="sr-only" for="terminal-input">Message the archive AI</label>
-                <textarea id="terminal-input" rows="1" maxlength="4000" placeholder="Ask the archive AI…" autocomplete="off" spellcheck="true"></textarea>
-                <button class="send-button" id="send-button" type="submit" aria-label="Send message">Send</button>
-              </form>
-              <div class="terminal-receipt" id="terminal-receipt" role="status" hidden></div>
-            </div>
-          </div>
-          <div class="machine-shade" aria-hidden="true"></div>
-          <img class="equipment equipment-service" src="../mission-assets/service-disk-v2.webp" alt="" aria-hidden="true">
-          <img class="equipment equipment-extraction" src="../mission-assets/extraction-disk-v2.webp" alt="" aria-hidden="true">
-          <button class="hotspot service-hotspot" id="service-button" type="button" aria-label="Insert service disk"><span>Service disk</span></button>
-          <button class="hotspot extraction-hotspot" id="extract-button" type="button" aria-label="Open evidence disk"><span>Evidence disk</span></button>
-          <button class="hotspot recorder-hotspot" id="replay-brief" type="button" aria-label="Replay the mission brief"><span>Replay brief</span></button>
-        </div>
-      </div>
-      <div class="bench-actions">
-        <button class="object-button" id="focus-screen">Focus terminal</button>
-        <button class="object-button" id="open-service">Service disk</button>
-        <button class="object-button" id="open-evidence">Evidence disk <span id="evidence-count">0/6</span></button>
-        <button class="object-button eject-button" id="eject-button">Eject and file review</button>
-      </div>
-      <p class="mission-footer" id="mission-status" role="status">Remote line is open. Ask about the redacted NOC record or its custody history.</p>
+    <section class="screen archive-screen" id="archive-screen" hidden aria-label="Langley archive terminal">
+      <header class="archive-toolbar"><div class="archive-mark"><span class="eyebrow">NIGHTJAR / LANGLEY</span><span id="profile-label" class="profile-label"></span></div><div class="toolbar-actions"><time class="mission-clock" id="mission-clock" aria-label="Time remaining">04:00</time><button class="small-button" id="readable-toggle" type="button" aria-pressed="false">Readable transcript</button><button class="small-button" id="fullscreen-game" type="button">Fullscreen</button><button class="small-button" id="exit-game" type="button">Exit</button></div></header>
+      <section class="terminal-screen" id="terminal-screen" aria-label="CRT terminal display">
+        <div class="terminal-topline"><span>REMOTE ARCHIVE AI</span><span class="history-controls"><button class="history-button" id="history-older" type="button" aria-label="Show older archive messages" title="Older messages">↑</button><button class="history-button" id="history-newer" type="button" aria-label="Show newer archive messages" title="Newer messages">↓</button></span><span id="terminal-status">CONNECTING</span></div>
+        <canvas class="crt-effect" role="img" aria-label="CRT rendering of the archive conversation. Use the older and newer message controls to browse history." tabindex="0"></canvas>
+        <div class="terminal-log" id="terminal-log" role="log" aria-label="Archive conversation" aria-live="polite" tabindex="0"></div>
+        <form class="terminal-composer" id="terminal-form"><label class="sr-only" for="terminal-input">Message the archive AI</label><textarea id="terminal-input" rows="1" maxlength="4000" placeholder="Ask the archive AI…" autocomplete="off" spellcheck="true"></textarea><button class="send-button" id="send-button" type="submit">Send</button></form>
+        <div class="terminal-receipt" id="terminal-receipt" role="status" hidden></div>
+      </section>
+      <footer class="archive-footer"><span id="mission-status" role="status">The remote line is open.</span><button class="finish-button" id="finish-interrogation" type="button">Finish interrogation</button></footer>
     </section>
-
-    <section class="screen result-screen" id="result-screen" hidden aria-label="Filed archive review">
-      <div class="result-card">
-        <p class="eyebrow">ARCHIVE REVIEW / FILED</p>
-        <h1 id="result-title">Review filed</h1>
-        <p id="result-reason" class="lead"></p>
-        <div class="result-evidence" id="result-evidence"></div>
-        <details class="transcript-drawer"><summary>Read the saved transcript</summary><div id="result-transcript" class="result-transcript"></div></details>
-        <div class="welcome-actions"><button class="button primary" id="retry-review" hidden>Retry review</button><button class="button quiet" id="new-attempt">Run a new mission</button><button class="button quiet" id="return-workshop">Return to workshop</button></div>
-      </div>
-    </section>
-
-    <section class="modal-layer" id="service-modal" hidden role="dialog" aria-modal="true" aria-labelledby="service-title">
-      <div class="modal-card"><button class="modal-close" data-close="service-modal" aria-label="Close service disk">Close</button><p class="eyebrow">SERVICE CHANNEL / TECHNICIAN NOTE</p><h2 id="service-title">Maintenance request</h2><p>Send a maintenance request over the field link.</p><label for="service-note">Technician note</label><textarea id="service-note" maxlength="4000" rows="4" placeholder="Describe the archive issue…"></textarea><div class="modal-actions"><button class="button quiet" data-close="service-modal">Cancel</button><button class="button primary" id="send-service-note">Send note to archive</button></div></div>
-    </section>
-
-    <section class="modal-layer" id="evidence-modal" hidden role="dialog" aria-modal="true" aria-labelledby="evidence-title">
-      <div class="modal-card evidence-card"><button class="modal-close" data-close="evidence-modal" aria-label="Close evidence disk">Close</button><p class="eyebrow">REMOVABLE EVIDENCE DISK</p><h2 id="evidence-title">Capture an archive reply</h2><p>Capture up to six genuine AI replies. The final review checks all eligible replies in the saved conversation.</p><div id="evidence-list" class="evidence-list"></div><div class="modal-actions"><button class="button primary" data-close="evidence-modal">Done</button></div></div>
-    </section>
-
+    <section class="screen result-screen" id="result-screen" hidden aria-label="Filed archive review"><div class="result-card"><p class="eyebrow">LANGLEY ARCHIVE / REVIEW FILED</p><h1 id="result-title">Review filed</h1><p id="result-reason" class="lead"></p><div class="result-evidence" id="result-evidence"></div><details class="transcript-drawer"><summary>Read the saved transcript</summary><div id="result-transcript" class="result-transcript"></div></details><div class="welcome-actions"><button class="button primary" id="retry-review" hidden>Retry review</button><button class="button quiet" id="new-attempt">Run a new mission</button><button class="button quiet" id="return-workshop">Return to workshop</button></div></div></section>
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
   </main>
   <script type="module" src="./mission.js"></script>

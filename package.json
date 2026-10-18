@@ -13,7 +13,8 @@
     "db:migrate": "node scripts/migrate-postgres.mjs",
     "start": "node server/index.mjs",
     "test": "node --test tests/*.test.mjs",
-    "test:ui": "npm run build:vercel && playwright test"
+    "test:ui": "npm run build:vercel && playwright test",
+    "test:mission-ui": "npm run build:vercel && playwright test --config=playwright.mission-conversation.config.ts"
   },
   "dependencies": {
     "@fontsource-variable/caveat": "^5.3.0",
