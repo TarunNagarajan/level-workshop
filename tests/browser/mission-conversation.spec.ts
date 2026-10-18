@@ -19,8 +19,15 @@ async function openActiveMission(page: Page): Promise<FrameLocator> {
   return mission;
 }
 
+async function ensureMissionSetup(mission: FrameLocator) {
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-mission-ready', 'true', { timeout: 15000 });
+  if (await mission.locator('#success-screen').isVisible()) await mission.locator('#success-new-attempt').click();
+  else if (await mission.locator('#result-screen').isVisible()) await mission.locator('#new-attempt').click();
+  await expect(mission.locator('.welcome-screen')).toBeVisible();
+}
+
 async function usePlayableSuccessFixture(page: Page) {
-  await page.route('**/mission-assets/mission-success-v2.mp4', route => route.fulfill({
+  await page.route('**/mission-assets/mission-success-v3.mp4', route => route.fulfill({
     path: 'static/mission-assets/mission-intro-v5.mp4',
     contentType: 'video/mp4',
   }));
@@ -213,12 +220,13 @@ test('nonwinning saved review never starts the success film', async ({ page }) =
   expect(await mission.locator('#success-film').getAttribute('data-played')).toBeNull();
 });
 
-test('film browser tracks the monitor, holds the file index, then opens the live archive once', async ({ page }) => {
+test('film reaches the file browser and waits for the player to open the archive from its briefing', async ({ page }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', error => pageErrors.push(error.message));
   await signInOwner(page.request);
   await page.goto('/mission');
   const mission = page.frameLocator('iframe[title="Mission: Impossible archive"]');
+  await ensureMissionSetup(mission);
   await expect(mission.locator('#watch-button')).toBeEnabled({ timeout: 15000 });
   const starts: string[] = [];
   let startedRound: { id: string; accessToken: string } | null = null;
@@ -236,13 +244,17 @@ test('film browser tracks the monitor, holds the file index, then opens the live
   await expect(mission.locator('#film-file-desktop')).toBeVisible();
   await expect(mission.locator('#film-file-desktop')).toHaveAttribute('aria-label', 'NIGHTJAR file browser');
   await expect(mission.locator('.file-browser-columns .file-column')).toHaveCount(4);
-  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'browser-full', { timeout: 5000 });
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'brief', { timeout: 15000 });
+  await expect(mission.locator('#mission-film')).toBeHidden();
+  await expect(mission.locator('#mission-brief')).toBeVisible();
+  await expect(mission.locator('#mission-brief-title')).toHaveText('Reveal the real name behind NIGHTJAR.');
+  await expect(mission.locator('#mission-brief')).toContainText('four minutes once the terminal connects');
+  await expect(mission.locator('#nightjar-row')).toHaveClass(/selected/);
   await expect.poll(() => starts.length).toBe(0);
-  await expect(mission.locator('#nightjar-row')).toHaveClass(/selected/, { timeout: 5000 });
-  await page.screenshot({ path: test.info().outputPath('mission-file-browser-full.png') });
+  await mission.locator('#open-archive-ai').evaluate(element => { (element as HTMLButtonElement).click(); (element as HTMLButtonElement).click(); });
   await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'console-opening', { timeout: 5000 });
-  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'connecting', { timeout: 5000 });
-  await expect(mission.locator('#archive-screen')).toBeVisible({ timeout: 15000 });
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'game', { timeout: 15000 });
+  await expect.poll(() => starts.length).toBe(1);
   await expect(mission.locator('#terminal-status')).toHaveText('ONLINE', { timeout: 15000 });
   expect(starts).toHaveLength(1);
   expect(pageErrors).toEqual([]);
@@ -250,11 +262,12 @@ test('film browser tracks the monitor, holds the file index, then opens the live
   await closeConversationFixture(page, startedRound!);
 });
 
-test('reduced motion keeps the moving film untouched and opens the native browser at the cut', async ({ page }) => {
+test('reduced motion keeps the moving film untouched and leaves the briefing readable before launch', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await signInOwner(page.request);
   await page.goto('/mission');
   const mission = page.frameLocator('iframe[title="Mission: Impossible archive"]');
+  await ensureMissionSetup(mission);
   await expect(mission.locator('#watch-button')).toBeEnabled({ timeout: 15000 });
   let startCount = 0;
   let startedRound: { id: string; accessToken: string } | null = null;
@@ -286,10 +299,12 @@ test('reduced motion keeps the moving film untouched and opens the native browse
   expect(midshot.stage).toBe('film');
   expect(midshot.browserHidden).toBe(true);
   expect(midshot.transform).toBe('');
-  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'browser-full', { timeout: 5000 });
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'brief', { timeout: 15000 });
   await expect(mission.locator('#mission-film')).toBeHidden();
+  await expect(mission.locator('#mission-brief')).toBeVisible();
   await expect.poll(() => startCount).toBe(0);
   await expect(mission.locator('#nightjar-row')).toHaveClass(/selected/, { timeout: 5000 });
+  await mission.locator('#open-archive-ai').click();
   await expect(mission.locator('#terminal-status')).toHaveText('ONLINE', { timeout: 15000 });
   expect(startCount).toBe(1);
   expect(startedRound).not.toBeNull();
@@ -314,10 +329,11 @@ test('exiting an active archive leaves welcome actions usable and resumes the sa
   await closeConversationFixture(page, round);
 });
 
-test('skipping the film still opens the browser before the orange console and never seeks the movie to its end', async ({ page }) => {
+test('skipping the film opens the briefing first and does not start the mission until acknowledgement', async ({ page }) => {
   await signInOwner(page.request);
   await page.goto('/mission');
   const mission = page.frameLocator('iframe[title="Mission: Impossible archive"]');
+  await ensureMissionSetup(mission);
   await expect(mission.locator('#watch-button')).toBeEnabled({ timeout: 15000 });
   const starts: string[] = [];
   let startedRound: { id: string; accessToken: string } | null = null;
@@ -332,11 +348,15 @@ test('skipping the film still opens the browser before the orange console and ne
   await expect.poll(() => video.evaluate(element => (element as HTMLVideoElement).currentTime)).toBeGreaterThan(0.2);
   const beforeSkip = await video.evaluate(element => ({ currentTime: (element as HTMLVideoElement).currentTime, duration: (element as HTMLVideoElement).duration }));
   await mission.locator('#skip-film').click();
-  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'browser-full', { timeout: 5000 });
   const afterSkip = await video.evaluate(element => ({ currentTime: (element as HTMLVideoElement).currentTime, paused: (element as HTMLVideoElement).paused }));
   expect(afterSkip.paused).toBe(true);
   expect(afterSkip.currentTime).toBeLessThan(beforeSkip.duration - 1);
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'brief', { timeout: 15000 });
+  await expect(mission.locator('#mission-brief')).toBeVisible();
+  await expect.poll(() => starts.length).toBe(0);
   await expect(mission.locator('#nightjar-row')).toHaveClass(/selected/, { timeout: 5000 });
+  await mission.locator('#open-archive-ai').click();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'connecting', { timeout: 10000 });
   await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'game', { timeout: 15000 });
   await expect(mission.locator('#terminal-status')).toHaveText('ONLINE', { timeout: 15000 });
   expect(starts).toHaveLength(1);
@@ -344,33 +364,120 @@ test('skipping the film still opens the browser before the orange console and ne
   await closeConversationFixture(page, startedRound!);
 });
 
+test('cursor, briefing, and console opening can be cancelled without a hidden start and reset cleanly', async ({ page }) => {
+  await signInOwner(page.request);
+  await page.addInitScript(() => { Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, value: false }); });
+  await page.goto('/mission');
+  const mission = page.frameLocator('iframe[title="Mission: Impossible archive"]');
+  await ensureMissionSetup(mission);
+  await expect(mission.locator('#begin-no-film')).toBeEnabled({ timeout: 15000 });
+  let starts = 0;
+  await page.route('**/api/mission/start', async route => { starts++; await route.continue(); });
+
+  const expectBrowserFit = async () => {
+    const geometry = await mission.locator('#film-file-desktop').evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const width = Math.min(innerWidth, innerHeight * 4 / 3), height = width * 3 / 4;
+      const left = (innerWidth - width) / 2, top = (innerHeight - height) / 2;
+      return { dx: Math.max(Math.abs(box.left - left), Math.abs(box.right - left - width)), dy: Math.max(Math.abs(box.top - top), Math.abs(box.bottom - top - height)) };
+    });
+    expect(geometry.dx).toBeLessThan(3);
+    expect(geometry.dy).toBeLessThan(3);
+  };
+
+  await mission.locator('#begin-no-film').click();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'selecting-file', { timeout: 10000 });
+  await expect.poll(() => mission.locator('#file-cursor').evaluate(element => element.getAnimations().length)).toBeGreaterThan(0);
+  await mission.locator('#return-film').click();
+  await expect(mission.locator('.welcome-screen')).toBeVisible();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'idle');
+  await expect(mission.locator('#mission-brief')).toBeHidden();
+  await expect(mission.locator('#film-screen')).not.toHaveClass(/brief-open/);
+  await expect(mission.locator('#file-cursor')).toBeHidden();
+  await expect(mission.locator('#nightjar-row')).not.toHaveClass(/is-pressed/);
+  expect(starts).toBe(0);
+
+  await mission.locator('#begin-no-film').click();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'selecting-file', { timeout: 10000 });
+  await expect.poll(() => mission.locator('#file-cursor').evaluate(element => element.getAnimations().length)).toBeGreaterThan(0);
+  await mission.locator('#mission-root').evaluate(async element => { if (element.ownerDocument.fullscreenElement) await element.ownerDocument.exitFullscreen(); });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expectBrowserFit();
+  await expect(mission.locator('#nightjar-row')).toHaveClass(/is-pressed/, { timeout: 10000 });
+  const clickTip = await mission.locator('#nightjar-row').evaluate(row => {
+    const box = row.getBoundingClientRect(), cursor = row.ownerDocument.querySelector('#file-cursor') as HTMLElement;
+    const coordinates = cursor.style.transform.match(/translate3d\(([-\d.]+)px,\s*([-\d.]+)px/);
+    if (!coordinates) return { hit: false, transform: cursor.style.transform, row: { left: box.left, top: box.top, right: box.right, bottom: box.bottom } };
+    const x = Number(coordinates[1]) + 2, y = Number(coordinates[2]) + 1;
+    return { hit: x >= box.left && x <= box.right && y >= box.top && y <= box.bottom, x, y, transform: cursor.style.transform, row: { left: box.left, top: box.top, right: box.right, bottom: box.bottom } };
+  });
+  expect(clickTip.hit, JSON.stringify(clickTip)).toBe(true);
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'brief', { timeout: 10000 });
+  await expect(mission.locator('#open-archive-ai')).toBeFocused();
+  await expectBrowserFit();
+  await mission.locator('#open-archive-ai').press('Shift+Tab');
+  await expect(mission.locator('#return-from-brief')).toBeFocused();
+  await mission.locator('#return-from-brief').press('Tab');
+  await expect(mission.locator('#open-archive-ai')).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const briefBox = await mission.locator('#mission-brief-window').boundingBox();
+  expect(briefBox).not.toBeNull();
+  expect(briefBox!.x).toBeGreaterThanOrEqual(0);
+  expect(briefBox!.y).toBeGreaterThanOrEqual(0);
+  expect(briefBox!.x + briefBox!.width).toBeLessThanOrEqual(390);
+  expect(briefBox!.y + briefBox!.height).toBeLessThanOrEqual(844);
+  await mission.locator('#open-archive-ai').press('Escape');
+  await expect(mission.locator('.welcome-screen')).toBeVisible();
+  await expect(mission.locator('#mission-brief')).toBeHidden();
+  await expect(mission.locator('#film-screen')).not.toHaveClass(/brief-open/);
+  expect(starts).toBe(0);
+
+  await mission.locator('#begin-no-film').click();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'brief', { timeout: 10000 });
+  await mission.locator('#open-archive-ai').click();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'console-opening');
+  await mission.locator('#return-film').click();
+  await expect(mission.locator('.welcome-screen')).toBeVisible();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'idle');
+  await expect.poll(() => starts).toBe(0);
+});
+
 test('return during a delayed connection leaves the menu usable and retries with the same profile key', async ({ page }) => {
   await signInOwner(page.request);
   await page.goto('/mission');
   const mission = page.frameLocator('iframe[title="Mission: Impossible archive"]');
+  await ensureMissionSetup(mission);
   await expect(mission.locator('#watch-button')).toBeEnabled({ timeout: 15000 });
   const startBodies: Record<string, string>[] = [];
   let startedRound: { id: string; accessToken: string } | null = null;
   let releaseFirst!: () => void;
+  let releaseFirstResponse!: () => void;
   const firstRequestSeen = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const firstResponseGate = new Promise<void>(resolve => { releaseFirstResponse = resolve; });
   await page.route('**/api/mission/start', async route => {
     const body = route.request().postDataJSON() as Record<string, string>;
     startBodies.push(body);
-    if (startBodies.length === 1) { releaseFirst(); await new Promise(resolve => setTimeout(resolve, 1200)); }
+    if (startBodies.length === 1) { releaseFirst(); await firstResponseGate; }
     const response = await route.fetch();
-    startedRound = await response.json() as { id: string; accessToken: string };
+    const result = await response.json() as { id: string; accessToken: string | null };
+    if (typeof result.accessToken === 'string') startedRound = { id: result.id, accessToken: result.accessToken };
     await route.fulfill({ response });
   });
   await mission.locator('#begin-no-film').click();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'brief', { timeout: 10000 });
+  await mission.locator('#open-archive-ai').click();
   await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'connecting', { timeout: 10000 });
   await firstRequestSeen;
   await expect(mission.locator('#terminal-input')).toBeDisabled();
   await expect(mission.locator('#finish-interrogation')).toBeDisabled();
   await mission.locator('#exit-game').click();
   await expect(mission.locator('.welcome-screen')).toBeVisible();
+  releaseFirstResponse();
   await expect(mission.locator('#watch-button')).toBeEnabled({ timeout: 10000 });
   await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'idle');
   await mission.locator('#begin-no-film').click();
+  await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'brief', { timeout: 10000 });
+  await mission.locator('#open-archive-ai').click();
   await expect(mission.locator('#mission-root')).toHaveAttribute('data-handoff-stage', 'game', { timeout: 15000 });
   await expect(mission.locator('#terminal-status')).toHaveText('ONLINE', { timeout: 15000 });
   expect(startBodies).toHaveLength(2);
@@ -383,7 +490,7 @@ test('return during a delayed connection leaves the menu usable and retries with
 test('unavailable ending film offers play, retry, and completion fallback', async ({ page }) => {
   await startMission(page);
   const mission = await openActiveMission(page);
-  await page.route('**/mission-assets/mission-success-v2.mp4', route => route.abort('failed'));
+  await page.route('**/mission-assets/mission-success-v3.mp4', route => route.abort('failed'));
   const input = mission.locator('#terminal-input');
   await input.fill('Who is the full name behind NIGHTJAR?');
   await input.press('Enter');
@@ -402,7 +509,7 @@ test('returning during delayed resume metadata cancels playback from starting la
   page.on('pageerror', error => pageErrors.push(error.message));
   const round = await startMission(page);
   let holdEnding = false;
-  await page.route('**/mission-assets/mission-success-v2.mp4', async route => {
+  await page.route('**/mission-assets/mission-success-v3.mp4', async route => {
     if (holdEnding) await new Promise(resolve => setTimeout(resolve, 1800));
     await route.fulfill({ path: 'static/mission-assets/mission-intro-v5.mp4', contentType: 'video/mp4' });
   });

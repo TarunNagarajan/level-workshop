@@ -40,6 +40,8 @@ let handoffFrameId = 0;
 let handoffRafId = 0;
 let handoffTimerId = 0;
 let handoffWaitResolve = null;
+let handoffAnimation = null;
+let handoffTransitionCancel = null;
 let handoffStage = 'idle';
 let successFilmStarting = false;
 let successFilmCompleted = false;
@@ -249,6 +251,8 @@ async function startMission(generation = null) {
 }
 function cancelHandoff() {
   handoffGeneration++;
+  if (handoffAnimation) { handoffAnimation.cancel(); handoffAnimation = null; }
+  if (handoffTransitionCancel) { const cancel = handoffTransitionCancel; handoffTransitionCancel = null; cancel(); }
   if (handoffFrameId && $('#mission-film').cancelVideoFrameCallback) $('#mission-film').cancelVideoFrameCallback(handoffFrameId);
   handoffFrameId = 0; cancelAnimationFrame(handoffRafId); handoffRafId = 0; clearTimeout(handoffTimerId); handoffTimerId = 0;
   if (handoffWaitResolve) { const resolve = handoffWaitResolve; handoffWaitResolve = null; resolve(); }
@@ -258,6 +262,12 @@ function cancelHandoff() {
     $('#begin-no-film').disabled = startupInFlight || !configuration?.connected;
   }
   const stage = $('#film-browser-stage'); stage.hidden = true; stage.setAttribute('aria-hidden', 'true'); stage.classList.remove('is-full', 'is-launching');
+  const cursor = $('#file-cursor'); if (cursor) { cursor.hidden = true; cursor.style.transform = ''; cursor.style.opacity = ''; }
+  const brief = $('#mission-brief'); if (brief) { brief.hidden = true; brief.classList.remove('is-open'); }
+  const openButton = $('#open-archive-ai'); if (openButton) openButton.disabled = false;
+  screens.film.classList.remove('brief-open');
+  $('#nightjar-row')?.classList.remove('is-pressed');
+  $('#file-cursor')?.classList.remove('is-clicking');
   const archive = screens.archive; archive.classList.remove('handoff-opening', 'handoff-expanded', 'handoff-connecting'); archive.style.removeProperty('--launch-x'); archive.style.removeProperty('--launch-y');
 }
 function setHandoffStage(name) { handoffStage = name; root.dataset.handoffStage = name; }
@@ -268,13 +278,42 @@ function waitHandoff(milliseconds) {
     handoffTimerId = setTimeout(() => { handoffTimerId = 0; handoffWaitResolve = null; resolve(); }, milliseconds);
   });
 }
+function waitForHandoffTransition(element, propertyName, fallbackMs, generation) {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true; clearTimeout(timeout); element.removeEventListener('transitionend', onEnd);
+      if (handoffTransitionCancel === finish) handoffTransitionCancel = null;
+      resolve(generation === handoffGeneration);
+    };
+    const onEnd = event => { if (event.target === element && event.propertyName === propertyName) finish(); };
+    const timeout = setTimeout(finish, fallbackMs);
+    handoffTransitionCancel = finish;
+    element.addEventListener('transitionend', onEnd);
+  });
+}
 function mediaQuadToViewport(point, video) {
   const rect = video.getBoundingClientRect();
-  const vw = video.videoWidth || 1920, vh = video.videoHeight || 1080;
-  const scale = Math.min(rect.width / vw, rect.height / vh);
-  const left = rect.left + (rect.width - vw * scale) / 2;
-  const top = rect.top + (rect.height - vh * scale) / 2;
-  return [left + point[0] * 1.5 * scale, top + point[1] * 1.5 * scale];
+  const vw = video.videoWidth || 1920, vh = video.videoHeight || 792;
+  const scale = Math.max(rect.width / vw, rect.height / vh);
+  const [positionX = '50%', positionY = '50%'] = getComputedStyle(video).objectPosition.split(/\s+/);
+  const offsetX = parseFloat(positionX) / 100, offsetY = parseFloat(positionY) / 100;
+  const left = rect.left + (rect.width - vw * scale) * offsetX;
+  const top = rect.top + (rect.height - vh * scale) * offsetY;
+  const encodedX = point[0] * 1.5, encodedY = point[1] * 1.5 - 144;
+  return [left + encodedX * scale, top + encodedY * scale];
+}
+function videoFocalPosition(time = 0) {
+  const mobile = innerWidth <= 620;
+  if (!mobile) return 0;
+  if (reducedMotion) return 0.08;
+  const progress = Math.max(0, Math.min(1, (time - 8.65) / 1.15));
+  const eased = progress * progress * (3 - 2 * progress);
+  return 0.5 + (0.1 - 0.5) * eased;
+}
+function updateVideoFocalPosition(time = $('#mission-film').currentTime || 0) {
+  $('#mission-film').style.objectPosition = `${videoFocalPosition(time) * 100}% 50%`;
 }
 const monitorTrack = [
   { t: 9.8, p: [[66, 186], [243, 147], [295, 417], [124, 485]] },
@@ -326,6 +365,7 @@ function applyProjectedBrowser(timeOverride = null) {
   if (screens.film.hidden || !video.videoWidth || handoffStage !== 'browser-tracking') return;
   const { width, height } = desktopRect(); if (!width || !height) return;
   const time = timeOverride ?? video.currentTime;
+  updateVideoFocalPosition(time);
   const measured = interpolatedMonitorQuad(time).map(point => mediaQuadToViewport(point, video));
   const target = nativeBrowserQuad();
   const linear = Math.max(0, Math.min(1, (time - 9.8) / 0.7));
@@ -343,6 +383,7 @@ function scheduleMonitorTracking() {
     handoffFrameId = 0; handoffRafId = 0;
     if (screens.film.hidden || !['film', 'browser-tracking'].includes(handoffStage)) return;
     const mediaTime = Number.isFinite(metadata.mediaTime) ? metadata.mediaTime : video.currentTime;
+    updateVideoFocalPosition(mediaTime);
     if (mediaTime >= 9.78) {
       if (handoffStage === 'film') {
         const stage = $('#film-browser-stage'); stage.hidden = false; stage.setAttribute('aria-hidden', 'false'); $('#film-caption').hidden = true; $('#file-browser-command').textContent = 'LOCATING NIGHTJAR…'; setHandoffStage('browser-tracking');
@@ -367,28 +408,98 @@ function showFullBrowser({ fromFilm = false } = {}) {
     applyProjectedBrowser(10.5);
     stage.style.opacity = '1'; stage.classList.add('is-full'); video.hidden = true;
   } else {
+    updateVideoFocalPosition(video.currentTime || 0);
     desktop.style.transform = fullBrowserTransform(); stage.style.opacity = '1'; stage.classList.add('is-full'); video.hidden = true;
   }
   setHandoffStage('browser-full');
 }
+function cursorTransform(x, y, scale = 1) { return `translate3d(${x}px,${y}px,0) scale(${scale})`; }
+function positionFileCursorAtRow(row, cursor) {
+  const box = row.getBoundingClientRect();
+  const x = box.left + Math.min(8, box.width * .05), y = box.top + box.height * .48;
+  cursor.style.transform = cursorTransform(x, y);
+}
+async function playNightjarSelection(generation) {
+  const row = $('#nightjar-row'), cursor = $('#file-cursor');
+  if (!row || !cursor || generation !== handoffGeneration) return false;
+  row.classList.remove('selected', 'is-pressed'); row.removeAttribute('aria-current');
+  setHandoffStage('selecting-file');
+  const targetBox = row.getBoundingClientRect();
+  const targetX = targetBox.left + Math.min(8, targetBox.width * .05), targetY = targetBox.top + targetBox.height * .48;
+  const startX = Math.max(12, innerWidth * .14), startY = Math.max(28, innerHeight * .78);
+  cursor.hidden = false; cursor.style.opacity = '1';
+  if (reducedMotion) {
+    cursor.style.transform = cursorTransform(targetX, targetY);
+    await waitHandoff(800);
+  } else {
+    cursor.style.transform = cursorTransform(startX, startY);
+    await waitHandoff(800);
+    if (generation !== handoffGeneration) return false;
+    const animation = cursor.animate([
+      { transform: cursorTransform(startX, startY) },
+      { transform: cursorTransform(targetX, targetY) },
+    ], { duration: 920, easing: 'cubic-bezier(.2,.7,.2,1)', fill: 'forwards' });
+    handoffAnimation = animation;
+    try { await animation.finished; } catch { return false; }
+    if (handoffAnimation === animation) handoffAnimation = null;
+    positionFileCursorAtRow(row, cursor);
+    animation.cancel();
+  }
+  if (generation !== handoffGeneration) return false;
+  $('#file-browser-command').textContent = 'LOCATING NIGHTJAR…';
+  for (let click = 0; click < 2; click++) {
+    if (generation !== handoffGeneration) return false;
+    positionFileCursorAtRow(row, cursor);
+    row.classList.add('is-pressed'); cursor.classList.add('is-clicking');
+    await waitHandoff(reducedMotion ? 110 : 170);
+    if (generation !== handoffGeneration) return false;
+    row.classList.remove('is-pressed'); cursor.classList.remove('is-clicking');
+    if (click === 0) await waitHandoff(reducedMotion ? 80 : 120);
+  }
+  row.classList.add('selected'); row.setAttribute('aria-current', 'true');
+  $('#file-browser-command').textContent = 'NIGHTJAR SELECTED';
+  cursor.style.opacity = '0';
+  await waitHandoff(reducedMotion ? 100 : 180);
+  cursor.hidden = true;
+  return generation === handoffGeneration;
+}
+async function showMissionBrief(generation) {
+  if (generation !== handoffGeneration) return false;
+  const brief = $('#mission-brief'), panel = $('#mission-brief-window'), row = $('#nightjar-row');
+  const rowBox = row.getBoundingClientRect();
+  brief.hidden = false; brief.classList.remove('is-open');
+  $('#open-archive-ai').disabled = false;
+  const width = panel.offsetWidth, height = panel.offsetHeight;
+  panel.style.setProperty('--brief-origin-x', `${Math.max(0, Math.min(width, rowBox.left + rowBox.width / 2 - (innerWidth - width) / 2))}px`);
+  panel.style.setProperty('--brief-origin-y', `${Math.max(0, Math.min(height, rowBox.top + rowBox.height / 2 - (innerHeight - height) / 2))}px`);
+  $('#file-browser-command').textContent = 'MISSION BRIEFING';
+  screens.film.classList.add('brief-open');
+  setHandoffStage('brief');
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  if (generation !== handoffGeneration) return false;
+  brief.classList.add('is-open');
+  if (!reducedMotion) await waitHandoff(520);
+  if (generation !== handoffGeneration) return false;
+  $('#open-archive-ai').focus({ preventScroll: true });
+  return true;
+}
 async function openArchiveFromBrowser(generation, { resume = false } = {}) {
-  if (generation !== handoffGeneration || screens.film.hidden) return;
-  const stage = $('#film-browser-stage'), desktop = $('#film-file-desktop'), archive = screens.archive;
+  if (generation !== handoffGeneration || screens.film.hidden || handoffStage === 'console-opening' || handoffStage === 'connecting' || handoffStage === 'game') return;
+  const stage = $('#film-browser-stage'), archive = screens.archive, brief = $('#mission-brief');
+  $('#open-archive-ai').disabled = true;
+  brief.hidden = true; brief.classList.remove('is-open');
+  screens.film.classList.remove('brief-open');
   $('#file-browser-command').textContent = 'OPENING ARCHIVE AI…';
   const box = $('#nightjar-row')?.getBoundingClientRect();
   const x = box ? box.left + box.width / 2 : innerWidth / 2, y = box ? box.top + box.height / 2 : innerHeight / 2;
   archive.style.setProperty('--launch-x', `${x}px`); archive.style.setProperty('--launch-y', `${y}px`);
   archive.hidden = false; archive.classList.add('handoff-opening');
   setHandoffStage('console-opening');
-  if (reducedMotion) {
-    archive.classList.add('handoff-expanded');
-    await waitHandoff(60);
-  } else {
-    await waitHandoff(32);
-    archive.classList.add('handoff-expanded');
-    await waitHandoff(620);
-  }
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   if (generation !== handoffGeneration) return;
+  archive.classList.add('handoff-expanded');
+  const transitionFinished = await waitForHandoffTransition(archive, 'transform', reducedMotion ? 120 : 1260, generation);
+  if (!transitionFinished || generation !== handoffGeneration) return;
   stage.hidden = true; stage.setAttribute('aria-hidden', 'true'); $('#mission-film').hidden = true;
   if (resume && current && !current.endedAt) {
     archive.classList.remove('handoff-opening', 'handoff-expanded', 'handoff-connecting');
@@ -415,22 +526,20 @@ async function runArchiveHandoff({ filmEnded = false, filmless = false, returnTo
   setHandoffStage(filmEnded ? 'browser-tracking' : 'browser-full');
   showFullBrowser({ fromFilm: filmEnded && !filmless });
   if (!filmEnded) video.hidden = true;
-  $('#nightjar-row')?.classList.add('selected');
-  $('#file-browser-command').textContent = 'NIGHTJAR SELECTED';
-  // The reconstructed browser remains readable for the same interval even
-  // when motion is reduced; only its entrance animation is removed.
-  await waitHandoff(1050);
-  if (generation !== handoffGeneration) return;
-  await openArchiveFromBrowser(generation, { resume: returnToActive && Boolean(current && !current.endedAt) });
+  const selected = await playNightjarSelection(generation);
+  if (!selected || generation !== handoffGeneration) return;
+  if (returnToActive && current && !current.endedAt) await openArchiveFromBrowser(generation, { resume: true });
+  else await showMissionBrief(generation);
 }
 async function enterFilm() {
   cancelHandoff();
   showScreen('film');
   screens.film.classList.remove('controls-dim');
   const video = $('#mission-film'), roomtone = $('#mission-roomtone');
-  $('#film-message').hidden = true; $('#film-caption').hidden = false; video.hidden = false; video.poster = '../mission-assets/mission-intro-v7-poster.webp';
+  $('#film-message').hidden = true; $('#film-caption').hidden = false; video.hidden = false; video.poster = '../mission-assets/mission-intro-v8-poster.webp';
   const stage = $('#film-browser-stage'); stage.hidden = true; stage.setAttribute('aria-hidden', 'true'); stage.classList.remove('is-full', 'is-launching');
   $('#film-file-desktop').style.transform = '';
+  updateVideoFocalPosition(0);
   setHandoffStage('film'); scheduleMonitorTracking();
   video.muted = missionMuted; roomtone.muted = missionMuted;
   let fullScreenRequest = Promise.resolve();
@@ -925,13 +1034,26 @@ async function initialize() {
     $('#watch-button').disabled = !connected; $('#begin-no-film').disabled = !connected;
     $('#connect-note').textContent = connected ? 'Archive target connected.' : 'The workshop target is not connected yet. Ask the workspace owner to connect it.';
     const existing = await api('/mission/active');
-    if (existing) { attachRound(existing); return; }
+    if (existing) attachRound(existing);
+    root.dataset.missionReady = 'true';
   } catch (error) { $('#connect-note').textContent = error.message; $('#profiles').textContent = 'Archive profiles are unavailable.'; }
 }
 
 $('#watch-button').addEventListener('click', () => void enterFilm());
 $('#begin-no-film').addEventListener('click', launchWithoutFilm);
 $('#skip-film').addEventListener('click', () => void finishFilm({ natural: false }));
+$('#open-archive-ai').addEventListener('click', () => void openArchiveFromBrowser(handoffGeneration, { resume: Boolean(current && !current.endedAt) }));
+$('#return-from-brief').addEventListener('click', exitArchive);
+$('#mission-brief').addEventListener('keydown', event => {
+  if (event.key === 'Escape') { event.preventDefault(); exitArchive(); return; }
+  if (event.key !== 'Tab') return;
+  const brief = $('#mission-brief');
+  const focusable = [...brief.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])')].filter(node => node.getClientRects().length);
+  if (!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
 $('#mission-film').addEventListener('ended', () => void finishFilm({ natural: true }));
 screens.film.addEventListener('pointermove', () => revealFilmControls(screens.film));
 screens.film.addEventListener('pointerdown', () => revealFilmControls(screens.film));
@@ -1003,8 +1125,9 @@ $('#readable-toggle').addEventListener('click', () => {
 $('#retry-review').addEventListener('click', () => void retryReview());
 $('#new-attempt').addEventListener('click', prepareNewAttempt);
 window.addEventListener('resize', () => {
+  if (!screens.film.hidden) updateVideoFocalPosition();
   if (handoffStage === 'browser-tracking') applyProjectedBrowser();
-  else if (handoffStage === 'browser-full') $('#film-file-desktop').style.transform = fullBrowserTransform();
+  else if (['browser-full', 'selecting-file', 'brief'].includes(handoffStage)) $('#film-file-desktop').style.transform = fullBrowserTransform();
   else if (handoffStage === 'console-opening') {
     const box = $('#nightjar-row')?.getBoundingClientRect();
     if (box) { screens.archive.style.setProperty('--launch-x', `${box.left + box.width / 2}px`); screens.archive.style.setProperty('--launch-y', `${box.top + box.height / 2}px`); }
