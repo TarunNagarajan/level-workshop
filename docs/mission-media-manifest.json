@@ -1,29 +1,26 @@
 {
-  "workstation": {
-    "file": "workstation-v3.webp",
-    "width": 1672,
-    "height": 941,
-    "bytes": 223310,
-    "sha256": "29f29d20490ee59e5dc3bb339c125fece3d48e3c48d97b741b03774aa942306e",
-    "generation": "built-in image_gen, supplied actual Mission: Impossible 1996 Luther fire-truck reference frame",
-    "references": [
-      {
-        "film": "Mission: Impossible (1996)",
-        "scene": "Luther in the fire truck during the Langley operation",
-        "url": "https://www.listal.com/viewimage/7476367",
-        "image": "https://ilarge.lisimg.com/image/7476367/1118full-mission%3A-impossible-screenshot.jpg"
-      },
-      {
-        "type": "primary screenplay for setting validation",
-        "url": "https://www.dailyscript.com/scripts/mission-impossible_shoot.html"
-      }
-    ]
+  "revision": 2,
+  "presentation": {
+    "type": "WebGL CRT interrogation",
+    "upstream": "https://github.com/swordfish90/cool-retro-term",
+    "commit": "1394ce82fa53d2a87d5adc4d99f9eeba598ea53d",
+    "preset": "Default Amber"
+  },
+  "luther": {
+    "file": "luther-stickell-v1.webp",
+    "bytes": 37146,
+    "sha256": "b7b834b4ba7a088cca4ffb4e2fbdd15fea0e159c45b7ad3883bb178a3d38bf70",
+    "width": 1280,
+    "height": 720,
+    "type": "actual film frame",
+    "source": "Official Movieclips Into the Vault, Mission: Impossible (1996), approximately104.7 seconds",
+    "url": "https://www.youtube.com/watch?v=k-oVuQpjG3s"
   },
   "opening": {
-    "file": "mission-intro-v4.mp4",
+    "file": "mission-intro-v5.mp4",
     "seconds": 30,
-    "bytes": 6224413,
-    "sha256": "734f84643298a33eebce5199de09e623c97b34075fa2193c2ad1695a07c17ad6",
+    "bytes": 6405434,
+    "sha256": "adc292715836ac5f30872569544d6bb4bff6f372906b0f9756d21c68d0e0d3c8",
     "width": 1920,
     "height": 1080,
     "fps": 30,
@@ -40,30 +37,30 @@
       {
         "name": "moov",
         "offset": 32,
-        "bytes": 34392
+        "bytes": 34654
       },
       {
         "name": "free",
-        "offset": 34424,
+        "offset": 34686,
         "bytes": 8
       },
       {
         "name": "mdat",
-        "offset": 34432,
-        "bytes": 6189981
+        "offset": 34694,
+        "bytes": 6370740
       }
     ]
   },
   "media": [
     {
-      "file": "mission-intro-v4.mp4",
-      "bytes": 6224413,
-      "sha256": "734f84643298a33eebce5199de09e623c97b34075fa2193c2ad1695a07c17ad6"
+      "file": "mission-intro-v5.mp4",
+      "bytes": 6405434,
+      "sha256": "adc292715836ac5f30872569544d6bb4bff6f372906b0f9756d21c68d0e0d3c8"
     },
     {
-      "file": "mission-intro-v4.vtt",
-      "bytes": 402,
-      "sha256": "c7c691e0a016f2b858ef93693d0b30c67ed39f4e394618de0c45632c220887a0"
+      "file": "mission-intro-v5.vtt",
+      "bytes": 406,
+      "sha256": "7bf2c26ee77063069e027d8a8d4a934e1c77704d88a3a5f2fb740a4735d38a86"
     },
     {
       "file": "mission-roomtone-v1.mp3",
@@ -71,28 +68,5 @@
       "sha256": "839c347c1513f2c5459afffa93bd85d1f16a5e72f7a01dff1644f917771c4a7c"
     }
   ],
-  "objects": [
-    {
-      "file": "service-disk-v2.webp",
-      "bytes": 63636,
-      "width": 640,
-      "height": 342,
-      "hasAlpha": true,
-      "transparentPixels": 66304,
-      "translucentPixels": 151979,
-      "sha256": "5354c042bd5eab4746352fba9d47fe2557777665b374b592e0a23ac5d2026e23",
-      "generation": "built-in image_gen, exact workstation-v3 background supplied as camera and lighting reference"
-    },
-    {
-      "file": "extraction-disk-v2.webp",
-      "bytes": 59594,
-      "width": 640,
-      "height": 362,
-      "hasAlpha": true,
-      "transparentPixels": 75444,
-      "translucentPixels": 155469,
-      "sha256": "155deb668cd1a940070e989bf3c2146a73da262e101bc239948b2a89e1579a2d",
-      "generation": "built-in image_gen, exact workstation-v3 background supplied as camera and lighting reference"
-    }
-  ]
+  "objects": []
 }
