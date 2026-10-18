@@ -75,6 +75,7 @@
 
 /* Fullscreen-free cinematic entry and the same poster after the ending. */
 .inception-entry-poster{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;width:100vw;height:100dvh;min-height:100dvh;overflow:hidden;padding:24px;border:0;background:#0b0c0b;color:#f3f0e8;cursor:pointer;isolation:isolate}
+.inception-entry-poster:disabled{opacity:1;cursor:default}
 .inception-entry-poster-image,.inception-entry-poster-shade{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .inception-entry-poster-image{z-index:-2;object-fit:cover;object-position:center 52%}
 .inception-entry-poster-shade{z-index:-1;background:linear-gradient(180deg,rgba(3,4,4,.12),rgba(3,4,4,.02) 34%,rgba(3,4,4,.38) 70%,rgba(3,4,4,.68))}
@@ -90,6 +91,7 @@
 .inception-cinematic-cover{position:fixed;inset:0;background:#000;pointer-events:auto}
 .inception-cinematic-cover.entry-black,.inception-cinematic-cover.entry-reveal{z-index:2147482999}
 .inception-cinematic-cover.return-black,.inception-cinematic-cover.return-reveal{z-index:2147483002}
+.inception-cinematic-cover.ending-skip{z-index:2147483003;background:#000;opacity:0;animation:inception-success-skip-black 150ms ease-out forwards}
 .inception-cinematic-cover.entry-reveal{animation:inception-cover-out 1s linear both}
 .inception-cinematic-cover.return-reveal{animation:inception-cover-out .75s ease-out both}
 @keyframes inception-cover-out{to{opacity:0}}
@@ -116,6 +118,7 @@
 @keyframes inception-ending-out{from{opacity:1}to{opacity:0}}
 @keyframes inception-card-in{from{opacity:0}to{opacity:1}}
 @keyframes inception-card-out{from{opacity:1}to{opacity:0}}
+@keyframes inception-success-skip-black{to{opacity:1}}
 @media(prefers-reduced-motion:reduce){.inception-scene-row.has-art,.inception-dialogue,.inception-topbar{transition:none!important}.inception-conversation{scroll-behavior:auto}}
 @media(prefers-reduced-motion:reduce){.inception-success-ending,.inception-ending-card{animation:none}.inception-success-ending-video{transition:none}}
 
