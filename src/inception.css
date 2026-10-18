@@ -82,11 +82,17 @@
 .inception-entry-prompt{position:absolute;left:50%;bottom:clamp(58px,10vh,104px);transform:translateX(-50%);color:rgba(247,243,234,.92);font:500 clamp(13px,1.25vw,17px)/1.4 'DM Sans',sans-serif;letter-spacing:.035em;text-shadow:0 1px 8px #000;text-align:center;white-space:nowrap}
 .inception-entry-error{position:absolute;left:50%;bottom:18px;max-width:min(600px,90vw);transform:translateX(-50%);color:#ffd4ca;font:14px/1.4 'DM Sans',sans-serif;text-shadow:0 1px 5px #000;text-align:center}
 .inception-entry-poster:focus-visible{outline:3px solid #d72735;outline-offset:-8px}
-.inception-entry-poster.is-transitioning{animation:inception-entry-out .8s ease-in both}
+.inception-entry-poster.is-transitioning{animation:inception-entry-out .6s ease-in both}
 .inception-entry-poster.is-returning{animation:inception-entry-in .75s ease-out both}
 .inception-success-ending.is-returning{pointer-events:none}
 @keyframes inception-entry-out{to{opacity:0}}
 @keyframes inception-entry-in{from{opacity:0}to{opacity:1}}
+.inception-cinematic-cover{position:fixed;inset:0;background:#000;pointer-events:auto}
+.inception-cinematic-cover.entry-black,.inception-cinematic-cover.entry-reveal{z-index:2147482999}
+.inception-cinematic-cover.return-black,.inception-cinematic-cover.return-reveal{z-index:2147483002}
+.inception-cinematic-cover.entry-reveal{animation:inception-cover-out 1s linear both}
+.inception-cinematic-cover.return-reveal{animation:inception-cover-out .75s ease-out both}
+@keyframes inception-cover-out{to{opacity:0}}
 @media(max-width:760px){.inception-entry-wordmark{bottom:clamp(100px,17vh,160px);width:min(76vw,680px)}.inception-entry-prompt{bottom:clamp(54px,9vh,84px)}}
 .inception-entry-header-actions{display:flex;align-items:center;gap:8px}
 .inception-entry-sound{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:0 10px;border:1px solid rgba(233,222,196,.23);border-radius:4px;background:rgba(12,13,13,.44);color:#e8e4db;font:11px 'DM Sans',sans-serif;cursor:pointer}
@@ -99,10 +105,12 @@
 .inception-success-ending.is-returning{animation:inception-ending-out .75s ease-in both}
 .inception-success-ending-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;opacity:1;transition:opacity .7s ease}
 .inception-ending-card{position:absolute;inset:0;display:grid;align-content:center;justify-items:center;gap:12px;padding:24px;box-sizing:border-box;color:#f4f3ef;text-align:center;animation:inception-card-in 1.2s ease-out both}
+.inception-ending-title-card{animation-duration:.3s}
+.inception-ending-logo-card{animation-duration:.35s}
 .inception-success-ending.is-card-exit .inception-ending-title-card{animation:inception-card-out .75s ease-in both}
 .inception-ending-title-card{font:400 clamp(26px,4.4vw,54px)/1 'DM Sans',sans-serif;letter-spacing:.29em;text-indent:.29em}
 .inception-ending-title-card img{display:block;width:clamp(220px,28vw,460px);max-width:82vw;height:auto}
-.inception-success-ending.is-card-exit .inception-ending-logo-card{animation:inception-card-out .75s ease-in both}
+.inception-success-ending.is-card-exit .inception-ending-logo-card{animation:inception-card-out var(--ending-card-exit-duration,.75s) ease-in both}
 .inception-ending-logo-card img{display:block;width:min(400px,82vw,calc(1080px / var(--device-pixel-ratio,1)));max-height:min(400px,82vw,calc(1080px / var(--device-pixel-ratio,1)));height:auto;object-fit:contain}
 @keyframes inception-ending-in{from{opacity:0}to{opacity:1}}
 @keyframes inception-ending-out{from{opacity:1}to{opacity:0}}
@@ -112,6 +120,8 @@
 @media(prefers-reduced-motion:reduce){.inception-success-ending,.inception-ending-card{animation:none}.inception-success-ending-video{transition:none}}
 
 .inception-intro-video{object-fit:contain;background:#10110f}
+.inception-cinematic-cover.reduced-motion.entry-reveal{animation-duration:.1s}
+.inception-cinematic-cover.reduced-motion.return-reveal{animation-duration:.08s}
 .inception-film-caption-bands{position:fixed;z-index:2;pointer-events:none;overflow:hidden;background:transparent}
 .inception-film-caption-bands:before,.inception-film-caption-bands:after{position:absolute;left:0;width:100%;height:12.963%;background:#070807;content:''}
 .inception-film-caption-bands:before{top:0}

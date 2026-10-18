@@ -371,6 +371,31 @@
     "sha256": "0256321d45e8afbb91304adbd1c63ac078d4cd7c17371456a5ff171a9a000317"
   },
   {
+    "file": "strongroom-success-v4.mp4",
+    "bytes": 8414935,
+    "durationSeconds": 39.766666666666666,
+    "audioDurationSeconds": 39.75775,
+    "filmDurationSeconds": 29.166666666666668,
+    "filmFrameCount": 875,
+    "videoFrameCount": 1193,
+    "dimensions": "1920x1080",
+    "frameRate": 30,
+    "videoCodec": "h264",
+    "audioCodec": "aac",
+    "scoreSourceIntervalSeconds": [
+      120.69225,
+      132.45
+    ],
+    "scoreFadeSeconds": [
+      129.2,
+      132.45
+    ],
+    "scoreAtFilmEndSeconds": 121.85891666666667,
+    "scoreCalibrationDb": 4.748,
+    "sha256": "006543d6009ab34e5a026e6a44fefcb3671a1c9745c60f49c991b3a29be5fae0",
+    "archivedV3Sha256": "0256321d45e8afbb91304adbd1c63ac078d4cd7c17371456a5ff171a9a000317"
+  },
+  {
     "file": "entry-poster-v1.jpg",
     "bytes": 305553,
     "dimensions": "3840x1600",

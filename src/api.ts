@@ -1,7 +1,9 @@
 import { beginMeasuredRequest, finishMeasuredRequest, setMetricsConsent } from './telemetry';
 
 let recordingAcknowledged = false;
-export function setRecordingAcknowledged(value: boolean) { recordingAcknowledged = value; setMetricsConsent(value); }
+let inceptionRecordingAuthorized = false;
+export function setRecordingAcknowledged(value: boolean) { recordingAcknowledged = value; setMetricsConsent(value || inceptionRecordingAuthorized); }
+export function setInceptionRecordingAuthorization(value: boolean) { inceptionRecordingAuthorized = value; setMetricsConsent(value || recordingAcknowledged); }
 
 export class ApiError extends Error {
   status: number;
@@ -17,7 +19,7 @@ export class ApiError extends Error {
 export async function api<T>(path: string, options: { method?: string; body?: unknown; token?: string; signal?: AbortSignal } = {}): Promise<T> {
   const method = options.method || 'GET';
   let metrics: ReturnType<typeof beginMeasuredRequest> = null;
-  if (recordingAcknowledged) try { metrics = beginMeasuredRequest(path, method, options.token); } catch { /* telemetry must never block a workshop request */ }
+  if (recordingAcknowledged || inceptionRecordingAuthorized) try { metrics = beginMeasuredRequest(path, method, options.token); } catch { /* telemetry must never block a workshop request */ }
   const finishMetrics = (outcome: 'success' | 'error') => { try { finishMeasuredRequest(metrics, outcome); } catch { /* telemetry is best effort */ } };
   let recorded = false;
   let messageController: AbortController | undefined;

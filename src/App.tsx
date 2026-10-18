@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { PanelsTopLeft, FlaskConical, Users, SlidersHorizontal, Sun, Moon, LogOut, ArrowUpRight, Plus, Search, ChevronRight, Copy, Check, RefreshCcw, CircleHelp, Network, BookOpen, Layers3, ChartNoAxesCombined } from 'lucide-react';
-import { api, date, setRecordingAcknowledged } from './api';
+import { api, date, setInceptionRecordingAuthorization, setRecordingAcknowledged } from './api';
 import type { Bootstrap, Summary, User } from './types';
 import { Mark, Status, Button, Field, Empty } from './ui';
 import { Editor } from './Editor';
@@ -20,6 +20,12 @@ import { navigateMetrics, syncMetricsIdentity } from './telemetry';
 
 let historyIndex = 0;
 let approvedNavigation: string | null = null;
+type InceptionEntryResult = { actorId: string; recordingAuthorized: boolean; policyId: string | null; ordinaryRecordingNotice?: boolean };
+let inceptionEntryFlight: Promise<InceptionEntryResult> | null = null;
+const establishInceptionEntry = () => {
+  if (!inceptionEntryFlight) inceptionEntryFlight = api<InceptionEntryResult>('/inception/entry', { method: 'POST', body: {} }).finally(() => { inceptionEntryFlight = null; });
+  return inceptionEntryFlight;
+};
 
 export function navigate(path: string) {
   if (!window.dispatchEvent(new CustomEvent('workshop:navigate', { cancelable: true }))) return false;
@@ -69,9 +75,9 @@ export function App() {
     return () => window.removeEventListener('popstate', listener);
   }, []);
   const reload = () => api<Bootstrap>('/bootstrap').then(setBootstrap).catch(e => setError(e.message));
-  useEffect(() => { if (!standaloneCollection) void reload(); }, [standaloneCollection]);
-  useEffect(() => { const allowed = !requiresStandaloneConsent && Boolean(bootstrap) && (isInceptionRoute ? bootstrap?.recordingAccepted === true : bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true); setRecordingAcknowledged(allowed); navigateMetrics(path); }, [path, bootstrap, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired, requiresStandaloneConsent, isInceptionRoute]);
-  useEffect(() => { syncMetricsIdentity(bootstrap?.user?.id || null); }, [path, bootstrap?.user?.id, bootstrap?.needsSetup, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired]);
+  useEffect(() => { if (!standaloneCollection && !isInceptionRoute) void reload(); }, [standaloneCollection, isInceptionRoute]);
+  useEffect(() => { if (isInceptionRoute) return; const allowed = !requiresStandaloneConsent && Boolean(bootstrap) && (bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true); setRecordingAcknowledged(allowed); navigateMetrics(path); }, [path, bootstrap, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired, requiresStandaloneConsent, isInceptionRoute]);
+  useEffect(() => { if (isInceptionRoute) return; syncMetricsIdentity(bootstrap?.user?.id || null); }, [path, bootstrap?.user?.id, bootstrap?.needsSetup, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired, isInceptionRoute]);
   useEffect(() => {
     const listener = (event: MessageEvent) => {
       const frame = document.querySelector<HTMLIFrameElement>('.mission-host iframe');
@@ -85,7 +91,8 @@ export function App() {
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4500); return () => clearTimeout(timer); }, [toast]);
   const notify = (message: string) => setToast(message);
   let content: ReactNode;
-  if (path === '/reference/research/preview') content = <PassportReference researchPreview />;
+  if (isInceptionRoute) content = <DirectInceptionEntry />;
+  else if (path === '/reference/research/preview') content = <PassportReference researchPreview />;
   else if (path.startsWith('/reference/play/')) content = <PassportReference blindToken={path.split('/')[3]} />;
   else if (path.startsWith('/diary/play/')) content = <RiddleDiary blindToken={path.split('/')[3]} />;
   else if (path.startsWith('/collect/')) content = <CollectionParticipant key={path.split('/')[2]} token={path.split('/')[2]} />;
@@ -95,8 +102,7 @@ export function App() {
   else if (!bootstrap.user && bootstrap.rootEntry && !path.startsWith('/join/')) content = <RootEntry onDone={() => { navigate(isInceptionRoute ? inceptionDestination : path || '/'); void reload(); }} />;
   else if (!bootstrap.user && bootstrap.privateEntry && !path.startsWith('/join/')) content = <div className="auth-shell"><div className="auth-card"><Mark /><p className="eyebrow">LEVEL WORKSHOP</p><h1>A private workshop.</h1><p className="muted auth-description">Open the invitation link shared with you to enter the workshop.</p></div></div>;
   else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate(path === '/diary' || path === '/mission' ? path : isInceptionRoute ? inceptionDestination : '/'); void reload(); }} />;
-  else if ((isInceptionRoute || bootstrap.recordingNoticeRequired === true) && (bootstrap.recordingAccepted !== true || bootstrap.recordingNoticeVersion !== 'recording-notice-v1')) content = <RecordingNotice title={isInceptionRoute ? 'Before you enter Inception' : undefined} onAccepted={() => { setRecordingAcknowledged(true); void reload(); }} />;
-  else if (isInceptionRoute) content = <div className="inception-standalone-route"><InceptionLevel /></div>;
+  else if (bootstrap.recordingNoticeRequired === true && (bootstrap.recordingAccepted !== true || bootstrap.recordingNoticeVersion !== 'recording-notice-v1')) content = <RecordingNotice onAccepted={() => { setRecordingAcknowledged(true); void reload(); }} />;
   else {
     const user = bootstrap.user;
     const memberModel = { connected: bootstrap.model.connected, model: bootstrap.model.model || 'Not configured', provider: bootstrap.model.provider || 'Not configured' };
@@ -131,6 +137,33 @@ export function App() {
     </div>;
   }
   return <>{content}{!isInceptionRoute && tourOpen && inWorkspace && bootstrap?.user && recordingPermitted && <Tutorial key={bootstrap.user.id} user={bootstrap.user} path={path} navigate={navigate} close={() => { setTourOpen(false); setBootstrap(b => b ? { ...b, tutorialDone: true } : b); }} />}{!isInceptionRoute && toast && <div role="status" className="toast"><Check size={15} />{toast}<button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast('')}>×</button></div>}</>;
+}
+
+function DirectInceptionEntry() {
+  const [entry, setEntry] = useState<InceptionEntryResult | null>(null);
+  const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setRecordingAcknowledged(false);
+    setInceptionRecordingAuthorization(false);
+    syncMetricsIdentity(null);
+    navigateMetrics(window.location.pathname);
+    void establishInceptionEntry().then(result => {
+      if (!active) return;
+      setEntry(result);
+      if (result.recordingAuthorized) {
+        syncMetricsIdentity(result.actorId);
+        setInceptionRecordingAuthorization(true);
+        setRecordingAcknowledged(false);
+        navigateMetrics(window.location.pathname);
+      }
+    }).catch(cause => { if (active) setError((cause as Error).message || 'The Inception entry link is unavailable.'); });
+    return () => { active = false; setInceptionRecordingAuthorization(false); };
+  }, [attempt]);
+  if (!entry) return <main className="inception-loading" aria-busy={error ? 'false' : 'true'}>{error ? <><p role="alert">{error}</p><Button className="inception-quiet-button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</Button></> : <p>Opening the strongroom…</p>}</main>;
+  if (entry.ordinaryRecordingNotice) return <RecordingNotice title="Before you enter Inception" onAccepted={() => { syncMetricsIdentity(entry.actorId); setInceptionRecordingAuthorization(false); setRecordingAcknowledged(true); setEntry(current => current ? { ...current, recordingAuthorized: true, ordinaryRecordingNotice: false } : current); }} />;
+  return <div className="inception-standalone-route"><InceptionLevel directEntry /></div>;
 }
 
 function RootEntry({ onDone }: { onDone: () => void }) {

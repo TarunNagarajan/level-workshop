@@ -206,7 +206,7 @@ async function openSession() {
   flight = (async () => {
     let established = false;
     try {
-      const response = await fetch('/api/telemetry/session', { method: 'POST', credentials: 'same-origin', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const response = await fetch('/api/telemetry/session', { method: 'POST', credentials: 'same-origin', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ view }) });
       if (!response.ok) return;
       const data = await response.json() as { enabled?: boolean; sessionId?: string; heartbeatSeconds?: number; idleAfterMs?: number };
       if (generation !== sessionGeneration || identity !== sessionIdentity || identityChange !== undefined || !recordingConsent) return;
