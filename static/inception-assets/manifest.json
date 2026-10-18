@@ -8,10 +8,9 @@
   "introVideo": "/inception-assets/strongroom-intro-v4.mp4",
   "introDurationSeconds": 25,
   "captions": "/inception-assets/strongroom-intro-v4.vtt",
-  "successVideo": "/inception-assets/strongroom-success-v1.mp4",
+  "successVideo": "/inception-assets/strongroom-success-v2.mp4",
   "successCaptions": "/inception-assets/strongroom-success-v1.vtt",
   "successDurationSeconds": 29.17,
-  "approvedTrack": null,
   "roomTone": "/inception-assets/strongroom-roomtone-v1.mp3",
   "portraits": {
     "eames": "/inception-assets/eames-portrait-v1.webp",
@@ -84,13 +83,27 @@
       "sha256": "13cc71c955c121237a166c574c17ea4cc5c3bf542b04343d01df6927e015d07d"
     },
     "successVideo": {
-      "kind": "versioned win-only film ending; source audio retained; immutable after publication",
-      "sourceSeconds": [
+      "kind": "Versioned ending using the same reviewed cached source interval and framing as v1; neither video nor audio terminal fade is applied.",
+      "sourceDescription": "Previously reviewed local film cache; no remote download",
+      "sourceIntervalSeconds": [
         39.5,
         68.65
       ],
+      "crop": "1920x800 at x=0,y=140; padded to 1920x1080 with black bars",
       "durationSeconds": 29.17,
-      "sha256": "8f387fdbcad3bffd9c1bee6666ed02f37d583966fb8ea70dd1d4cb1e0bea0bf8"
+      "video": "H.264, 30 fps, yuv420p; no visual fade filter",
+      "visualFade": false,
+      "audio": "48 kHz stereo AAC at 160 kbit/s encoded from the same cached source interval without an audio fade",
+      "audioFade": false,
+      "audioSourceIntervalSeconds": [
+        39.5,
+        68.65
+      ],
+      "sourceSha256": "3e393ddc2e7cecdd14440bb3a029a2249510b0e3a8414f3cd46aaad982d39419",
+      "sha256": "d5e8e418dd364efb810b137e31b22c98b779f3016fa437f9124a4b701db88b0f",
+      "bytes": 6599221,
+      "audioPacketStreamSha256": "973270722374d37e165195d6bb6b910b687f193d85ff5cb791961d55bfe90755",
+      "archivedV1Sha256": "8f387fdbcad3bffd9c1bee6666ed02f37d583966fb8ea70dd1d4cb1e0bea0bf8"
     },
     "successCaptions": {
       "kind": "scene-summary captions for the edited film ending",
@@ -237,6 +250,54 @@
           ],
           "loopEdgeRmsDifferenceDb": 1.45
         }
+      },
+      "creditsTailV2": {
+        "kind": "non-looping final-score tail from the user-supplied licensed composition; licensing assertion supplied by the user and not independently verified",
+        "sourceDescription": "Neutral asset name; source title and local path are intentionally omitted from public metadata",
+        "path": "/inception-assets/strongroom-score-credits-tail-v2.mp3",
+        "bytes": 486284,
+        "sourceSeconds": [
+          120,
+          144.256
+        ],
+        "sourceSha256": "64c6a8cde658e3ebac33b560ce82a832bd1ed3a6e44068894fade70a0c2c0975",
+        "sha256": "1049bf6d7f96284caae64aa773ecda00f9099ffa8cf9d12cb80faf001a5a2e34",
+        "durationSeconds": 24.256,
+        "decodedSeconds": 24.256,
+        "sampleRate": 48000,
+        "channels": 2,
+        "bitrate": "160 kbit/s MP3",
+        "looped": false,
+        "initialFadeSeconds": 0,
+        "fadeOutSeconds": 6,
+        "fadeOutCurve": "six-second cosine fade to silence after a fixed calibration gain",
+        "calibrationDb": 4.748,
+        "calibrationWindowSeconds": [
+          2.5,
+          0.5
+        ],
+        "calibrationReference": "mean RMS over the frozen film from 2.5 to 0.5 seconds before its decoded end, excluding its encoded terminal fade",
+        "referenceFilmRmsDbfs": -13.319,
+        "sourceOpeningRmsDbfs": -18.067,
+        "decodedOpeningRmsDbfs": -13.765,
+        "rmsDbfs": -15.93,
+        "peakDbfs": -2.09,
+        "handoff": {
+          "prerollSeconds": 1.15,
+          "durationSeconds": 0.25,
+          "curve": "silent 1.15-second cue pre-roll followed by one coordinated equal-power cosine native-video fade and sine WebAudio deck fade over the final 250 milliseconds",
+          "maximumCompositeWindowRmsDbfs": -14.11,
+          "minimumCompositeWindowRmsDbfs": -14.11,
+          "maximumCompositeWindowPeakDbfs": -3.32,
+          "windowSeconds": 0.5,
+          "windows": [
+            {
+              "seconds": 0.25,
+              "rmsDbfs": -14.11,
+              "peakDbfs": -3.32
+            }
+          ]
+        }
       }
     },
     "endingWordmark": {
@@ -251,13 +312,80 @@
       ],
       "fill": "#f4f3ef",
       "sha256": "069ae9505e1e9db8491cd5f62564740830bebc62298d2dac7acfaf66ba6fe5a2"
+    },
+    "gameplayLoop": {
+      "kind": "continuous loop edit of user-supplied licensed score; licensing assertion supplied by the user and not independently verified",
+      "sourceDescription": "User-supplied latest download; no local path or source title is published",
+      "path": "/inception-assets/strongroom-score-gameplay-v1.mp3",
+      "bytes": 2561324,
+      "durationSeconds": 128,
+      "sourceSegmentsSeconds": [
+        [
+          12,
+          132
+        ],
+        [
+          132,
+          140
+        ],
+        [
+          4,
+          12
+        ]
+      ],
+      "sourceSha256": "64c6a8cde658e3ebac33b560ce82a832bd1ed3a6e44068894fade70a0c2c0975",
+      "sha256": "49b53e42eca6c2802b24b2e567b9f4d15c5c5a8cc53320df7a00a630efc8a05f",
+      "sampleRate": 48000,
+      "channels": 2,
+      "bitrate": "160 kbit/s MP3",
+      "encoding": "Metadata-free stereo MP3; original tempo and pitch preserved",
+      "crossfadeSeconds": 8,
+      "crossfadeCurve": "Eight-second sample-accurate equal-power tail-to-head overlap at the end of the 120-second continuous body",
+      "distinctMusicalSeconds": 128,
+      "looped": true,
+      "decodedSeconds": 128,
+      "rmsDbfs": -23.21,
+      "peakDbfs": -6.89,
+      "loopBoundaryJump": 0.0001979,
+      "loopLocalDerivativeP99": 0.00101941,
+      "loopBoundaryJumpRatio": 0.194,
+      "loopEdgeRmsDbfs": [
+        -36.56,
+        -37.3
+      ],
+      "loopEdgeRmsDifferenceDb": 0.74,
+      "editBoundaryJump": 0.00112677,
+      "editLocalDerivativeP99": 0.00289961,
+      "editBoundaryJumpRatio": 0.389,
+      "editAdjacentRmsDbfs": [
+        -32.55,
+        -38.75
+      ],
+      "editAdjacentRmsDifferenceDb": 6.2
+    },
+    "successVideoV1": {
+      "kind": "versioned win-only film ending; source audio retained; immutable after publication",
+      "sourceSeconds": [
+        39.5,
+        68.65
+      ],
+      "durationSeconds": 29.17,
+      "sha256": "8f387fdbcad3bffd9c1bee6666ed02f37d583966fb8ea70dd1d4cb1e0bea0bf8"
+    },
+    "endingLogo": {
+      "kind": "original user-supplied CSES logo PNG, copied byte for byte",
+      "dimensions": [
+        1080,
+        1080
+      ],
+      "bytes": 11768,
+      "sha256": "3a900361cae625a9fbbfdb481fc1e8a6b34fe40227d2f38a41d1166cf7ca0789"
     }
   },
-  "musicCues": {
-    "calm": "/inception-assets/strongroom-score-calm-v1.mp3",
-    "developing": "/inception-assets/strongroom-score-developing-v1.mp3",
-    "urgent": "/inception-assets/strongroom-score-urgent-v1.mp3"
-  },
-  "creditsCue": "/inception-assets/strongroom-score-credits-v1.mp3",
-  "endingWordmark": "/inception-assets/inception-wordmark-v1.svg"
+  "creditsCue": "/inception-assets/strongroom-score-credits-tail-v2.mp3",
+  "endingWordmark": "/inception-assets/inception-wordmark-v1.svg",
+  "gameplayLoop": "/inception-assets/strongroom-score-gameplay-v1.mp3",
+  "creditsDurationSeconds": 24.256,
+  "successVideoV1": "/inception-assets/strongroom-success-v1.mp4",
+  "endingLogo": "/inception-assets/cses-society-logo-v1.png"
 }

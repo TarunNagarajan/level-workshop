@@ -86,8 +86,8 @@
 .inception-success-ending.is-card-exit .inception-ending-title-card{animation:inception-card-out .75s ease-in both}
 .inception-ending-title-card{font:400 clamp(26px,4.4vw,54px)/1 'DM Sans',sans-serif;letter-spacing:.29em;text-indent:.29em}
 .inception-ending-title-card img{display:block;width:clamp(220px,28vw,460px);max-width:82vw;height:auto}
-.inception-ending-credit-card p{margin:0;color:#c9c8c2;font:300 clamp(14px,1.5vw,19px)/1.5 'DM Sans',sans-serif;letter-spacing:.11em}
-.inception-ending-credit-card strong{font:400 clamp(20px,2.2vw,30px)/1.25 'DM Sans',sans-serif;letter-spacing:.17em}
+.inception-success-ending.is-card-exit .inception-ending-logo-card{animation:inception-card-out .75s ease-in both}
+.inception-ending-logo-card img{display:block;width:min(400px,82vw,calc(1080px / var(--device-pixel-ratio,1)));max-height:min(400px,82vw,calc(1080px / var(--device-pixel-ratio,1)));height:auto;object-fit:contain}
 @keyframes inception-ending-in{from{opacity:0}to{opacity:1}}
 @keyframes inception-card-in{from{opacity:0}to{opacity:1}}
 @keyframes inception-card-out{from{opacity:1}to{opacity:0}}

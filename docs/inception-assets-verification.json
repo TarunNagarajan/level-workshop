@@ -220,5 +220,104 @@
     "dimensions": "1130.6x144.8",
     "source": "https://commons.wikimedia.org/wiki/File:Inception-wordmark.svg",
     "sha256": "069ae9505e1e9db8491cd5f62564740830bebc62298d2dac7acfaf66ba6fe5a2"
+  },
+  {
+    "file": "strongroom-score-gameplay-v1.mp3",
+    "bytes": 2561324,
+    "durationSeconds": 128,
+    "sampleRate": 48000,
+    "channels": 2,
+    "sourceSegmentsSeconds": [
+      [
+        12,
+        132
+      ],
+      [
+        132,
+        140
+      ],
+      [
+        4,
+        12
+      ]
+    ],
+    "sha256": "49b53e42eca6c2802b24b2e567b9f4d15c5c5a8cc53320df7a00a630efc8a05f",
+    "decodedSeconds": 128,
+    "rmsDbfs": -23.21,
+    "peakDbfs": -6.89,
+    "loopBoundaryJump": 0.0001979,
+    "loopLocalDerivativeP99": 0.00101941,
+    "loopBoundaryJumpRatio": 0.194,
+    "loopEdgeRmsDbfs": [
+      -36.56,
+      -37.3
+    ],
+    "loopEdgeRmsDifferenceDb": 0.74,
+    "editBoundaryJump": 0.00112677,
+    "editLocalDerivativeP99": 0.00289961,
+    "editBoundaryJumpRatio": 0.389,
+    "editAdjacentRmsDbfs": [
+      -32.55,
+      -38.75
+    ],
+    "editAdjacentRmsDifferenceDb": 6.2
+  },
+  {
+    "file": "strongroom-score-credits-tail-v2.mp3",
+    "bytes": 486284,
+    "durationSeconds": 24.256,
+    "decodedSeconds": 24.256,
+    "sampleRate": 48000,
+    "channels": 2,
+    "sourceSeconds": [
+      120,
+      144.256
+    ],
+    "sha256": "1049bf6d7f96284caae64aa773ecda00f9099ffa8cf9d12cb80faf001a5a2e34",
+    "initialFadeSeconds": 0,
+    "fadeOutSeconds": 6,
+    "calibrationDb": 4.748,
+    "calibrationWindowSeconds": [
+      2.5,
+      0.5
+    ],
+    "referenceFilmRmsDbfs": -13.319,
+    "sourceOpeningRmsDbfs": -18.067,
+    "decodedOpeningRmsDbfs": -13.765,
+    "rmsDbfs": -15.93,
+    "peakDbfs": -2.09,
+    "handoffPrerollSeconds": 1.15,
+    "handoffDurationSeconds": 0.25,
+    "minimumCompositeWindowRmsDbfs": -14.11,
+    "maximumCompositeWindowRmsDbfs": -14.11,
+    "maximumCompositeWindowPeakDbfs": -3.32
+  },
+  {
+    "file": "strongroom-success-v2.mp4",
+    "bytes": 6599221,
+    "durationSeconds": 29.17,
+    "sha256": "d5e8e418dd364efb810b137e31b22c98b779f3016fa437f9124a4b701db88b0f",
+    "sourceIntervalSeconds": [
+      39.5,
+      68.65
+    ],
+    "audioSourceIntervalSeconds": [
+      39.5,
+      68.65
+    ],
+    "audioPacketStreamSha256": "973270722374d37e165195d6bb6b910b687f193d85ff5cb791961d55bfe90755",
+    "archivedV1Sha256": "8f387fdbcad3bffd9c1bee6666ed02f37d583966fb8ea70dd1d4cb1e0bea0bf8",
+    "visualFade": false,
+    "audioFade": false
+  },
+  {
+    "file": "cses-society-logo-v1.png",
+    "bytes": 11768,
+    "dimensions": [
+      1080,
+      1080
+    ],
+    "sha256": "3a900361cae625a9fbbfdb481fc1e8a6b34fe40227d2f38a41d1166cf7ca0789",
+    "copiedByteForByte": true
   }
 ]

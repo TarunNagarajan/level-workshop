@@ -77,7 +77,7 @@ test.describe('Inception strongroom', () => {
   test('intro skip starts one round; inspection, conversation and review keep the saved state honest', async ({ page }) => {
     await signInOwner(page.request);
     await page.addInitScript(() => {
-      const probe = { gains: [] as Array<{ initialized: number[]; targets: number[] }>, attempted: [] as string[], played: [] as string[], pauses: [] as string[], closes: 0, failNextScore: true, failures: 0 };
+      const probe: any = { gains: [] as Array<{ initialized: number[]; targets: number[] }>, attempted: [] as string[], played: [] as string[], pauses: [] as Array<{ path: string; time: number }>, gameplayElement: null as HTMLAudioElement | null, gameplayPlayCalls: 0, closes: 0 };
       Object.defineProperty(window, '__inceptionAudioProbe', { value: probe });
       const createGain = AudioContext.prototype.createGain;
       AudioContext.prototype.createGain = function () {
@@ -90,16 +90,15 @@ test.describe('Inception strongroom', () => {
       const play = HTMLMediaElement.prototype.play, pause = HTMLMediaElement.prototype.pause, close = AudioContext.prototype.close;
       HTMLMediaElement.prototype.play = function () {
         if (this.src.includes('strongroom-score-')) probe.attempted.push(this.src);
-        if (this.src.includes('strongroom-roomtone')) {
+        if (this.src.includes('strongroom-score-gameplay-v1.mp3')) {
           probe.played.push(this.src);
+          probe.gameplayElement = this as HTMLAudioElement;
+          probe.gameplayPlayCalls++;
         }
-        if (this.src.includes('strongroom-score-calm') && probe.failNextScore) {
-          probe.failNextScore = false; probe.failures++;
-          return Promise.reject(new DOMException('Autoplay blocked by test', 'NotAllowedError'));
-        }
+        if (this.src.includes('strongroom-roomtone')) probe.played.push(this.src);
         return play.call(this);
       };
-      HTMLMediaElement.prototype.pause = function () { if (this.src.includes('strongroom-roomtone')) probe.pauses.push(this.src); return pause.call(this); };
+      HTMLMediaElement.prototype.pause = function () { if (this.src.includes('strongroom-score-gameplay-v1.mp3')) probe.pauses.push({ path: this.src, time: this.currentTime }); return pause.call(this); };
       AudioContext.prototype.close = function () { probe.closes++; return close.call(this); };
     });
     let starts = 0;
@@ -110,7 +109,7 @@ test.describe('Inception strongroom', () => {
     await page.goto('/inception');
     await expect(page.getByRole('button', { name: /Standard/ })).toHaveAttribute('aria-pressed', 'true');
     const media = await (await page.request.get('/inception-assets/manifest.json')).json();
-    for (const path of [media.closedFrame, media.openFrame, media.bridgeFrame, media.introVideo, media.captions, media.approvedTrack, media.roomTone, media.portraits?.eames, media.portraits?.fischer].filter(Boolean)) {
+    for (const path of [media.closedFrame, media.openFrame, media.bridgeFrame, media.introVideo, media.captions, media.gameplayLoop, media.roomTone, media.portraits?.eames, media.portraits?.fischer].filter(Boolean)) {
       expect((await page.request.get(path)).ok(), `media asset should be served: ${path}`).toBeTruthy();
     }
     await page.getByRole('checkbox', { name: /I understand and agree to this recording/ }).check();
@@ -118,13 +117,10 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
     await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioProbe.gains.length)).toBeGreaterThanOrEqual(3);
     const initialAudio = await page.evaluate(() => (window as any).__inceptionAudioProbe);
-    expect(initialAudio.gains[0].initialized[0]).toBe(0);
+    expect(initialAudio.gains[1].initialized[0]).toBe(0, 'the gameplay deck starts at zero before its fixed master mix opens');
     expect(initialAudio.gains[0].targets.some((gain: number) => gain > 0 && gain <= 0.7)).toBeTruthy();
-    expect(initialAudio.attempted.some((path: string) => path.includes('strongroom-score-calm-v1.mp3'))).toBeTruthy();
-    expect(initialAudio.played.some((path: string) => path.includes('strongroom-roomtone-v1.mp3'))).toBeTruthy();
-    const recoveredAudio = await page.evaluate(() => (window as any).__inceptionAudioProbe);
-    expect(recoveredAudio.failures).toBe(1);
-    expect(recoveredAudio.played.length).toBeGreaterThanOrEqual(1);
+    expect(initialAudio.attempted.some((path: string) => path.includes('strongroom-score-gameplay-v1.mp3'))).toBeTruthy();
+    expect(initialAudio.attempted.some((path: string) => /strongroom-score-(calm|developing|urgent)-v1\.mp3/.test(path))).toBeFalsy();
     await expect(page.locator('.inception-intro-chrome')).toHaveCount(0);
     await expect(page.locator('.inception-intro button')).toHaveCount(0);
     expect(starts).toBe(0);
@@ -132,10 +128,38 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
     expect(starts).toBe(1);
 
+    await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioProbe.gameplayElement?.duration || 0)).toBeGreaterThan(120);
+    await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioProbe.gameplayPlayCalls)).toBeGreaterThan(0);
+    await page.evaluate(() => { (window as any).__inceptionAudioProbe.gameplayElement.currentTime = 31.8; });
+    const beforeClockJump = await page.evaluate(() => {
+      const probe = (window as any).__inceptionAudioProbe;
+      const originalNow = Date.now.bind(Date);
+      probe.originalNow = originalNow;
+      probe.simulatedNow = originalNow();
+      Date.now = () => probe.simulatedNow;
+      return { path: probe.gameplayElement.src, plays: probe.gameplayPlayCalls, gainTargets: probe.gains[0].targets.length };
+    });
+    await page.evaluate(() => { (window as any).__inceptionAudioProbe.simulatedNow += 120_000; });
+    await page.waitForTimeout(300);
+    await page.evaluate(() => { (window as any).__inceptionAudioProbe.simulatedNow += 105_000; });
+    await page.waitForTimeout(1100);
+    const afterClockJump = await page.evaluate(() => {
+      const probe = (window as any).__inceptionAudioProbe;
+      return { path: probe.gameplayElement.src, time: probe.gameplayElement.currentTime, plays: probe.gameplayPlayCalls, gainTargets: probe.gains[0].targets.length };
+    });
+    expect(afterClockJump.path).toContain('strongroom-score-gameplay-v1.mp3');
+    expect(afterClockJump.time).toBeGreaterThan(32.5);
+    expect(afterClockJump.plays).toBe(beforeClockJump.plays);
+    expect(afterClockJump.gainTargets).toBe(beforeClockJump.gainTargets);
+
     await page.getByRole('button', { name: 'Inspect safe' }).click();
     await expect(page.getByText(/compact safe is recessed in the dark-green bedside cabinet/)).toBeVisible();
     await page.getByRole('button', { name: 'Close' }).click();
     const composer = page.getByLabel('Speak to Fischer');
+    const musicBeforeReply = await page.evaluate(() => {
+      const probe = (window as any).__inceptionAudioProbe;
+      return { path: probe.gameplayElement.src, time: probe.gameplayElement.currentTime, plays: probe.gameplayPlayCalls, gainTargets: probe.gains[0].targets.length };
+    });
     await composer.fill('What can you tell me about the safe?');
     await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
     await composer.press('Enter');
@@ -146,6 +170,26 @@ test.describe('Inception strongroom', () => {
     await expect(composer).toBeFocused();
     await expect(transcript.getByText('What can you tell me about the safe?')).toBeVisible();
     await expect(transcript.getByText('I was honoured for Special Services to the School after Hagrid was blamed. They knew whom to trust.')).toBeVisible();
+    const musicAfterReply = await page.evaluate(() => {
+      const probe = (window as any).__inceptionAudioProbe;
+      return { path: probe.gameplayElement.src, time: probe.gameplayElement.currentTime, plays: probe.gameplayPlayCalls, gainTargets: probe.gains[0].targets.length };
+    });
+    expect(musicAfterReply.path).toBe(musicBeforeReply.path);
+    expect(musicAfterReply.time).toBeGreaterThan(musicBeforeReply.time);
+    expect(musicAfterReply.plays).toBe(musicBeforeReply.plays);
+    expect(musicAfterReply.gainTargets).toBe(musicBeforeReply.gainTargets);
+    await page.evaluate(() => { (window as any).__inceptionAudioProbe.gameplayElement.currentTime = 127.55; });
+    await page.waitForTimeout(1000);
+    const afterLoopWrap = await page.evaluate(() => {
+      const probe = (window as any).__inceptionAudioProbe;
+      return { path: probe.gameplayElement.src, time: probe.gameplayElement.currentTime, plays: probe.gameplayPlayCalls, gainTargets: probe.gains[0].targets.length };
+    });
+    expect(afterLoopWrap.path).toBe(musicAfterReply.path);
+    expect(afterLoopWrap.time).toBeGreaterThan(0);
+    expect(afterLoopWrap.time).toBeLessThan(1.5);
+    expect(afterLoopWrap.plays).toBe(musicAfterReply.plays);
+    expect(afterLoopWrap.gainTargets).toBe(musicAfterReply.gainTargets);
+    await page.evaluate(() => { const probe = (window as any).__inceptionAudioProbe; Date.now = probe.originalNow; });
     await expect(page.getByRole('button', { name: /Conversation history|Full conversation/i })).toHaveCount(0);
     for (let index = 0; index < 5; index++) {
       const count = await transcript.locator('article').count();
@@ -165,12 +209,26 @@ test.describe('Inception strongroom', () => {
 
     const before = await page.getByRole('timer').getAttribute('aria-label');
     await expect(page.getByRole('button', { name: 'Rewatch approach' })).toHaveCount(0);
+    const beforeMute = await page.evaluate(() => {
+      const probe = (window as any).__inceptionAudioProbe;
+      return { path: probe.gameplayElement.src, time: probe.gameplayElement.currentTime };
+    });
     await page.getByRole('button', { name: 'Mute sound' }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioProbe.gains[0].targets.at(-1))).toBe(0);
     const mutedAudio = await page.evaluate(() => (window as any).__inceptionAudioProbe);
     expect(mutedAudio.pauses.length).toBeGreaterThan(0);
+    const pausedAt = await page.evaluate(() => (window as any).__inceptionAudioProbe.gameplayElement.currentTime);
+    await page.waitForTimeout(250);
+    expect(await page.evaluate(() => (window as any).__inceptionAudioProbe.gameplayElement.currentTime)).toBe(pausedAt);
     await page.getByRole('button', { name: 'Unmute sound' }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioProbe.gains[0].targets.at(-1))).toBeGreaterThan(0);
+    await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioProbe.gameplayElement.paused)).toBe(false);
+    const afterUnmute = await page.evaluate(() => {
+      const probe = (window as any).__inceptionAudioProbe;
+      return { path: probe.gameplayElement.src, time: probe.gameplayElement.currentTime };
+    });
+    expect(afterUnmute.path).toBe(beforeMute.path);
+    expect(afterUnmute.time).toBeGreaterThanOrEqual(pausedAt);
     const after = await page.getByRole('timer').getAttribute('aria-label');
     const seconds = (value: string | null) => { const match = /^(\d+):(\d+) remaining$/.exec(value || ''); return match ? Number(match[1]) * 60 + Number(match[2]) : 0; };
     expect(Math.abs(seconds(before) - seconds(after))).toBeLessThanOrEqual(2);
@@ -193,9 +251,10 @@ test.describe('Inception strongroom', () => {
     expect(starts).toBe(1);
     expect(errors).toEqual([]);
     const replay = page.getByRole('button', { name: 'Start a new attempt' });
+    const gainsBeforeReplay = await page.evaluate(() => (window as any).__inceptionAudioProbe.gains.length as number);
     await replay.click();
     await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
-    await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioProbe.gains.length)).toBe(2);
+    await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioProbe.gains.length)).toBeGreaterThanOrEqual(gainsBeforeReplay + 3);
     expect(starts).toBe(1);
     await page.keyboard.press('Escape');
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
@@ -261,6 +320,9 @@ test.describe('Inception strongroom', () => {
     await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThan(6);
 
     const originalViewport = page.viewportSize()!;
+    const exitFullscreen = page.getByRole('button', { name: 'Exit fullscreen' });
+    if (await exitFullscreen.count()) await exitFullscreen.click();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
     for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
       await page.setViewportSize(viewport);
       const rows = await transcript.locator('article').evaluateAll(elements => elements.map(element => {
@@ -431,8 +493,10 @@ test.describe('Inception strongroom', () => {
     const telemetryBatches: string[] = [];
     const protectedActions: string[] = [];
     await page.addInitScript(() => {
-      const lifecycle = { closed: 0 };
+      const lifecycle = { closed: 0, audioElements: [] as HTMLAudioElement[] };
       Object.defineProperty(window, '__inceptionAudioLifecycle', { value: lifecycle });
+      const NativeAudio = window.Audio;
+      (window as any).Audio = function () { const audio = new NativeAudio(); lifecycle.audioElements.push(audio); return audio; };
       const close = AudioContext.prototype.close;
       AudioContext.prototype.close = function () {
         return close.call(this).then(() => { lifecycle.closed++; });
@@ -552,11 +616,20 @@ test.describe('Inception strongroom', () => {
     await page.screenshot({ path: join(snapshotDirectory, 'inception-success-ending-desktop.png') });
     const requestsAtWin = protectedActions.length;
     await expect(page.locator('.inception-success-ending button, .inception-success-ending input, .inception-success-ending video[controls]')).toHaveCount(0);
-    await page.locator('.inception-success-ending video').evaluate(video => video.dispatchEvent(new Event('ended')));
+    await page.locator('.inception-success-ending video').evaluate(video => { const ending = video as HTMLVideoElement; ending.currentTime = ending.duration; ending.dispatchEvent(new Event('ended')); });
     await expect(page.locator('.inception-success-ending')).toHaveClass(/is-title-card/);
     await expect(page.locator('.inception-result')).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'INCEPTION', exact: true })).toBeVisible({ timeout: 10000 });
     await expect(page.locator('.inception-result')).toHaveCount(0);
+    const creditsPath = await page.evaluate(() => (window as any).__inceptionAudioLifecycle.audioElements[1]?.src as string);
+    expect(creditsPath).toContain('strongroom-score-credits-tail-v2.mp3');
+    await page.evaluate(() => { ((window as any).__inceptionAudioLifecycle.audioElements[1] as HTMLAudioElement).pause(); });
+    await expect(page.locator('.inception-success-ending')).toHaveClass(/is-title-card/);
+    await page.evaluate(() => {
+      const audio = (window as any).__inceptionAudioLifecycle.audioElements[1] as HTMLAudioElement;
+      audio.currentTime = 21.5;
+      audio.dispatchEvent(new Event('timeupdate'));
+    });
     await expect.poll(() => page.locator('.inception-success-ending').evaluate(element => element.classList.contains('is-card-exit')), { timeout: 10000 }).toBe(true);
     await expect.poll(() => page.getByRole('heading', { name: 'INCEPTION', exact: true }).evaluate(element => Number.parseFloat(getComputedStyle(element).opacity)), { timeout: 1000 }).toBeLessThan(0.9);
     const titleOpacity = await page.getByRole('heading', { name: 'INCEPTION', exact: true }).evaluate(element => Number.parseFloat(getComputedStyle(element).opacity));
@@ -568,11 +641,41 @@ test.describe('Inception strongroom', () => {
     expect(titleOpacity, JSON.stringify(titleAnimationState)).toBeLessThan(0.9);
     await expect(page.getByRole('heading', { name: 'INCEPTION', exact: true })).toHaveCount(0, { timeout: 2000 });
     await expect(page.locator('.inception-ending-credit-card')).toHaveCount(0);
+    await expect(page.locator('.inception-ending-logo-card')).toHaveCount(0);
     await expect(page.locator('.inception-success-ending')).toBeVisible();
-    await expect(page.getByText('CSES ML Team')).toBeVisible({ timeout: 10000 });
-    await page.waitForTimeout(13000);
+    await expect(page.getByText(/CSES ML Team|Brought to you by/)).toHaveCount(0);
+    await page.evaluate(() => {
+      const audio = (window as any).__inceptionAudioLifecycle.audioElements[1] as HTMLAudioElement;
+      audio.playbackRate = 0.25;
+      audio.currentTime = 22.8;
+      void audio.play();
+    });
+    const logoCard = page.locator('.inception-ending-logo-card');
+    await expect(logoCard).toBeVisible({ timeout: 5000 });
+    await expect(logoCard.locator('img')).toHaveAttribute('src', /cses-society-logo-v1\.png/);
+    await expect(logoCard.getByRole('img', { name: 'CSES' })).toBeVisible();
+    const logoLayout = await logoCard.locator('img').evaluate(image => {
+      const rect = image.getBoundingClientRect();
+      return { width: rect.width, height: rect.height, centerX: rect.left + rect.width / 2, centerY: rect.top + rect.height / 2, viewportWidth: innerWidth, viewportHeight: innerHeight, dpr: devicePixelRatio };
+    });
+    expect(logoLayout.width).toBeLessThanOrEqual(400);
+    expect(logoLayout.width * logoLayout.dpr).toBeLessThanOrEqual(1080);
+    expect(Math.abs(logoLayout.centerX - logoLayout.viewportWidth / 2)).toBeLessThan(1);
+    expect(Math.abs(logoLayout.centerY - logoLayout.viewportHeight / 2)).toBeLessThan(1);
+    await expect(page.locator('.inception-ending-title-card')).toHaveCount(0);
+    await expect.poll(() => page.locator('.inception-success-ending').evaluate(element => element.classList.contains('is-card-exit'))).toBe(false);
+    await expect(page.locator('.inception-success-ending')).toHaveClass(/is-title-card/);
     await expect(page.locator('.inception-success-ending')).toBeVisible();
-    await expect(page.getByText('CSES ML Team')).toBeVisible();
+    await expect.poll(() => page.locator('.inception-success-ending').evaluate(element => element.classList.contains('is-card-exit')), { timeout: 2000 }).toBe(true);
+    await page.evaluate(() => { ((window as any).__inceptionAudioLifecycle.audioElements[1] as HTMLAudioElement).pause(); });
+    await expect.poll(() => logoCard.evaluate(element => Number.parseFloat(getComputedStyle(element).opacity)), { timeout: 2000 }).toBeLessThan(0.9);
+    await expect(logoCard).toHaveCount(0, { timeout: 2000 });
+    await page.evaluate(() => {
+      const audio = (window as any).__inceptionAudioLifecycle.audioElements[1] as HTMLAudioElement;
+      audio.currentTime = 24.25;
+      audio.dispatchEvent(new Event('ended'));
+    });
+    await expect(page.locator('.inception-success-ending')).toHaveClass(/is-title-card/);
     await expect(page.locator('.inception-result')).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioLifecycle.closed)).toBeGreaterThan(0);
     expect(protectedActions).toHaveLength(requestsAtWin);
