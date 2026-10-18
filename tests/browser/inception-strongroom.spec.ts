@@ -33,6 +33,11 @@ async function startFreshAttempt(page: import('@playwright/test').Page, skipAppr
   await expect(page.locator('.inception-root')).toBeVisible();
   const returnedMenu = page.getByRole('button', { name: 'Return to main menu' });
   if (await returnedMenu.count()) {
+    const entryPoster = page.getByRole('button', { name: /Click (anywhere to begin|to continue)/ });
+    if (await entryPoster.isVisible()) {
+      await entryPoster.click();
+      await expect(page.locator('.inception-root')).not.toHaveAttribute('inert', '');
+    }
     await returnedMenu.click();
     const continueButton = page.getByRole('button', { name: 'Click to continue' });
     await expect(continueButton).toBeVisible();
@@ -88,12 +93,7 @@ async function startFreshAttempt(page: import('@playwright/test').Page, skipAppr
 }
 
 async function expectComposerStatusesHidden(page: import('@playwright/test').Page) {
-  const geometry = await page.locator('.inception-composer .inception-send-status').evaluateAll(elements => elements.map(element => {
-    const rect = element.getBoundingClientRect();
-    return { width: rect.width, height: rect.height, position: getComputedStyle(element).position };
-  }));
-  expect(geometry.length).toBeGreaterThan(0);
-  expect(geometry.every(item => item.width <= 1 && item.height <= 1 && item.position === 'absolute')).toBeTruthy();
+  await expect(page.locator('.inception-composer .inception-send-status')).toHaveCount(0);
 }
 
 async function expectCaptionCenteredInEncodedBar(page: import('@playwright/test').Page, videoSelector: string, captionSelector = '.inception-film-caption') {
@@ -520,6 +520,7 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
     await composer.press('Enter');
     await started;
+    await expect(page.getByRole('button', { name: 'Sending to Fischer' })).toBeVisible();
     await transcript.evaluate(element => { element.scrollTop = 0; });
     await transcript.focus();
     await expect.poll(() => transcript.evaluate(element => element.scrollTop)).toBeLessThan(3);
@@ -540,6 +541,7 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
     await composer.press('Enter');
     await started;
+    await expect(page.getByRole('button', { name: 'Sending to Fischer' })).toBeVisible();
     await transcript.evaluate(element => { element.scrollTop = 0; });
     await transcript.evaluate(element => { element.scrollTop = element.scrollHeight; });
     await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThan(4);
@@ -612,10 +614,13 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('button', { name: 'Click to continue' })).toHaveCount(0);
     expect(messageRequests).toBe(2);
     await page.getByRole('button', { name: 'Finish and review' }).click();
-    await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible();
+    await expect(page.getByText('The dream gives way. The safe stays locked.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Return to main menu' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Start a new attempt' })).toHaveCount(0);
   });
 
   test('a confirmed provider failure clears only the terminal receipt and needs an explicit new send', async ({ page }) => {
+    test.setTimeout(60000);
     await signInOwner(page.request);
     await page.goto('/inception');
     await startFreshAttempt(page);
@@ -629,11 +634,16 @@ test.describe('Inception strongroom', () => {
       if (route.request().method() === 'POST') {
         const body = route.request().postDataJSON();
         requestIds.push(body.requestId);
-        if (body.content.includes('[fixture:rate-limit-once]')) { markFailureStarted(); await failureGate; }
+        if (body.content.includes('[fixture:rate-limit-once]')) {
+          markFailureStarted(); await failureGate;
+          const response = await route.fetch();
+          await route.fulfill({ response, json: { ...(await response.json()), retryAfterSeconds: 10 } });
+          return;
+        }
       }
       await route.continue();
     });
-    await composer.fill('[fixture:rate-limit-once] Tell me about the safe.');
+    await composer.fill('[fixture:rate-limit-once] Confirm this explicit retry path.');
     await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
     await composer.press('Enter');
     await failureStarted;
@@ -642,18 +652,183 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByText('Usage limit reached. Your prompt is saved. Wait before trying again.')).toBeVisible();
     await expectComposerStatusesHidden(page);
     await expect(page.getByRole('button', { name: 'Retry saved message' })).toHaveCount(0);
-    await expect(composer).toHaveValue('[fixture:rate-limit-once] Tell me about the safe.');
+    await expect(composer).toHaveValue('[fixture:rate-limit-once] Confirm this explicit retry path.');
     expect(requestIds).toHaveLength(1);
-    await expect(page.getByRole('button', { name: 'Send' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^Retry in 00:/ })).toBeDisabled();
     await composer.press('Enter');
     expect(requestIds).toHaveLength(1);
-    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled({ timeout: 5000 });
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled({ timeout: 12000 });
     await composer.press('Enter');
     await expect(page.getByText(/I was honoured for Special Services/)).toBeVisible();
     expect(requestIds).toHaveLength(2);
     expect(requestIds[0]).not.toBe(requestIds[1]);
     await page.getByRole('button', { name: 'Finish and review' }).click();
+    await expect(page.getByText('The dream gives way. The safe stays locked.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Return to main menu' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Start a new attempt' })).toHaveCount(0);
+  });
+
+  test('an accepted but unresolved receipt has bounded recovery and retries with the same ID', async ({ page }) => {
+    await page.addInitScript(() => {
+      const originalFetch = window.fetch.bind(window);
+      (window as any).__recoveryGets = 0;
+      window.fetch = async (input, init = {}) => {
+        const url = typeof input === 'string' ? input : input instanceof Request ? input.url : '';
+        if (/\/api\/inception\/rounds\/[^/]+$/.test(url) && init.method !== 'POST') {
+          (window as any).__recoveryGets++;
+          const signal = init.signal;
+          return await new Promise<Response>((_resolve, reject) => {
+            if (signal?.aborted) reject(new DOMException('Timed out.', 'AbortError'));
+            else signal?.addEventListener('abort', () => reject(new DOMException('Timed out.', 'AbortError')), { once: true });
+          });
+        }
+        return originalFetch(input, init);
+      };
+    });
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await startFreshAttempt(page);
+    await page.evaluate(() => { (window as any).__recoveryGets = 0; });
+    const composer = page.getByLabel('Speak to Fischer');
+    const requestIds: string[] = [];
+    let accepted = false;
+    await page.route('**/api/rounds/*/messages', async route => {
+      if (route.request().method() !== 'POST') { await route.continue(); return; }
+      requestIds.push(route.request().postDataJSON().requestId);
+      if (!accepted) {
+        accepted = true;
+        await route.fetch();
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'The saved reply is still being checked.', submissionId: 'fixture-pending', submissionStatus: 'pending', receiptConfirmed: true }) });
+        return;
+      }
+      await route.continue();
+    });
+    await composer.fill('Tell me about the safe.');
+    await composer.press('Enter');
+    await expect(page.getByRole('button', { name: 'Checking message receipt' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Retry saved message' })).toBeVisible({ timeout: 10000 });
+    expect(await page.evaluate(() => (window as any).__recoveryGets)).toBe(1);
+    expect(requestIds).toHaveLength(1);
+    await page.getByRole('button', { name: 'Retry saved message' }).click();
+    await expect(page.getByText(/I was honoured for Special Services/)).toBeVisible();
+    expect(requestIds).toHaveLength(2);
+    expect(requestIds[0]).toBe(requestIds[1]);
+  });
+
+  test('a late callback from the previous lifecycle cannot unlock a newer receipt check', async ({ page }) => {
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await startFreshAttempt(page);
+    const composer = page.getByLabel('Speak to Fischer');
+    const requestIds: string[] = [];
+    let releaseFirst!: () => void, releaseSecond!: () => void;
+    let firstStarted!: () => void, secondStarted!: () => void;
+    let firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let secondGate = new Promise<void>(resolve => { releaseSecond = resolve; });
+    const firstStart = new Promise<void>(resolve => { firstStarted = resolve; });
+    const secondStart = new Promise<void>(resolve => { secondStarted = resolve; });
+    await page.route('**/api/rounds/*/messages', async route => {
+      if (route.request().method() !== 'POST') { await route.continue(); return; }
+      requestIds.push(route.request().postDataJSON().requestId);
+      if (requestIds.length === 1) { firstStarted(); await firstGate; }
+      else { secondStarted(); await secondGate; }
+      await route.continue();
+    });
+    await composer.fill('Tell me about the safe.');
+    await composer.press('Enter');
+    await firstStart;
+    await page.getByRole('button', { name: 'Leave strongroom' }).click();
+    const continueButton = page.getByRole('button', { name: 'Click to continue' });
+    await expect(continueButton).toBeVisible();
+    await continueButton.click();
+    await expect(composer).toBeVisible();
+    await page.getByRole('button', { name: 'Retry saved message' }).click();
+    await secondStart;
+    expect(requestIds).toHaveLength(2);
+    expect(requestIds[0]).toBe(requestIds[1]);
+    releaseFirst();
+    await expect(page.getByRole('button', { name: 'Checking message receipt' })).toBeVisible();
+    releaseSecond();
+    await expect(page.getByText(/I was honoured for Special Services/)).toBeVisible();
+  });
+
+  test('a daily capacity failure shows a saved cooldown and opens the deliberate new attempt flow', async ({ page }) => {
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await startFreshAttempt(page);
+    const composer = page.getByLabel('Speak to Fischer');
+    const failureStarted = new Promise<void>(resolve => {
+      void page.route('**/api/rounds/*/messages', async route => {
+        if (route.request().method() === 'POST' && route.request().postDataJSON().content.includes('[fixture:rate-limit-once]')) {
+          const response = await route.fetch();
+          const body = await response.json();
+          await route.fulfill({ response, json: { ...body, retryAfterSeconds: 30 } });
+          resolve();
+          return;
+        }
+        await route.continue();
+      });
+    });
+    await composer.fill('[fixture:rate-limit-once] Check daily capacity before I continue.');
+    await composer.press('Enter');
+    await failureStarted;
+    const cooldownAction = page.getByRole('button', { name: /^Retry in 00:2[0-9]$/ });
+    await expect(cooldownAction).toBeVisible();
+    await page.reload();
+    await page.getByRole('button', { name: 'Click to continue' }).click();
+    await expect(page.getByRole('button', { name: /^Retry in 00:2[0-9]$/ })).toBeVisible();
+    await expect(composer).toBeVisible();
     await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible();
+    await expect(composer).toHaveValue('[fixture:rate-limit-once] Check daily capacity before I continue.');
+    await page.getByRole('button', { name: 'Start a new attempt' }).click();
+    await expect(page.getByRole('button', { name: 'Click anywhere to begin' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Inception strongroom' })).toHaveCount(0);
+    const actorScope = await page.evaluate(async () => (await (await fetch('/api/inception')).json()).actorScope as string);
+    const savedNextDraft = await page.evaluate(scope => sessionStorage.getItem(`workshop-inception-next-attempt-draft:${scope}`), actorScope);
+    expect(JSON.parse(savedNextDraft || 'null')).toMatchObject({ actorScope, draft: '[fixture:rate-limit-once] Check daily capacity before I continue.' });
+    await page.getByRole('button', { name: 'Click anywhere to begin' }).click();
+    await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+    await finishApproachForTest(page);
+    await expect(composer).toBeVisible();
+    await expect(composer).toHaveValue('[fixture:rate-limit-once] Check daily capacity before I continue.');
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
+    expect(await page.evaluate(scope => sessionStorage.getItem(`workshop-inception-next-attempt-draft:${scope}`), actorScope)).toBeNull();
+  });
+
+  test('a hung review response and recovery check release the finish controls', async ({ page }) => {
+    await page.addInitScript(() => {
+      const originalFetch = window.fetch.bind(window);
+      const originalSetTimeout = window.setTimeout.bind(window);
+      (window as any).__hangReview = false;
+      (window as any).__hungReviewRequests = { POST: 0, GET: 0 };
+      window.setTimeout = ((handler: TimerHandler, timeout = 0, ...args: any[]) => originalSetTimeout(handler, timeout >= 4000 ? 100 : timeout, ...args)) as typeof window.setTimeout;
+      window.fetch = async (input, init = {}) => {
+        const url = typeof input === 'string' ? input : input instanceof Request ? input.url : '';
+        const method = (init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+        if ((window as any).__hangReview && /\/api\/inception\/rounds\/[^/]+\/review$/.test(url)) {
+          (window as any).__hungReviewRequests[method]++;
+          return await new Promise<Response>((_resolve, reject) => {
+            const signal = init.signal || (input instanceof Request ? input.signal : undefined);
+            const abort = () => reject(new DOMException('Fixture request timed out.', 'AbortError'));
+            if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
+          });
+        }
+        return originalFetch(input, init);
+      };
+    });
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await acceptInceptionRecordingNotice(page);
+    await startFreshAttempt(page);
+    const composer = page.getByLabel('Speak to Fischer');
+    await composer.fill('[fixture:inception-disclosure] Tell me what you remember.');
+    await composer.press('Enter');
+    await expect(page.getByText(/The combination is \d{6}\./)).toBeVisible();
+    await page.evaluate(() => { (window as any).__hangReview = true; });
+    await page.getByRole('button', { name: 'Finish and review' }).click();
+    const retryReview = page.getByRole('button', { name: 'Retry review' });
+    await expect(retryReview).toBeEnabled({ timeout: 8000 });
+    expect(await page.evaluate(() => (window as any).__hungReviewRequests)).toEqual({ POST: 1, GET: 1 });
   });
 
   test('a lost review response recovers from persisted review polling without a second provider request', async ({ page }) => {

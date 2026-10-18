@@ -36,6 +36,7 @@
 .inception-dialogue .inception-composer-actions{display:flex;align-items:flex-start;flex-direction:column;gap:7px;padding-top:7px}
 .inception-dialogue .inception-composer-actions>div{display:flex;flex-wrap:wrap;gap:7px;width:100%}
 .inception-dialogue .inception-composer-actions .inception-primary,.inception-dialogue .inception-composer-actions .inception-secondary{min-height:38px}
+.inception-dialogue .inception-composer-actions .inception-send-action{min-width:142px;white-space:nowrap}
 .inception-dialogue .inception-send-status{color:#b9b4a9;font-size:12px}
 .inception-dialogue .inception-play-footer{position:static;flex:none;display:flex;justify-content:space-between;gap:12px;margin:0;padding:7px 0 0;border-top:1px solid rgba(232,222,199,.12);font-size:10px}
 .inception-dialogue .inception-play-footer button{color:#d9c69f;background:transparent;border:0;font:inherit;cursor:pointer}
