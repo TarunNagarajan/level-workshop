@@ -1,66 +1,69 @@
 {
-  "revision": 2,
+  "revision": 3,
   "presentation": {
     "type": "WebGL CRT interrogation",
     "upstream": "https://github.com/swordfish90/cool-retro-term",
     "commit": "1394ce82fa53d2a87d5adc4d99f9eeba598ea53d",
     "preset": "Default Amber"
   },
-  "luther": {
-    "file": "luther-stickell-v1.webp",
-    "bytes": 37146,
-    "sha256": "b7b834b4ba7a088cca4ffb4e2fbdd15fea0e159c45b7ad3883bb178a3d38bf70",
-    "width": 1280,
-    "height": 720,
-    "type": "actual film frame",
-    "source": "Official Movieclips Into the Vault, Mission: Impossible (1996), approximately104.7 seconds",
-    "url": "https://www.youtube.com/watch?v=k-oVuQpjG3s"
-  },
   "opening": {
-    "file": "mission-intro-v5.mp4",
-    "seconds": 30,
-    "bytes": 6405434,
-    "sha256": "adc292715836ac5f30872569544d6bb4bff6f372906b0f9756d21c68d0e0d3c8",
+    "file": "mission-intro-v6.mp4",
+    "seconds": 18,
     "width": 1920,
     "height": 1080,
     "fps": 30,
-    "sourceFilmResolution": "1280x720 23.98fps; export upscaled, not native 4K",
     "audio": "AAC stereo48000Hz",
+    "sourceResolution": "1280x720; active picture crop1280x528 at0,96; upscaled1080p, not native4K",
     "fullDecode": "passed",
+    "cleanSourceLetterbox": "verified sampled film frames",
     "faststart": true,
-    "atoms": [
-      {
-        "name": "ftyp",
-        "offset": 0,
-        "bytes": 32
-      },
-      {
-        "name": "moov",
-        "offset": 32,
-        "bytes": 34654
-      },
-      {
-        "name": "free",
-        "offset": 34686,
-        "bytes": 8
-      },
-      {
-        "name": "mdat",
-        "offset": 34694,
-        "bytes": 6370740
-      }
-    ]
+    "bytes": 3756956,
+    "sha256": "e52dfb691b785e0750eb89efcc957899bcb950d540bb6addf648ceeeee05521e"
+  },
+  "successEnding": {
+    "file": "mission-success-v1.mp4",
+    "seconds": 18,
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "audio": "AAC stereo48000Hz",
+    "sourceResolution": "1280x720; active picture crop1280x528 at0,96; upscaled1080p, not native4K",
+    "fullDecode": "passed",
+    "cleanSourceLetterbox": "verified sampled film frames",
+    "faststart": true,
+    "bytes": 4072497,
+    "sha256": "87271a816684fc333af5655825f56997c8b771e481c044f95b0be64e8b9c8d5a"
   },
   "media": [
     {
-      "file": "mission-intro-v5.mp4",
-      "bytes": 6405434,
-      "sha256": "adc292715836ac5f30872569544d6bb4bff6f372906b0f9756d21c68d0e0d3c8"
+      "file": "mission-intro-v6.mp4",
+      "bytes": 3756956,
+      "sha256": "e52dfb691b785e0750eb89efcc957899bcb950d540bb6addf648ceeeee05521e"
     },
     {
-      "file": "mission-intro-v5.vtt",
-      "bytes": 406,
-      "sha256": "7bf2c26ee77063069e027d8a8d4a934e1c77704d88a3a5f2fb740a4735d38a86"
+      "file": "mission-intro-v6.vtt",
+      "bytes": 240,
+      "sha256": "de8dea6e0354f9596903de8a57b89d5d19b9829e9a4f8d8e8198c8e6030f95d9"
+    },
+    {
+      "file": "mission-intro-v6-poster.webp",
+      "bytes": 40438,
+      "sha256": "93645646a5d7d72c8eebc694ee1fc0d7fd77251493a50c29052b7e5d70bde5d6"
+    },
+    {
+      "file": "mission-success-v1.mp4",
+      "bytes": 4072497,
+      "sha256": "87271a816684fc333af5655825f56997c8b771e481c044f95b0be64e8b9c8d5a"
+    },
+    {
+      "file": "mission-success-v1.vtt",
+      "bytes": 166,
+      "sha256": "d273c8ca27ec95592cd198f7377c3ef2eaa892abfd7bfef0ed3059979aa5c056"
+    },
+    {
+      "file": "mission-success-v1-poster.webp",
+      "bytes": 47240,
+      "sha256": "2b26a628aa41749cb16b61ce92ebc18f208cdb48dcdf9c0c67fbd7ca6e7998c5"
     },
     {
       "file": "mission-roomtone-v1.mp3",
@@ -68,5 +71,37 @@
       "sha256": "839c347c1513f2c5459afffa93bd85d1f16a5e72f7a01dff1644f917771c4a7c"
     }
   ],
-  "objects": []
+  "objects": [],
+  "sources": [
+    {
+      "url": "https://www.youtube.com/watch?v=k-oVuQpjG3s",
+      "title": "Into the Vault Scene (4/9), Movieclips",
+      "introSeconds": [
+        3,
+        11
+      ]
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=ar0xLps7WSY",
+      "title": "Close Call Scene (5/9), Movieclips",
+      "introSeconds": [
+        0.2,
+        4.7
+      ],
+      "successSegmentsSeconds": [
+        [
+          2.5,
+          12.5
+        ],
+        [
+          23.8,
+          27.2
+        ],
+        [
+          20.5,
+          23.1
+        ]
+      ]
+    }
+  ]
 }
