@@ -60,7 +60,24 @@
     "audioCodec": "aac",
     "actualFilmExcerptSeconds": 18,
     "generatedBridgeSeconds": 7.6,
-    "sourceSegmentsSeconds": [[66.25,68.65],[77.5,79.5],[88.5,91.5],[15.6,26.2]],
+    "sourceSegmentsSeconds": [
+      [
+        66.25,
+        68.65
+      ],
+      [
+        77.5,
+        79.5
+      ],
+      [
+        88.5,
+        91.5
+      ],
+      [
+        15.6,
+        26.2
+      ]
+    ],
     "sha256": "2403afb956d7ca412f33e4fe911afc8ac3602fe42d851c3928e69cd3d359093e"
   },
   {
@@ -112,5 +129,96 @@
     "bytes": 336,
     "durationSeconds": 29.17,
     "sha256": "d2d637e7a36ec244fb3ea4d1606ffa2b149bc5cba8051a33d2b89eb89d3dfb24"
+  },
+  {
+    "file": "strongroom-score-calm-v1.mp3",
+    "bytes": 641324,
+    "durationSeconds": 32,
+    "sampleRate": 48000,
+    "channels": 2,
+    "sourceSeconds": [
+      12,
+      46
+    ],
+    "sha256": "4045a517e55e4986d49803305efc74c358fbe659a4be21fc47b5b53f5206b1b2",
+    "decodedSeconds": 32,
+    "rmsDbfs": -29.81,
+    "peakDbfs": -14.45,
+    "loopBoundaryJump": 0.00045376,
+    "localDerivativeP99": 0.00473726,
+    "loopBoundaryJumpRatio": 0.096,
+    "loopEdgeRmsDbfs": [
+      -25.7,
+      -25.51
+    ],
+    "loopEdgeRmsDifferenceDb": 0.19
+  },
+  {
+    "file": "strongroom-score-developing-v1.mp3",
+    "bytes": 721004,
+    "durationSeconds": 36,
+    "sampleRate": 48000,
+    "channels": 2,
+    "sourceSeconds": [
+      54,
+      92
+    ],
+    "sha256": "13dfe5945a031d93551f01c3e00c91461cfee05d4b1ddab6efc9e292c95c282f",
+    "decodedSeconds": 36,
+    "rmsDbfs": -24.55,
+    "peakDbfs": -8.34,
+    "loopBoundaryJump": 0.00063459,
+    "localDerivativeP99": 0.00946438,
+    "loopBoundaryJumpRatio": 0.067,
+    "loopEdgeRmsDbfs": [
+      -21.94,
+      -23.01
+    ],
+    "loopEdgeRmsDifferenceDb": 1.07
+  },
+  {
+    "file": "strongroom-score-urgent-v1.mp3",
+    "bytes": 681164,
+    "durationSeconds": 34,
+    "sampleRate": 48000,
+    "channels": 2,
+    "sourceSeconds": [
+      103,
+      139
+    ],
+    "sha256": "8ed86c324adfbe4de9885b850790b91b23fedc87f535fe4ffeee643f7083ed20",
+    "decodedSeconds": 34,
+    "rmsDbfs": -20.02,
+    "peakDbfs": -6.95,
+    "loopBoundaryJump": 0.00090847,
+    "localDerivativeP99": 0.00254175,
+    "loopBoundaryJumpRatio": 0.357,
+    "loopEdgeRmsDbfs": [
+      -31.02,
+      -29.57
+    ],
+    "loopEdgeRmsDifferenceDb": 1.45
+  },
+  {
+    "file": "strongroom-score-credits-v1.mp3",
+    "bytes": 486284,
+    "durationSeconds": 24.256,
+    "sampleRate": 48000,
+    "channels": 2,
+    "sourceSeconds": [
+      120,
+      144.256
+    ],
+    "sha256": "0c37dd27dde159bd934bd8df6a11b9c137735ba8ef6005520335c9477300e453",
+    "decodedSeconds": 24.256,
+    "rmsDbfs": -21.27,
+    "peakDbfs": -7.23
+  },
+  {
+    "file": "inception-wordmark-v1.svg",
+    "bytes": 2094,
+    "dimensions": "1130.6x144.8",
+    "source": "https://commons.wikimedia.org/wiki/File:Inception-wordmark.svg",
+    "sha256": "069ae9505e1e9db8491cd5f62564740830bebc62298d2dac7acfaf66ba6fe5a2"
   }
 ]

@@ -5,6 +5,7 @@ import { api, ApiError, RECORDING_NOTICE, RECORDING_NOTICE_VERSION, setRecording
 import type { Message, Round } from './types';
 import { Button } from './ui';
 import { InceptionAudio } from './inception-audio';
+import { resolveInceptionMusicStage } from './inception-music-progress';
 import { recordMetricsInteraction, recordMetricsReply, setMetricsPhase } from './telemetry';
 import './inception.css';
 
@@ -13,7 +14,7 @@ type InceptionState = { revision: number; safeInspected: boolean; roomInspected:
 type Session = { round: Round; state: InceptionState; profile: Profile };
 type Configuration = { title: string; profiles: Profile[]; defaultProfileId?: string; connected: boolean; recordingNoticeRequired?: boolean; recordingAccepted?: boolean; reviewEnabled?: boolean; actorScope: string; activeRoundId: string | null };
 type Review = { status: string; verdict?: string; reason?: string; evidence?: { replyId: string; quote: string }[]; retryable?: boolean; errorCode?: string };
-type MediaManifest = { closedFrame?: string | null; openFrame?: string | null; dialogueTexture?: string | null; bridgeFrame?: string | null; bridgeVideo?: string | null; introVideo?: string | null; introDurationSeconds?: number; captions?: string | null; successVideo?: string | null; successCaptions?: string | null; successDurationSeconds?: number; approvedTrack?: string | null; roomTone?: string | null; portraits?: { eames?: string; fischer?: string } };
+type MediaManifest = { closedFrame?: string | null; openFrame?: string | null; dialogueTexture?: string | null; bridgeFrame?: string | null; bridgeVideo?: string | null; introVideo?: string | null; introDurationSeconds?: number; captions?: string | null; successVideo?: string | null; successCaptions?: string | null; successDurationSeconds?: number; endingWordmark?: string | null; approvedTrack?: string | null; roomTone?: string | null; musicCues?: { calm?: string | null; developing?: string | null; urgent?: string | null }; creditsCue?: string | null; portraits?: { eames?: string; fischer?: string } };
 type PendingSend = { id: string; content: string };
 
 const startStorage = 'workshop-inception-start-intent';
@@ -70,7 +71,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const [sendStatus, setSendStatus] = useState('');
   const [activeModal, setActiveModal] = useState<'safe' | 'room' | null>(null);
   const [review, setReview] = useState<Review | null>(null);
-  const [successEnding, setSuccessEnding] = useState<'playing' | 'blocked' | 'error' | 'closing' | null>(null);
+  const [successEnding, setSuccessEnding] = useState<'playing' | 'blocked' | 'error' | 'closing' | 'title' | 'title-fade' | 'credit' | 'hold' | null>(null);
   const [successEndingAttempt, setSuccessEndingAttempt] = useState(0);
   const [successEndingError, setSuccessEndingError] = useState('');
   const [introCaptionText, setIntroCaptionText] = useState('');
@@ -89,18 +90,24 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const safeRef = useRef<HTMLDivElement | null>(null);
   const modalRef = useRef<HTMLElement | null>(null);
   const conversationRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
   const followConversationRef = useRef(true);
   const preserveConversationScrollTopRef = useRef<number | null>(null);
   const lifecycle = useRef(0);
   const roundGeneration = useRef(0);
   const installedRoundId = useRef<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const checkingComposerHeight = useRef<number | null>(null);
+  const checkingTextareaHeight = useRef<number | null>(null);
   const introVideoRef = useRef<HTMLVideoElement | null>(null);
   const successVideoRef = useRef<HTMLVideoElement | null>(null);
   const introCaptionTrackRef = useRef<HTMLTrackElement | null>(null);
   const successCaptionTrackRef = useRef<HTMLTrackElement | null>(null);
   const successTitleRef = useRef<HTMLHeadingElement | null>(null);
   const cinematicTimerRef = useRef<number | null>(null);
+  const endingGenerationRef = useRef(0);
+  const creditsHandoffRef = useRef(false);
+  const creditsFadeFrameRef = useRef<number | null>(null);
   const autoEndedRoundRef = useRef<string | null>(null);
   const endingWasShownRef = useRef(false);
   const introProgressRef = useRef({ at: Date.now(), time: 0 });
@@ -110,12 +117,17 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const startLock = useRef(false);
   const reviewLock = useRef(false);
   const introStartRequested = useRef(false);
+  const audioDisposeRef = useRef<Promise<void> | null>(null);
   const composing = useRef(false);
-  const ambientPath = manifest.approvedTrack || manifest.roomTone || null;
+  const ambientPath = manifest.musicCues?.calm || manifest.approvedTrack || manifest.roomTone || null;
+  const hasAmbient = Boolean(ambientPath || manifest.musicCues?.developing || manifest.musicCues?.urgent);
   const introDurationSeconds = Number.isFinite(manifest.introDurationSeconds) && (manifest.introDurationSeconds || 0) > 0 ? manifest.introDurationSeconds as number : DEFAULT_INTRO_DURATION_SECONDS;
   const remaining = session ? Math.max(0, Math.ceil((session.round.deadline - roundClock) / 1000)) : 300;
+  const musicStage = session ? resolveInceptionMusicStage({ messages: session.round.messages, deadline: session.round.deadline, startedAt: session.round.startedAt, now: roundClock }) : 'calm';
   const expired = Boolean(session && remaining <= 0 && !session.round.endedAt);
   const closed = Boolean(session?.round.endedAt) || expired;
+  const checkingEndedRound = Boolean(session?.round.endedAt && cinematicPhase === 'checking');
+  const retainExpiredFinishControl = Boolean(checkingEndedRound && session && session.round.deadline <= Date.now());
 
   useLayoutEffect(() => {
     const input = inputRef.current;
@@ -151,20 +163,35 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     return () => { disposed = true; observer.disconnect(); image.onload = null; };
   }, [loading, manifest.closedFrame, session?.round.id, cinematicHandoff]);
 
+  const disposeAmbient = useCallback(() => {
+    const instance = audioRef.current;
+    audioRef.current = null;
+    setSoundReady(false);
+    if (instance) {
+      const disposal = instance.dispose();
+      audioDisposeRef.current = disposal;
+      void disposal.finally(() => { if (audioDisposeRef.current === disposal) audioDisposeRef.current = null; });
+    }
+    return audioDisposeRef.current || Promise.resolve();
+  }, []);
   const startAmbient = useCallback((deadline: number, forceUnmuted?: boolean, replayGesture = false) => {
-    if (!ambientPath || (closed && !replayGesture)) return;
+    if (!hasAmbient || (closed && !replayGesture)) return;
     audioRef.current ||= new InceptionAudio();
     const instance = audioRef.current, generation = lifecycle.current;
     instance.setVolume(sound.volume);
     const muted = forceUnmuted === undefined ? sound.muted : forceUnmuted;
     instance.setDeadline(deadline);
+    instance.setStage(musicStage);
     if (instance.isMuted !== muted) instance.setMuted(muted);
     if (muted) setSoundReady(false);
     else if (instance.isPlaying) setSoundReady(true);
-    else void instance.start(ambientPath, deadline).then(playing => { if (lifecycle.current !== generation || audioRef.current !== instance) return; setSoundReady(playing); });
-  }, [ambientPath, closed, sound.muted, sound.volume]);
+    else void instance.start({ musicCues: manifest.musicCues, creditsCue: manifest.creditsCue, approvedTrack: manifest.approvedTrack, roomTone: manifest.roomTone }, deadline, musicStage).then(playing => { if (lifecycle.current !== generation || audioRef.current !== instance) return; setSoundReady(playing); });
+  }, [hasAmbient, closed, sound.muted, sound.volume, musicStage, manifest.musicCues, manifest.creditsCue, manifest.approvedTrack, manifest.roomTone]);
   const install = useCallback((value: Session) => {
     roundGeneration.current++;
+    endingGenerationRef.current++;
+    checkingComposerHeight.current = null;
+    checkingTextareaHeight.current = null;
     if (installedRoundId.current !== value.round.id) { followConversationRef.current = true; installedRoundId.current = value.round.id; }
     if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current);
     setCinematicPhase(null); setRevealedDigits(''); setImmersive(true); setSession(value); setRoundClock(Date.now()); setReview(value.state.review?.status === 'complete' ? value.state.review as Review : null); setSuccessEnding(null);
@@ -177,24 +204,72 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     if (value.round.endedAt) setReview(value.state.review?.status === 'complete' ? value.state.review as Review : null);
   }, []);
 
+  const prepareEndingMusic = useCallback(async (deadline: number) => {
+    let instance = audioRef.current;
+    if (!instance) {
+      instance = new InceptionAudio();
+      audioRef.current = instance;
+      instance.setVolume(sound.volume);
+      if (instance.isMuted !== sound.muted) instance.setMuted(sound.muted);
+    }
+    if (!instance.isInitialized) await instance.start({ musicCues: manifest.musicCues, creditsCue: manifest.creditsCue, approvedTrack: manifest.approvedTrack, roomTone: manifest.roomTone }, deadline, 'urgent');
+    await instance.setStage('urgent');
+    await instance.prepareCreditsCue();
+    return instance;
+  }, [sound.volume, sound.muted, manifest.musicCues, manifest.creditsCue, manifest.approvedTrack, manifest.roomTone]);
+
+  const beginCreditsHandoff = useCallback((video: HTMLVideoElement) => {
+    if (creditsHandoffRef.current) return;
+    creditsHandoffRef.current = true;
+    void audioRef.current?.resumeForCredits();
+    if (sound.muted) return;
+    const initialVolume = video.volume;
+    const startedAt = performance.now();
+    const fade = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / 1100);
+      video.volume = initialVolume * (1 - progress);
+      if (progress < 1 && successVideoRef.current === video) creditsFadeFrameRef.current = window.requestAnimationFrame(fade);
+      else creditsFadeFrameRef.current = null;
+    };
+    creditsFadeFrameRef.current = window.requestAnimationFrame(fade);
+  }, [sound.muted]);
+
   const playConfirmedEnding = useCallback((roundId: string, result: Review | null, state: InceptionState) => {
     if (!manifest.successVideo || result?.status !== 'complete' || result.verdict !== 'recovered' || !state.safeOpened || !state.revealedCombination || autoEndedRoundRef.current === roundId) return;
-    setActiveModal(null);
+    const generation = lifecycle.current, roundToken = roundGeneration.current;
+    endingGenerationRef.current++;
     autoEndedRoundRef.current = roundId;
+    creditsHandoffRef.current = false;
+    const deadline = session?.round.id === roundId ? session.round.deadline : Date.now();
+    const musicReady = prepareEndingMusic(deadline);
+    setActiveModal(null);
     endingWasShownRef.current = true;
     setSuccessEndingError(''); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1); setSuccessEnding(null);
     setCinematicPhase('entry'); setRevealedDigits(reducedMotion ? state.revealedCombination : '');
+    const startFilm = async () => {
+      await musicReady;
+      if (generation !== lifecycle.current || roundToken !== roundGeneration.current) return;
+      await audioRef.current?.fadeForFilm();
+      if (generation !== lifecycle.current || roundToken !== roundGeneration.current) return;
+      setCinematicPhase('film'); setSuccessEnding('playing');
+    };
     if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current);
-    if (reducedMotion) cinematicTimerRef.current = window.setTimeout(() => { setCinematicPhase('film'); setSuccessEnding('playing'); }, 450);
+    if (reducedMotion) cinematicTimerRef.current = window.setTimeout(() => { void startFilm(); }, 450);
     else {
       let count = 0;
-      const revealNext = () => { count += 1; setRevealedDigits(state.revealedCombination!.slice(0, count)); if (count < state.revealedCombination!.length) cinematicTimerRef.current = window.setTimeout(revealNext, 180); else cinematicTimerRef.current = window.setTimeout(() => { setCinematicPhase('film'); setSuccessEnding('playing'); }, 500); };
+      const revealNext = () => { count += 1; setRevealedDigits(state.revealedCombination!.slice(0, count)); if (count < state.revealedCombination!.length) cinematicTimerRef.current = window.setTimeout(revealNext, 180); else cinematicTimerRef.current = window.setTimeout(() => { void startFilm(); }, 500); };
       cinematicTimerRef.current = window.setTimeout(revealNext, 180);
     }
-  }, [manifest.successVideo, reducedMotion]);
+  }, [manifest.successVideo, manifest.successDurationSeconds, reducedMotion, prepareEndingMusic, session?.round.id, session?.round.deadline]);
 
-  const replayConfirmedEnding = () => {
+  const replayConfirmedEnding = async () => {
     if (!session || !manifest.successVideo || review?.status !== 'complete' || review.verdict !== 'recovered' || !session.state.safeOpened) return;
+    const generation = lifecycle.current, roundToken = roundGeneration.current;
+    endingGenerationRef.current++;
+    creditsHandoffRef.current = false;
+    await prepareEndingMusic(session.round.deadline);
+    await audioRef.current?.fadeForFilm();
+    if (generation !== lifecycle.current || roundToken !== roundGeneration.current) return;
     setActiveModal(null);
     endingWasShownRef.current = true;
     setSuccessEndingError(''); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1); setCinematicPhase('film'); setSuccessEnding('playing');
@@ -226,11 +301,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     return () => { active = false; window.clearInterval(timer); };
   }, [successEnding, successEndingAttempt]);
 
-  useEffect(() => {
-    if (successEnding !== 'closing') return;
-    const timer = window.setTimeout(() => { setSuccessEnding(null); setCinematicPhase(null); }, reducedMotion ? 0 : 650);
-    return () => window.clearTimeout(timer);
-  }, [successEnding, reducedMotion]);
+  useEffect(() => () => { if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current); if (creditsFadeFrameRef.current !== null) window.cancelAnimationFrame(creditsFadeFrameRef.current); }, []);
 
   useEffect(() => {
     const video = successVideoRef.current;
@@ -437,7 +508,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
         if (result.review && result.review.status !== 'pending') {
           setReview(result.review);
           setSession(current => current?.round.id === roundId ? { ...current, state: result.state } : current);
-          playConfirmedEnding(roundId, result.review, result.state);
+          void playConfirmedEnding(roundId, result.review, result.state);
           if (!(result.review.status === 'complete' && result.review.verdict === 'recovered' && result.state.safeOpened && result.state.revealedCombination)) setCinematicPhase(null);
           if (result.review.status === 'complete') setSendStatus(result.review.verdict === 'recovered' ? 'Review complete. The safe is open.' : 'Review complete. Read the result below.');
           return;
@@ -473,16 +544,25 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     return () => window.clearInterval(check);
   }, [intro, manifest.introVideo, filmEnded, introMediaIssue]);
   useEffect(() => { lifecycle.current++; return () => { lifecycle.current++; const instance = audioRef.current; audioRef.current = null; if (instance) void instance.dispose(); }; }, []);
-  useEffect(() => { if (session && audioRef.current) audioRef.current.setDeadline(session.round.deadline); }, [session?.round.id, session?.round.deadline]);
+  useEffect(() => {
+    if (!session || !audioRef.current || closed) return;
+    audioRef.current.setDeadline(session.round.deadline);
+    audioRef.current.setStage(musicStage);
+  }, [session?.round.id, session?.round.deadline, musicStage, closed]);
   useEffect(() => { localStorage.setItem(soundStorage, JSON.stringify(sound)); audioRef.current?.setVolume(sound.volume); if (audioRef.current?.isMuted !== sound.muted) audioRef.current?.setMuted(sound.muted); }, [sound]);
-  useEffect(() => { if (!session?.round.endedAt && !expired) return; setSoundReady(false); if (audioRef.current) void audioRef.current.dispose(); audioRef.current = null; }, [session?.round.endedAt, expired]);
+  useEffect(() => {
+    if (expired) { void disposeAmbient(); return; }
+    if (!session?.round.endedAt || !review || review.status === 'pending') return;
+    const confirmedEnding = review.status === 'complete' && review.verdict === 'recovered' && session.state.safeOpened && Boolean(session.state.revealedCombination);
+    if (!confirmedEnding) void disposeAmbient();
+  }, [session?.round.endedAt, session?.state.safeOpened, session?.state.revealedCombination, review?.status, review?.verdict, expired, disposeAmbient]);
   useEffect(() => { if (!retryCooldownUntil) { setRetrySeconds(0); return; } const tick = () => { const seconds = Math.max(0, Math.ceil((retryCooldownUntil - Date.now()) / 1000)); setRetrySeconds(seconds); if (!seconds) setRetryCooldownUntil(0); }; tick(); const timer = window.setInterval(tick, 1000); return () => window.clearInterval(timer); }, [retryCooldownUntil]);
   const enterFullscreen = async () => {
     setImmersive(true);
     try { if (!document.fullscreenElement) await rootRef.current?.requestFullscreen(); setFullscreen(Boolean(document.fullscreenElement)); }
     catch { setFullscreen(false); setImmersive(true); }
   };
-  const leave = async () => { lifecycle.current++; const instance = audioRef.current; audioRef.current = null; if (instance) await instance.dispose(); if (document.fullscreenElement) await document.exitFullscreen().catch(() => undefined); setImmersive(false); onHome(); };
+  const leave = async () => { lifecycle.current++; await disposeAmbient(); if (document.fullscreenElement) await document.exitFullscreen().catch(() => undefined); setImmersive(false); onHome(); };
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() === 'm' && !event.repeat && !(event.target instanceof HTMLElement && /INPUT|TEXTAREA|SELECT/.test(event.target.tagName))) { setSound((current: typeof defaultSound) => ({ ...current, muted: !current.muted })); return; }
@@ -490,7 +570,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
       if (activeModal) { setActiveModal(null); return; }
       if (intro && pendingStart) { event.preventDefault(); setIntro(false); setFilmEnded(false); return; }
       if (cinematicPhase === 'entry') return;
-      if (cinematicPhase === 'film' || cinematicPhase === 'closing') { event.preventDefault(); setSuccessEnding(null); setCinematicPhase(null); return; }
+      if (cinematicPhase === 'film' || cinematicPhase === 'closing') { event.preventDefault(); void leave(); return; }
       if (intro) { event.preventDefault(); finishIntro(true); return; }
       if (session) { event.preventDefault(); void leave(); }
     };
@@ -566,6 +646,8 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const finish = async () => {
     if (!session || busy || session.round.endedAt || pendingSend) return;
     const roundId = session.round.id, generation = lifecycle.current, roundToken = roundGeneration.current;
+    checkingComposerHeight.current = composerRef.current?.getBoundingClientRect().height ?? null;
+    checkingTextareaHeight.current = inputRef.current?.getBoundingClientRect().height ?? null;
     recordMetricsInteraction('finish', roundId, session.round.accessToken);
     setCinematicPhase('checking'); setBusy(true); setError(''); setSendStatus('');
     try {
@@ -585,7 +667,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
       const result = await api<{ review: Review | null; state: InceptionState }>(`/inception/rounds/${roundId}/review`, { method: 'POST', body: {} });
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
       setReview(result.review); if (result.state) setSession(current => current?.round.id === roundId ? { ...current, state: result.state } : current);
-      if (result.state) playConfirmedEnding(roundId, result.review, result.state);
+      if (result.state) void playConfirmedEnding(roundId, result.review, result.state);
       if (result.review?.status !== 'pending' && !(result.review?.status === 'complete' && result.review.verdict === 'recovered' && result.state?.safeOpened && result.state.revealedCombination)) setCinematicPhase(null);
       if (result.review?.status === 'complete') setSendStatus(result.review.verdict === 'recovered' ? 'Review complete. The safe is open.' : 'Review complete. Read the result below.');
     } catch (cause) {
@@ -594,7 +676,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
       if (recovered?.review && recovered.review.status !== 'pending') {
         setReview(recovered.review); setSession(current => current?.round.id === roundId ? { ...current, state: recovered.state } : current);
-        playConfirmedEnding(roundId, recovered.review, recovered.state);
+        void playConfirmedEnding(roundId, recovered.review, recovered.state);
         if (recovered.review.status !== 'pending' && !(recovered.review.status === 'complete' && recovered.review.verdict === 'recovered' && recovered.state.safeOpened && recovered.state.revealedCombination)) setCinematicPhase(null);
         setSendStatus(recovered.review.status === 'complete' && recovered.review.verdict === 'recovered' ? 'Review complete. The safe is open.' : 'Review complete. Read the result below.');
       } else if (recovered?.review?.status === 'pending') {
@@ -653,28 +735,28 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
       {!config.recordingAccepted && <label className="inception-consent"><input type="checkbox" checked={consented} onChange={event => setConsented(event.target.checked)} /><span>{RECORDING_NOTICE} <strong>I understand and agree to this recording.</strong></span></label>}
       <fieldset className="inception-profiles"><legend>Choose a conversation style</legend>{config.profiles.map(profile => <button type="button" key={profile.id} className={selectedProfile === profile.id ? 'selected' : ''} onClick={() => setSelectedProfile(profile.id)} aria-pressed={selectedProfile === profile.id}><span>{profile.label}</span><small>{profile.description}</small></button>)}</fieldset>
       {!config.connected && <p className="inception-inline-error" role="status">The target model is not connected yet. Your saved conversations remain available.</p>}
-      {ambientPath && <p className="inception-media-note">Sound begins when you enter. You can mute it anytime.</p>}
+      {hasAmbient && <p className="inception-media-note">Sound begins when you enter. You can mute it anytime.</p>}
       {pendingStart && !busy && <div className="inception-receipt" role="alert"><p>The start receipt is not confirmed. Retry with the saved request key.</p><Button className="inception-primary" disabled={!config.recordingAccepted && !consented} onClick={() => void startRound(pendingStart.profileId, { clientStartId: pendingStart.clientStartId })}>Check start receipt</Button></div>}
       {error && <p className="inception-inline-error" role="alert">{error}</p>}
       {!pendingStart && <div className="inception-entry-actions"><Button className="inception-primary" disabled={!config.connected || busy || (!config.recordingAccepted && !consented)} onClick={beginIntro}>Watch and begin<ArrowRight size={16} /></Button><Button className="inception-secondary" disabled={!config.connected || busy || (!config.recordingAccepted && !consented)} onClick={() => void startRound(selectedProfile)}>Begin without film</Button></div>}
       <footer>{config.reviewEnabled ? 'Five minutes. Your saved conversation determines whether the safe opens.' : 'Five minutes. Conversation review is currently unavailable.'}</footer>
     </section> : <section className={`inception-play ${cinematicHandoff ? 'is-cinematic-handoff' : ''} ${cinematicPhase ? `is-cinematic-${cinematicPhase}` : ''} ${!handoffInteractive ? 'is-handoff-locked' : ''}`} aria-label="Inception strongroom">
-      <header className="inception-topbar" inert={!handoffInteractive || Boolean(successEnding) || Boolean(cinematicPhase) ? true : undefined}><div className="inception-top-actions"><span className={`inception-clock ${remaining <= 45 ? 'urgent' : ''}`} role="timer" aria-label={`${time(remaining)} remaining`}>{time(remaining)}</span><label className="inception-volume" aria-label="Sound volume"><Volume2 size={15} /><input type="range" min="0" max="0.7" step="0.05" value={sound.volume} disabled={closed} onChange={event => setSound({ ...sound, volume: Number(event.target.value) })} /></label><button className="inception-icon-button" aria-label={sound.muted ? 'Unmute sound' : 'Mute sound'} disabled={closed} onClick={() => { const muted = !sound.muted; setSound({ ...sound, muted }); if (!muted) startAmbient(session.round.deadline, false); }}>{sound.muted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>{ambientPath && !sound.muted && !soundReady && !closed && <button className="inception-icon-button" onClick={() => startAmbient(session.round.deadline, false)}>Play sound</button>}<button className="inception-icon-button" aria-label={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} onClick={() => fullscreen ? void document.exitFullscreen().catch(() => undefined) : void enterFullscreen()}><Maximize2 size={16} /></button><button className="inception-icon-button" aria-label="Leave strongroom" onClick={() => void leave()}><X size={18} /></button></div></header>
+      <header className="inception-topbar" inert={!handoffInteractive || Boolean(successEnding) || Boolean(cinematicPhase) ? true : undefined}><div className="inception-top-actions"><span className={`inception-clock ${remaining <= 45 ? 'urgent' : ''}`} role="timer" aria-label={`${time(remaining)} remaining`}>{time(remaining)}</span><label className="inception-volume" aria-label="Sound volume"><Volume2 size={15} /><input type="range" min="0" max="0.7" step="0.05" value={sound.volume} disabled={closed} onChange={event => setSound({ ...sound, volume: Number(event.target.value) })} /></label><button className="inception-icon-button" aria-label={sound.muted ? 'Unmute sound' : 'Mute sound'} disabled={closed} onClick={() => { const muted = !sound.muted; setSound({ ...sound, muted }); if (!muted) startAmbient(session.round.deadline, false); }}>{sound.muted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>{hasAmbient && !sound.muted && !soundReady && !closed && <button className="inception-icon-button" onClick={() => startAmbient(session.round.deadline, false)}>Play sound</button>}<button className="inception-icon-button" aria-label={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} onClick={() => fullscreen ? void document.exitFullscreen().catch(() => undefined) : void enterFullscreen()}><Maximize2 size={16} /></button><button className="inception-icon-button" aria-label="Leave strongroom" onClick={() => void leave()}><X size={18} /></button></div></header>
       {cinematicPhase === 'checking' && <p className="visually-hidden" role="status">Checking the saved conversation…</p>}
       <div className={`inception-scene-row ${gameBackground ? 'has-art' : ''}`} inert={!handoffInteractive || Boolean(successEnding) || Boolean(cinematicPhase) ? true : undefined}>
-        <div ref={safeRef} className={`inception-safe ${session.state.safeOpened ? 'open' : ''} ${gameBackground ? 'with-art' : ''}`} role="group" aria-label={session.state.safeOpened ? 'Strongroom safe open' : 'Closed strongroom safe'}><div className="inception-safe-door"><div className="inception-safe-keypad" aria-hidden="true"><span className="inception-safe-display" /><div>{Array.from({ length: 12 }, (_, index) => <i key={index} />)}</div></div><span className="inception-safe-handle" /></div>{cinematicPhase === 'entry' && <span className="inception-revealed-code" style={lcdBounds} aria-label="Confirmed combination">{revealedDigits}</span>}{!session.state.safeOpened && <><button className="inception-hotspot safe-hotspot" style={gameBackground ? safeBounds : undefined} aria-label="Inspect safe" disabled={busy || closed || !handoffInteractive} onClick={() => { setActiveModal('safe'); if (!session.state.safeInspected) void inspect('inspect_safe'); }} /><button className="inception-hotspot room-hotspot" aria-label="Inspect the room" disabled={busy || closed || !handoffInteractive} onClick={() => { setActiveModal('room'); if (!session.state.roomInspected) void inspect('inspect_room'); }} /></>}</div>
+        <div ref={safeRef} className={`inception-safe ${session.state.safeOpened ? 'open' : ''} ${gameBackground ? 'with-art' : ''}`} role="group" aria-label={session.state.safeOpened ? 'Strongroom safe open' : 'Closed strongroom safe'}><span className="inception-safe-dimming" aria-hidden="true" /><div className="inception-safe-door"><div className="inception-safe-keypad" aria-hidden="true"><span className="inception-safe-display" /><div>{Array.from({ length: 12 }, (_, index) => <i key={index} />)}</div></div><span className="inception-safe-handle" /></div>{cinematicPhase === 'entry' && <span className="inception-revealed-code" style={lcdBounds} aria-label="Confirmed combination">{revealedDigits}</span>}{!session.state.safeOpened && <><button className="inception-hotspot safe-hotspot" style={gameBackground ? safeBounds : undefined} aria-label="Inspect safe" disabled={busy || closed || !handoffInteractive} onClick={() => { setActiveModal('safe'); if (!session.state.safeInspected) void inspect('inspect_safe'); }} /><button className="inception-hotspot room-hotspot" aria-label="Inspect the room" disabled={busy || closed || !handoffInteractive} onClick={() => { setActiveModal('room'); if (!session.state.roomInspected) void inspect('inspect_room'); }} /></>}</div>
         <section className="inception-dialogue" aria-label="Conversation with Fischer" inert={!handoffInteractive || Boolean(cinematicPhase) ? true : undefined}>
           <p className="inception-location" aria-hidden="true"></p>
           <div ref={conversationRef} className="inception-conversation" role="log" aria-label="Conversation transcript" aria-live="polite" aria-relevant="additions" aria-atomic="false" tabIndex={0} onScroll={event => { const element = event.currentTarget; followConversationRef.current = element.scrollHeight - element.clientHeight - element.scrollTop < 72; }}>
             {session.round.messages.filter(item => item.role === 'user' || item.role === 'assistant').map((item: Message) => <article key={item.id} className={item.role === 'user' ? 'from-player' : 'from-fischer'}><img src={item.role === 'user' ? manifest.portraits?.eames : manifest.portraits?.fischer} alt={item.role === 'user' ? 'Eames' : 'Fischer'} /><p>{item.content}</p></article>)}
           </div>
-          {session.profile.profileRevision === 1 && !session.round.endedAt && <div className="inception-old-version"><p>This conversation uses an earlier version. Its prompts are preserved.</p><Button className="inception-secondary" disabled={busy || Boolean(pendingSend) || review?.status === 'pending'} onClick={() => void archiveOldAndStartCurrent()}>Finish this version and start Standard</Button></div>}
-          {expired && !session.round.endedAt && <div className="inception-expired-controls" role="group" aria-label="Finish the expired conversation"><p>Time is up. Your saved conversation can still be reviewed.</p>{pendingSend && <><p role="status">Retry checks the same saved message receipt.</p><Button className="inception-secondary" disabled={busy} onClick={() => void send(true)}>Retry saved message</Button></>}{!pendingSend && <Button className="inception-primary" disabled={busy} onClick={() => void finish()}>{busy ? 'Saving conversation…' : 'Finish and review'}</Button>}{error && <p role="alert" className="inception-inline-error">{error}</p>}</div>}
-          {!session.round.endedAt ? <div className="inception-composer">
+          {session.profile.profileRevision === 1 && (!session.round.endedAt || checkingEndedRound) && <div className="inception-old-version"><p>This conversation uses an earlier version. Its prompts are preserved.</p><Button className="inception-secondary" disabled={busy || Boolean(pendingSend) || review?.status === 'pending' || checkingEndedRound} onClick={() => void archiveOldAndStartCurrent()}>Finish this version and start Standard</Button></div>}
+          {(expired && !session.round.endedAt || retainExpiredFinishControl) && <div className="inception-expired-controls" role="group" aria-label="Finish the expired conversation"><p>Time is up. Your saved conversation can still be reviewed.</p>{pendingSend && <><p role="status">Retry checks the same saved message receipt.</p><Button className="inception-secondary" disabled={busy} onClick={() => void send(true)}>Retry saved message</Button></>}{!pendingSend && <Button className="inception-primary" disabled={busy || checkingEndedRound} onClick={() => void finish()}>{busy ? 'Saving conversation…' : 'Finish and review'}</Button>}{error && <p role="alert" className="inception-inline-error">{error}</p>}</div>}
+          {!session.round.endedAt || checkingEndedRound ? <div ref={composerRef} className="inception-composer" style={checkingEndedRound && checkingComposerHeight.current ? { minHeight: `${checkingComposerHeight.current}px` } : undefined}>
             <label htmlFor="inception-message" className="visually-hidden">Speak to Fischer</label>
-            <textarea id="inception-message" ref={inputRef} value={messageText} disabled={closed || busy || Boolean(pendingSend)} maxLength={4000} rows={2} onChange={event => setMessageText(event.target.value)} onFocus={() => setMetricsPhase('compose', session.round.id, session.round.accessToken)} onBlur={() => setMetricsPhase('read_think', session.round.id, session.round.accessToken)} onKeyDown={keyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} placeholder={closed ? 'This conversation has ended.' : 'Ask Fischer a question…'} />
-            {pendingSend && <p className="inception-send-status" role="status">This message has an unknown receipt. Retry checks the same saved request.</p>}
-            <div className="inception-composer-actions"><span className="inception-send-status" role="status">{sendStatus}{retrySeconds ? ` Try again in ${retrySeconds}s.` : ''}</span><div>{pendingSend ? <Button className="inception-secondary" disabled={busy} onClick={() => void send(true)}>Retry saved message</Button> : <Button className="inception-primary" disabled={closed || busy || !messageText.trim() || retrySeconds > 0} onClick={() => void send()}>Send<ArrowRight size={15} /></Button>}{!session.round.endedAt && !expired && <Button className="inception-secondary" disabled={busy || Boolean(pendingSend)} onClick={() => void finish()}>Finish and review</Button>}</div></div>
+            <textarea id="inception-message" ref={inputRef} style={checkingEndedRound && checkingTextareaHeight.current ? { minHeight: `${checkingTextareaHeight.current}px` } : undefined} value={messageText} disabled={closed || busy || Boolean(pendingSend)} maxLength={4000} rows={2} onChange={event => setMessageText(event.target.value)} onFocus={() => setMetricsPhase('compose', session.round.id, session.round.accessToken)} onBlur={() => setMetricsPhase('read_think', session.round.id, session.round.accessToken)} onKeyDown={keyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} placeholder={closed ? 'This conversation has ended.' : 'Ask Fischer a question…'} />
+            {pendingSend && <p className="inception-send-status visually-hidden" role="status">This message has an unknown receipt. Retry checks the same saved request.</p>}
+            <div className="inception-composer-actions"><span className="inception-send-status visually-hidden" role="status">{sendStatus}{retrySeconds ? ` Try again in ${retrySeconds}s.` : ''}</span><div>{pendingSend ? <Button className="inception-secondary" disabled={busy} onClick={() => void send(true)}>Retry saved message</Button> : <Button className="inception-primary" disabled={closed || busy || !messageText.trim() || retrySeconds > 0} onClick={() => void send()}>Send<ArrowRight size={15} /></Button>}{(!session.round.endedAt && !expired || checkingEndedRound) && <Button className="inception-secondary" disabled={busy || Boolean(pendingSend) || checkingEndedRound} onClick={() => void finish()}>Finish and review</Button>}</div></div>
             {error && !expired && <p className="inception-inline-error" role="alert">{error}</p>}
           </div> : <p className="inception-conversation-saved" role="status">Conversation saved.</p>}
           {(expired || session.round.endedAt) && !cinematicPhase && !successEnding && <div className="inception-result" role="status">
@@ -700,13 +782,53 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
         <button className="inception-modal-close" aria-label="Close" onClick={() => setActiveModal(null)}><X size={18} /></button>
         {activeModal === 'safe' ? <><p className="inception-kicker">OBJECT INSPECTION</p><h2 id="inception-modal-title">{session.state.safeOpened ? 'Inside the strongroom safe' : 'The strongroom safe'}</h2>{session.state.safeOpened ? <div className="inception-open-interior" aria-label="Inside the open strongroom safe">{manifest.openFrame ? <img src={manifest.openFrame} alt="The open strongroom safe" /> : <p>The door is open. The mechanism is still.</p>}</div> : <><div className="inception-safe-zoom" role="img" aria-label="Close view of the compact green safe, brushed-metal keypad, and circular handle" style={manifest.closedFrame ? { backgroundImage: `url("${manifest.closedFrame}")` } : undefined} /><p className="inception-safe-detail">{session.state.safeInspected ? 'A compact safe is recessed in the dark-green bedside cabinet. Its brushed-steel face holds twelve rounded metal buttons, a small display, and a circular handle. No code is visible.' : 'A compact dark-green bedside safe with a brushed-metal face and circular handle.'}</p>{!session.state.safePresented && <Button className="inception-secondary" disabled={!session.state.safeInspected || busy || closed} onClick={() => void inspect('present_safe')}>Present safe to Fischer</Button>}</>}{busy && <p role="status">Saving inspection…</p>}</> : <><p className="inception-kicker">OBJECT INSPECTION</p><h2 id="inception-modal-title">The strongroom</h2><p>A quiet bedside cabinet stands by the bed. White bedlinen runs along the right edge of the frame; nothing else in view explains the combination.</p>{busy && <p role="status">Saving observation…</p>}</>}
       </section></div>}
-      {successEnding && <section className={`inception-success-ending ${successEnding === 'closing' ? 'is-closing' : ''}`} aria-label="Fischer's realization" aria-live="polite" inert={successEnding === 'closing' ? true : undefined}>
-        <video ref={successVideoRef} key={`${manifest.successVideo}-${successEndingAttempt}`} className="inception-success-ending-video" playsInline preload="auto" muted={sound.muted} onTimeUpdate={event => setSuccessTimeLeft(Math.max(0, Math.ceil((manifest.successDurationSeconds || event.currentTarget.duration || 29) - event.currentTarget.currentTime)))} onEnded={() => { setSuccessEnding('closing'); setCinematicPhase('closing'); }} onError={() => { setSuccessEndingError('The ending video could not be played. Your saved result remains available.'); setSuccessEnding('error'); }}>
+      {successEnding && <section className={`inception-success-ending ${['closing', 'title', 'title-fade', 'credit', 'hold'].includes(successEnding) ? 'is-title-card' : ''} ${successEnding === 'title-fade' ? 'is-card-exit' : ''}`} aria-label="Inception ending" aria-live="polite">
+        <video ref={successVideoRef} key={`${manifest.successVideo}-${successEndingAttempt}`} className="inception-success-ending-video" playsInline preload="auto" muted={sound.muted} onTimeUpdate={event => {
+          const video = event.currentTarget;
+          const duration = manifest.successDurationSeconds || video.duration || 29;
+          const left = Math.max(0, duration - video.currentTime);
+          setSuccessTimeLeft(Math.ceil(left));
+          if (left <= 1.15) beginCreditsHandoff(video);
+        }} onEnded={event => {
+          const video = event.currentTarget;
+          const lifecycleToken = lifecycle.current;
+          const roundToken = roundGeneration.current;
+          const endingToken = ++endingGenerationRef.current;
+          const isCurrentEnding = () => lifecycle.current === lifecycleToken && roundGeneration.current === roundToken && endingGenerationRef.current === endingToken;
+          const schedule = (delay: number, callback: () => void) => {
+            if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current);
+            cinematicTimerRef.current = window.setTimeout(() => { if (isCurrentEnding()) callback(); }, delay);
+          };
+          setSuccessEnding('closing'); setCinematicPhase('closing');
+          beginCreditsHandoff(video);
+          schedule(reducedMotion ? 50 : 700, () => {
+            setSuccessEnding('title');
+            schedule(4_250, () => {
+              setSuccessEnding('title-fade');
+              schedule(reducedMotion ? 50 : 750, () => {
+                setSuccessEnding('closing');
+                schedule(1_200, () => {
+                  setSuccessEnding('credit');
+                  schedule(10_000, () => {
+                    const endingAudio = audioRef.current;
+                    void endingAudio?.fadeToSilence(2.5).then(async () => {
+                      if (!isCurrentEnding()) return;
+                      if (endingAudio && audioRef.current === endingAudio) await disposeAmbient();
+                      if (isCurrentEnding()) setSuccessEnding('hold');
+                    });
+                  });
+                });
+              });
+            });
+          });
+        }} onError={() => { endingGenerationRef.current++; if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current); setSuccessEndingError('The ending video could not be played. Your saved result remains available.'); setSuccessEnding('error'); setCinematicPhase(null); void disposeAmbient(); }}>
           <source src={manifest.successVideo || undefined} type="video/mp4" />{manifest.successCaptions && <track ref={successCaptionTrackRef} kind="captions" src={manifest.successCaptions} srcLang="en" label="English scene captions" />}
         </video>
-        {successCaptionLayout && <div className="inception-film-caption-bands" style={successCaptionLayout}>{successCaptionText && <span className="inception-film-caption" style={{ top: '93.5185%' }} aria-label="English captions" aria-live="polite">{successCaptionText}</span>}</div>}
-        <h2 ref={successTitleRef} tabIndex={-1} className="visually-hidden">Inside the strongroom</h2>
-        {(successEnding === 'blocked' || successEnding === 'error') && <div className="inception-media-recovery" role={successEnding === 'error' ? 'alert' : 'status'}><p>{successEndingError || 'The ending could not start automatically.'}</p>{successEnding === 'blocked' && <Button className="inception-quiet-button" onClick={() => { setSuccessEndingError(''); setSuccessEndingAttempt(value => value + 1); setSuccessEnding('playing'); }}>Play ending</Button>}{successEnding === 'error' && <Button className="inception-quiet-button" onClick={() => { setSuccessEndingError(''); setSuccessEnding(null); setCinematicPhase(null); }}>Return to result</Button>}</div>}
+        {successEnding === 'playing' && successCaptionLayout && <div className="inception-film-caption-bands" style={successCaptionLayout}>{successCaptionText && <span className="inception-film-caption" style={{ top: '93.5185%' }} aria-label="English captions" aria-live="polite">{successCaptionText}</span>}</div>}
+        <h2 ref={successTitleRef} tabIndex={-1} className="visually-hidden">Inception ending</h2>
+        {(successEnding === 'title' || successEnding === 'title-fade') && <div className="inception-ending-card inception-ending-title-card" role="heading" aria-level={1}>{manifest.endingWordmark ? <img src={manifest.endingWordmark} alt="INCEPTION" /> : 'INCEPTION'}</div>}
+        {(successEnding === 'credit' || successEnding === 'hold') && <div className="inception-ending-card inception-ending-credit-card"><p>Brought to you by</p><strong>CSES ML Team</strong></div>}
+        {(successEnding === 'blocked' || successEnding === 'error') && <div className="inception-media-recovery" role={successEnding === 'error' ? 'alert' : 'status'}><p>{successEndingError || 'The ending could not start automatically.'}</p>{successEnding === 'blocked' && <Button className="inception-quiet-button" onClick={() => { endingGenerationRef.current++; setSuccessEndingError(''); setSuccessEndingAttempt(value => value + 1); setSuccessEnding('playing'); }}>Play ending</Button>}{successEnding === 'error' && <Button className="inception-quiet-button" onClick={() => { endingGenerationRef.current++; setSuccessEndingError(''); setSuccessEnding(null); setCinematicPhase(null); }}>Return to result</Button>}</div>}
       </section>}
     </section>}
   </main>;
