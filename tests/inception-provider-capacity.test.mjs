@@ -80,6 +80,20 @@ test('prestart policy treats unknown or low Groq daily quota conservatively and 
   } finally { store.db.close(); }
 });
 
+test('feature flag off preserves the configured Groq selection even when fallback credentials exist', async () => {
+  const store = openStore(':memory:');
+  const capacity = inceptionProviderCapacity({ store, primary, env: { GEMINI_API_KEY: 'gemini-secret' } });
+  try {
+    const selection = await capacity.selectForStart();
+    assert.equal(capacity.enabled, false);
+    assert.equal(selection.config.providerId, 'groq');
+    assert.equal(selection.config.model, primary.model);
+    assert.equal(selection.reason, 'feature_disabled');
+    assert.equal(selection.reservationId, null);
+    assert.equal(await store.get('SELECT reserved_tokens FROM inception_provider_health WHERE provider_id=?', 'groq'), undefined);
+  } finally { store.db.close(); }
+});
+
 test('concurrent starts reserve Groq capacity once and account for usage after the observed snapshot', async () => {
   const store = openStore(':memory:');
   let clock = Date.now();
