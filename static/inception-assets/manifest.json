@@ -2,6 +2,7 @@
   "version": 1,
   "closedFrame": "/inception-assets/strongroom-closed-v1.webp",
   "openFrame": "/inception-assets/strongroom-open-v1.webp",
+  "dialogueTexture": "/inception-assets/strongroom-walnut-texture-v1.webp",
   "bridgeFrame": "/inception-assets/strongroom-closed-v1.webp",
   "bridgeVideo": null,
   "introVideo": "/inception-assets/strongroom-intro-v4.mp4",
@@ -14,7 +15,7 @@
   "roomTone": "/inception-assets/strongroom-roomtone-v1.mp3",
   "portraits": {
     "eames": "/inception-assets/eames-portrait-v1.webp",
-    "fischer": "/inception-assets/fischer-portrait-v1.webp"
+    "fischer": "/inception-assets/fischer-portrait-v2.webp"
   },
   "provenance": {
     "closedFrame": {
@@ -28,6 +29,15 @@
       "width": 1672,
       "height": 941,
       "sha256": "38ed16667675ccdedf01bff0de40a6f9dbab8adeb545e53c92cb4972e3dc4134"
+    },
+    "dialogueTexture": {
+      "kind": "walnut-only material crop from the existing closed strongroom frame; no safe keypad, handle, or bed is included",
+      "source": "strongroom-closed-v1.webp",
+      "sourceSha256": "9eef7b9f19ea069a9a7d1f10cd3a4466b5e370a2953439b66fcd00c265f936f3",
+      "crop": [1150, 450, 75, 270],
+      "dimensions": [300, 1080],
+      "quality": 92,
+      "sha256": "65b2f0752f9db17e4d98e9bf3b33ced87be246bfb2038530c8607c06d166b784"
     },
     "roomTone": {
       "kind": "original non-musical room ambience",
@@ -68,6 +78,16 @@
         "sha256": "4464d24f00611a73c67939124aac906c6caee4c33788daee296c3547625ff031"
       },
       "fischer": {
+        "source": "door-source-60-150.mp4; original film time 100 seconds (cached window starts at 60 seconds)",
+        "sourceTimeSeconds": 100,
+        "cacheWindowStartSeconds": 60,
+        "cacheOffsetSeconds": 40,
+        "crop": [560, 140, 800, 800],
+        "dimensions": [256, 256],
+        "quality": 92,
+        "sha256": "831d8ed8d4e319e015f4900b6e44dd116920e475af0a0eb0a8cac0fabcc96387"
+      },
+      "fischerV1": {
         "source": "film-first75.mp4 at 45.5 seconds",
         "crop": [330, 140, 800, 800],
         "dimensions": [256, 256],

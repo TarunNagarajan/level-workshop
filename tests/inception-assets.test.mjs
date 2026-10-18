@@ -26,4 +26,17 @@ test('Inception film and portrait manifest hashes match versioned assets while a
     assert.equal(digest(await readFile(resolve(assets, path.split('/').at(-1)))), provenance.sha256);
     assert.deepEqual(provenance.dimensions, [256, 256]);
   }
+  const fischerV1 = JSON.parse(await readFile(resolve(assets, 'manifest.json'), 'utf8')).provenance.portraits.fischerV1;
+  assert.equal(digest(await readFile(resolve(assets, 'fischer-portrait-v1.webp'))), fischerV1.sha256);
+  assert.equal(fischerV1.sha256, '2ff86b1a03a49d40612210e6a31cfb575790027dc7906f2139345125d3d52ac4');
+  const fischerV2 = manifest.provenance.portraits.fischer;
+  assert.equal(manifest.portraits.fischer, '/inception-assets/fischer-portrait-v2.webp');
+  assert.equal(fischerV2.sourceTimeSeconds, 100);
+  assert.equal(fischerV2.cacheWindowStartSeconds, 60);
+  assert.equal(fischerV2.cacheOffsetSeconds, 40);
+  assert.deepEqual(fischerV2.crop, [560, 140, 800, 800]);
+  assert.equal(fischerV2.quality, 92);
+  assert.equal(digest(await readFile(resolve(assets, 'strongroom-walnut-texture-v1.webp'))), manifest.provenance.dialogueTexture.sha256);
+  assert.deepEqual(manifest.provenance.dialogueTexture.crop, [1150, 450, 75, 270]);
+  assert.deepEqual(manifest.provenance.dialogueTexture.dimensions, [300, 1080]);
 });
