@@ -768,7 +768,6 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
                     : <><strong>{review.verdict === 'recovered' ? 'The lock turns. You’re inside.' : 'The dream gives way. The safe stays locked.'}</strong>{review.verdict === 'partial' ? <p>You have a lead, but not a verified complete combination.</p> : review.verdict !== 'recovered' ? <p>{session.profile.profileRevision === 1 ? 'Fischer did not disclose the combination before the dream collapsed.' : 'Fischer did not recover his earlier answer before the dream collapsed.'}</p> : null}{review.verdict === 'recovered' && review.evidence?.[0]?.quote && <blockquote><span>FISCHER</span><p>{review.evidence[0].quote}</p></blockquote>}</>}
             </div>
             <div className="inception-result-actions">
-              {session.state.safeOpened && <Button className="inception-secondary" onClick={() => setActiveModal('safe')}>Inspect the inside</Button>}
               {!review && config.reviewEnabled && session.round.endedAt && <Button className="inception-secondary" disabled={busy} onClick={() => void requestReview()}>Check outcome</Button>}
               {review?.status === 'unavailable' && review.retryable && config.reviewEnabled && <Button className="inception-secondary" disabled={busy} onClick={() => void requestReview()}>Retry review</Button>}
               {session.round.endedAt && <Button className="inception-secondary" disabled={busy || review?.status === 'pending'} onClick={replay}>Start a new attempt</Button>}

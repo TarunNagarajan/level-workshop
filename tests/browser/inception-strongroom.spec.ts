@@ -599,9 +599,9 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('button', { name: /Rewatch ending/ })).toBeVisible();
 
     await page.screenshot({ path: join(snapshotDirectory, 'inception-open-desktop.png') });
-    await page.getByRole('button', { name: 'Inspect the inside' }).click();
-    await expect(page.getByRole('dialog')).toContainText('Inside the strongroom safe');
-    await page.getByRole('button', { name: 'Close' }).click();
+    await expect(page.getByRole('button', { name: 'Inspect the inside' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Start a new attempt/ })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
     const exitFullscreen = page.getByRole('button', { name: 'Exit fullscreen' });
     if (await exitFullscreen.count()) await exitFullscreen.click();
     await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
