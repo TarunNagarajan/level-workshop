@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
-import { ArrowLeft, ArrowRight, Maximize2, Volume2, VolumeX, X } from 'lucide-react';
+import { ArrowRight, Maximize2, Volume2, VolumeX, X } from 'lucide-react';
 import { api, ApiError, RECORDING_NOTICE, RECORDING_NOTICE_VERSION, setRecordingAcknowledged, time } from './api';
 import type { Message, Round } from './types';
 import { Button } from './ui';
@@ -13,15 +14,24 @@ type InceptionState = { revision: number; safeInspected: boolean; roomInspected:
 type Session = { round: Round; state: InceptionState; profile: Profile };
 type Configuration = { title: string; profiles: Profile[]; defaultProfileId?: string; connected: boolean; recordingNoticeRequired?: boolean; recordingAccepted?: boolean; reviewEnabled?: boolean; actorScope: string; activeRoundId: string | null };
 type Review = { status: string; verdict?: string; reason?: string; evidence?: { replyId: string; quote: string }[]; retryable?: boolean; errorCode?: string };
-type MediaManifest = { closedFrame?: string | null; openFrame?: string | null; dialogueTexture?: string | null; bridgeFrame?: string | null; bridgeVideo?: string | null; introVideo?: string | null; introDurationSeconds?: number; captions?: string | null; successVideo?: string | null; successCaptions?: string | null; successDurationSeconds?: number; endingWordmark?: string | null; endingLogo?: string | null; gameplayLoop?: string | null; roomTone?: string | null; creditsCue?: string | null; creditsDurationSeconds?: number; portraits?: { eames?: string; fischer?: string } };
+type MediaManifest = { closedFrame?: string | null; openFrame?: string | null; dialogueTexture?: string | null; bridgeFrame?: string | null; bridgeVideo?: string | null; introVideo?: string | null; introDurationSeconds?: number; captions?: string | null; successVideo?: string | null; successCaptions?: string | null; successFilmDurationSeconds?: number; successDurationSeconds?: number; successTitleFadeStartSeconds?: number; successTitleFadeEndSeconds?: number; successLogoStartSeconds?: number; successLogoFadeStartSeconds?: number; endingWordmark?: string | null; endingLogo?: string | null; entryPoster?: string | null; entryWordmark?: string | null; gameplayLoop?: string | null; roomTone?: string | null; creditsCue?: string | null; creditsDurationSeconds?: number; portraits?: { eames?: string; fischer?: string } };
 type PendingSend = { id: string; content: string };
 
 const startStorage = 'workshop-inception-start-intent';
 const startStorageFor = (actorScope: string) => `${startStorage}:${actorScope}`;
+const completedRoundStorage = 'workshop-inception-completed-round';
+const completedRoundStorageFor = (actorScope: string) => `${completedRoundStorage}:${actorScope}`;
 const sessionStorageKey = 'workshop-inception-session';
 const soundStorage = 'workshop-inception-sound';
 const DEFAULT_INTRO_DURATION_SECONDS = 25;
 const defaultSound = { muted: false, volume: 0.45 };
+type CompletedRoundAcknowledgement = { roundId: string; profileId: string; outcome?: 'failed' };
+const readCompletedRoundAcknowledgement = (actorScope: string): CompletedRoundAcknowledgement | null => {
+  try {
+    const value = JSON.parse(localStorage.getItem(completedRoundStorageFor(actorScope)) || 'null') as CompletedRoundAcknowledgement | null;
+    return value && typeof value.roundId === 'string' && typeof value.profileId === 'string' ? value : null;
+  } catch { return null; }
+};
 const parseSound = () => { try { return { ...defaultSound, ...JSON.parse(localStorage.getItem(soundStorage) || '{}') }; } catch { return defaultSound; } };
 const getFilmCaptionText = (track: TextTrack | null | undefined) => Array.from(track?.activeCues || [])
   .map(cue => (cue as VTTCue).text.trim()).filter(Boolean).join('\n');
@@ -41,8 +51,23 @@ const getFilmCaptionLayout = (video: HTMLVideoElement | null): CSSProperties | n
     '--film-caption-size': `${Math.min(30, Math.max(8, lowerBandHeight * 0.4))}px`,
   } as CSSProperties;
 };
+const getEndingCardPhase = (currentTime: number, manifest: MediaManifest, duration: number): 'black' | 'title' | 'title-fade' | 'logo-black' | 'logo' | 'logo-fade' | 'final-black' | null => {
+  if (currentTime >= duration) return 'final-black';
+  const filmEnd = manifest.successFilmDurationSeconds || 29.166667;
+  const titleFadeStart = manifest.successTitleFadeStartSeconds || filmEnd + 4.241083;
+  const titleFadeEnd = manifest.successTitleFadeEndSeconds || titleFadeStart + 0.75;
+  const logoStart = manifest.successLogoStartSeconds || titleFadeEnd + 0.5;
+  const logoFadeStart = manifest.successLogoFadeStartSeconds || duration - 0.75;
+  if (currentTime >= logoFadeStart) return 'logo-fade';
+  if (currentTime >= logoStart) return 'logo';
+  if (currentTime >= titleFadeEnd) return 'logo-black';
+  if (currentTime >= titleFadeStart) return 'title-fade';
+  if (currentTime >= filmEnd + 0.7) return 'title';
+  if (currentTime >= filmEnd) return 'black';
+  return null;
+};
 
-export function InceptionLevel({ onHome }: { onHome: () => void }) {
+export function InceptionLevel() {
   const [config, setConfig] = useState<Configuration | null>(null);
   const [manifest, setManifest] = useState<MediaManifest>({});
   const [session, setSession] = useState<Session | null>(null);
@@ -70,14 +95,18 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const [sendStatus, setSendStatus] = useState('');
   const [activeModal, setActiveModal] = useState<'safe' | 'room' | null>(null);
   const [review, setReview] = useState<Review | null>(null);
-  const [successEnding, setSuccessEnding] = useState<'playing' | 'blocked' | 'error' | 'closing' | 'title' | 'title-fade' | 'title-black' | 'logo' | 'logo-fade' | 'hold' | null>(null);
+  const [successEnding, setSuccessEnding] = useState<'playing' | 'blocked' | 'error' | 'return' | null>(null);
+  const [endingCardPhase, setEndingCardPhase] = useState<'black' | 'title' | 'title-fade' | 'logo-black' | 'logo' | 'logo-fade' | 'final-black' | null>(null);
   const [successEndingAttempt, setSuccessEndingAttempt] = useState(0);
+  const [entryTransition, setEntryTransition] = useState(false);
+  const [entryVisible, setEntryVisible] = useState(true);
+  const [entryReturning, setEntryReturning] = useState(false);
+  const [entryPrompt, setEntryPrompt] = useState<'begin' | 'continue'>('begin');
   const [successEndingError, setSuccessEndingError] = useState('');
   const [introCaptionText, setIntroCaptionText] = useState('');
   const [introCaptionLayout, setIntroCaptionLayout] = useState<CSSProperties | null>(null);
   const [successCaptionText, setSuccessCaptionText] = useState('');
   const [successCaptionLayout, setSuccessCaptionLayout] = useState<CSSProperties | null>(null);
-  const [successTimeLeft, setSuccessTimeLeft] = useState(0);
   const [sound, setSound] = useState(parseSound);
   const [soundReady, setSoundReady] = useState(false);
   const [safeBounds, setSafeBounds] = useState<CSSProperties>({});
@@ -104,9 +133,11 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   const successCaptionTrackRef = useRef<HTMLTrackElement | null>(null);
   const successTitleRef = useRef<HTMLHeadingElement | null>(null);
   const cinematicTimerRef = useRef<number | null>(null);
+  const entryTransitionTimerRef = useRef<number | null>(null);
   const endingGenerationRef = useRef(0);
-  const creditsHandoffRef = useRef(false);
-  const creditsFadeFrameRef = useRef<number | null>(null);
+  const endingMediaDisposalRef = useRef(false);
+  const entryPosterRef = useRef<HTMLButtonElement | null>(null);
+  const leaveRef = useRef<() => Promise<void>>(async () => undefined);
   const autoEndedRoundRef = useRef<string | null>(null);
   const endingWasShownRef = useRef(false);
   const introProgressRef = useRef({ at: Date.now(), time: 0 });
@@ -190,7 +221,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     checkingTextareaHeight.current = null;
     if (installedRoundId.current !== value.round.id) { followConversationRef.current = true; installedRoundId.current = value.round.id; }
     if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current);
-    setCinematicPhase(null); setRevealedDigits(''); setImmersive(true); setSession(value); setRoundClock(Date.now()); setReview(value.state.review?.status === 'complete' ? value.state.review as Review : null); setSuccessEnding(null);
+    setCinematicPhase(null); setEndingCardPhase(null); setRevealedDigits(''); setImmersive(true); setEntryVisible(false); setSession(value); setRoundClock(Date.now()); setReview(value.state.review?.status === 'complete' ? value.state.review as Review : null); setSuccessEnding(null);
     setMetricsPhase('read_think', value.round.id, value.round.accessToken);
     setError(''); setActiveModal(null); setSendStatus('');
     const stored = sessionStorage.getItem(`workshop-inception-send:${value.round.id}`);
@@ -200,72 +231,16 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     if (value.round.endedAt) setReview(value.state.review?.status === 'complete' ? value.state.review as Review : null);
   }, []);
 
-  const prepareEndingMusic = useCallback(async () => {
-    let instance = audioRef.current;
-    if (!instance) {
-      instance = new InceptionAudio();
-      audioRef.current = instance;
-      instance.setVolume(sound.volume);
-      if (instance.isMuted !== sound.muted) instance.setMuted(sound.muted);
-    }
-    if (!instance.isInitialized) await instance.start({ gameplayLoop: manifest.gameplayLoop, creditsCue: manifest.creditsCue, roomTone: manifest.roomTone });
-    await instance.prepareCreditsCue();
-    return instance;
-  }, [sound.volume, sound.muted, manifest.gameplayLoop, manifest.creditsCue, manifest.roomTone]);
-
-  const beginCreditsHandoff = useCallback((video: HTMLVideoElement) => {
-    if (creditsHandoffRef.current) return;
-    creditsHandoffRef.current = true;
-    const endingAudio = audioRef.current;
-    if (!endingAudio || sound.muted) return;
-    const startQuietTail = async () => {
-      if (!await endingAudio.resumeForCredits() || sound.muted || successVideoRef.current !== video) return;
-      const fadeAtRemainingTime = () => {
-        if (successVideoRef.current !== video || endingAudio !== audioRef.current) { creditsFadeFrameRef.current = null; return; }
-        const duration = video.duration || manifest.successDurationSeconds || 29.17;
-        const remaining = Math.max(0, duration - video.currentTime);
-        if (!video.ended && remaining > 0.25) {
-          creditsFadeFrameRef.current = window.requestAnimationFrame(fadeAtRemainingTime);
-          return;
-        }
-        creditsFadeFrameRef.current = null;
-        if (video.ended || remaining <= 0) {
-          video.volume = 0;
-          endingAudio.fadeCreditsIn(0);
-          return;
-        }
-        const fadeSeconds = Math.min(0.25, remaining);
-        const initialVolume = video.volume;
-        endingAudio.fadeCreditsIn(fadeSeconds);
-        const fadeStartedAt = performance.now();
-        const fadeVideo = (now: number) => {
-          if (successVideoRef.current !== video || endingAudio !== audioRef.current) { creditsFadeFrameRef.current = null; return; }
-          const progress = Math.min(1, (now - fadeStartedAt) / (fadeSeconds * 1000));
-          video.volume = initialVolume * Math.cos(progress * Math.PI / 2);
-          if (progress < 1) creditsFadeFrameRef.current = window.requestAnimationFrame(fadeVideo);
-          else creditsFadeFrameRef.current = null;
-        };
-        creditsFadeFrameRef.current = window.requestAnimationFrame(fadeVideo);
-      };
-      fadeAtRemainingTime();
-    };
-    void startQuietTail();
-  }, [sound.muted, manifest.successDurationSeconds]);
-
   const playConfirmedEnding = useCallback((roundId: string, result: Review | null, state: InceptionState) => {
-    if (!manifest.successVideo || result?.status !== 'complete' || result.verdict !== 'recovered' || !state.safeOpened || !state.revealedCombination || autoEndedRoundRef.current === roundId) return;
+    if (entryVisible || !manifest.successVideo || result?.status !== 'complete' || result.verdict !== 'recovered' || !state.safeOpened || !state.revealedCombination || autoEndedRoundRef.current === roundId) return;
     const generation = lifecycle.current, roundToken = roundGeneration.current;
     endingGenerationRef.current++;
     autoEndedRoundRef.current = roundId;
-    creditsHandoffRef.current = false;
-    const musicReady = prepareEndingMusic();
     setActiveModal(null);
     endingWasShownRef.current = true;
-    setSuccessEndingError(''); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1); setSuccessEnding(null);
+    setSuccessEndingError(''); setSuccessEndingAttempt(value => value + 1); setEndingCardPhase(null); setSuccessEnding(null);
     setCinematicPhase('entry'); setRevealedDigits(reducedMotion ? state.revealedCombination : '');
     const startFilm = async () => {
-      await musicReady;
-      if (generation !== lifecycle.current || roundToken !== roundGeneration.current) return;
       await audioRef.current?.fadeForFilm();
       if (generation !== lifecycle.current || roundToken !== roundGeneration.current) return;
       setCinematicPhase('film'); setSuccessEnding('playing');
@@ -277,25 +252,24 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
       const revealNext = () => { count += 1; setRevealedDigits(state.revealedCombination!.slice(0, count)); if (count < state.revealedCombination!.length) cinematicTimerRef.current = window.setTimeout(revealNext, 180); else cinematicTimerRef.current = window.setTimeout(() => { void startFilm(); }, 500); };
       cinematicTimerRef.current = window.setTimeout(revealNext, 180);
     }
-  }, [manifest.successVideo, manifest.successDurationSeconds, reducedMotion, prepareEndingMusic]);
+  }, [entryVisible, manifest.successVideo, manifest.successDurationSeconds, reducedMotion]);
 
   const replayConfirmedEnding = async () => {
     if (!session || !manifest.successVideo || review?.status !== 'complete' || review.verdict !== 'recovered' || !session.state.safeOpened) return;
     const generation = lifecycle.current, roundToken = roundGeneration.current;
     endingGenerationRef.current++;
-    creditsHandoffRef.current = false;
-    await prepareEndingMusic();
     await audioRef.current?.fadeForFilm();
     if (generation !== lifecycle.current || roundToken !== roundGeneration.current) return;
     setActiveModal(null);
     endingWasShownRef.current = true;
-    setSuccessEndingError(''); setSuccessTimeLeft(manifest.successDurationSeconds || 29); setSuccessEndingAttempt(value => value + 1); setCinematicPhase('film'); setSuccessEnding('playing');
+    setSuccessEndingError(''); setEndingCardPhase(null); setSuccessEndingAttempt(value => value + 1); setCinematicPhase('film'); setSuccessEnding('playing');
   };
 
   useEffect(() => {
     if (successEnding !== 'playing') return;
     const video = successVideoRef.current;
     if (!video) return;
+    endingMediaDisposalRef.current = false;
     let active = true;
     video.volume = sound.volume;
     video.muted = sound.muted;
@@ -303,6 +277,30 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     void video.play().then(() => { if (active) setSuccessEnding('playing'); }).catch(() => { if (active) setSuccessEnding('blocked'); });
     return () => { active = false; video.pause(); };
   }, [successEnding, successEndingAttempt]);
+
+  useEffect(() => {
+    if (successEnding !== 'playing') return;
+    const video = successVideoRef.current;
+    if (!video) return;
+    let frame = 0, active = true;
+    const sync = () => {
+      if (!active) return;
+      if (video.ended) { setEndingCardPhase(current => current === 'final-black' ? current : 'final-black'); return; }
+      const duration = manifest.successDurationSeconds || video.duration || 52;
+      const next = getEndingCardPhase(video.currentTime, manifest, duration);
+      setEndingCardPhase(current => current === next ? current : next);
+      frame = window.requestAnimationFrame(sync);
+    };
+    const onTimeUpdate = () => {
+      const duration = manifest.successDurationSeconds || video.duration || 52;
+      const next = getEndingCardPhase(video.currentTime, manifest, duration);
+      setEndingCardPhase(current => current === next ? current : next);
+    };
+    video.addEventListener('timeupdate', onTimeUpdate);
+    video.addEventListener('seeked', onTimeUpdate);
+    sync();
+    return () => { active = false; window.cancelAnimationFrame(frame); video.removeEventListener('timeupdate', onTimeUpdate); video.removeEventListener('seeked', onTimeUpdate); };
+  }, [successEnding, successEndingAttempt, manifest.successDurationSeconds, manifest.successFilmDurationSeconds, manifest.successTitleFadeStartSeconds, manifest.successTitleFadeEndSeconds, manifest.successLogoStartSeconds, manifest.successLogoFadeStartSeconds]);
 
   useEffect(() => {
     if (successEnding !== 'playing') return;
@@ -319,13 +317,15 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   }, [successEnding, successEndingAttempt]);
 
   useEffect(() => {
-    if (!manifest.endingLogo) return;
-    const image = new Image();
-    image.src = manifest.endingLogo;
-    void image.decode().catch(() => undefined);
-  }, [manifest.endingLogo]);
+    for (const source of [manifest.endingLogo, manifest.entryPoster, manifest.entryWordmark]) {
+      if (!source) continue;
+      const image = new Image();
+      image.src = source;
+      void image.decode().catch(() => undefined);
+    }
+  }, [manifest.endingLogo, manifest.entryPoster, manifest.entryWordmark]);
 
-  useEffect(() => () => { if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current); if (creditsFadeFrameRef.current !== null) window.cancelAnimationFrame(creditsFadeFrameRef.current); }, []);
+  useEffect(() => () => { if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current); if (entryTransitionTimerRef.current !== null) window.clearTimeout(entryTransitionTimerRef.current); }, []);
 
   useEffect(() => {
     const video = successVideoRef.current;
@@ -411,6 +411,11 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     if (successEnding) successTitleRef.current?.focus();
     else if (endingWasShownRef.current && session?.state.safeOpened && review?.status === 'complete' && review.verdict === 'recovered') { endingWasShownRef.current = false; document.querySelector<HTMLButtonElement>('[aria-label="Rewatch ending"]')?.focus(); }
   }, [successEnding, session?.state.safeOpened, review?.status, review?.verdict]);
+  useEffect(() => {
+    if (!entryVisible || entryTransition || entryReturning || successEnding) return;
+    const frame = window.requestAnimationFrame(() => entryPosterRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [entryVisible, entryTransition, entryReturning, successEnding]);
 
   useLayoutEffect(() => {
     const conversation = conversationRef.current;
@@ -438,11 +443,23 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     return () => window.clearTimeout(timer);
   }, [cinematicHandoff, handoffInteractive, reducedMotion]);
 
-  const fetchSession = useCallback(async (id: string) => {
+  const fetchSession = useCallback(async (id: string, acknowledgement?: CompletedRoundAcknowledgement | null, parkAtEntry = false) => {
     const generation = lifecycle.current, previousRoundToken = roundGeneration.current;
     const value = await api<Session>(`/inception/rounds/${id}`);
     if (lifecycle.current !== generation || roundGeneration.current !== previousRoundToken) return;
+    if (acknowledgement?.roundId === value.round.id && value.round.endedAt) {
+      if (JSON.parse(sessionStorage.getItem(sessionStorageKey) || 'null')?.id === value.round.id) sessionStorage.removeItem(sessionStorageKey);
+      sessionStorage.removeItem(`workshop-inception-send:${value.round.id}`);
+      return;
+    }
     install(value);
+    if (parkAtEntry) {
+      setEntryVisible(true);
+      if (!value.round.endedAt) {
+        setEntryPrompt('continue');
+        setSelectedProfile(value.profile.profileRevision === 1 ? 'standard' : value.profile.profileId || 'standard');
+      }
+    }
     const roundToken = roundGeneration.current;
     if (value.round.endedAt) {
       const result = await api<{ review: Review | null; state: InceptionState }>(`/inception/rounds/${id}/review`).catch(() => null);
@@ -450,10 +467,10 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     }
   }, [install]);
 
-  const startRound = useCallback(async (profileId: string, existing?: { clientStartId: string }, startAudio = true, storageKey = config ? startStorageFor(config.actorScope) : startStorage, alreadyAcknowledged = Boolean(config?.recordingAccepted)) => {
+  const startRound = useCallback(async (profileId: string, existing?: { clientStartId: string }, startAudio = true, storageKey = config ? startStorageFor(config.actorScope) : startStorage, alreadyAcknowledged = config?.recordingNoticeRequired !== true || Boolean(config?.recordingAccepted)) => {
     if (startLock.current) return;
-    if (!alreadyAcknowledged && !consented) return;
-    startLock.current = true; setBusy(true); setError(''); setSendStatus('');
+    if (config?.recordingNoticeRequired === true && !alreadyAcknowledged && !consented) return;
+    startLock.current = true; setBusy(true); setEntryVisible(false); setError(''); setSendStatus('');
     const generation = lifecycle.current;
     const receipt = existing || { clientStartId: crypto.randomUUID() };
     const intent = { profileId, ...receipt, consent: true as const };
@@ -466,7 +483,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
         setRecordingAcknowledged(true);
       }
       const value = await api<Session>('/inception/start', { method: 'POST', body: intent });
-      if (lifecycle.current !== generation) { localStorage.removeItem(storageKey); return; }
+      if (lifecycle.current !== generation) return;
       localStorage.removeItem(storageKey); sessionStorage.removeItem('workshop-inception-intro-at'); setPendingStart(null); setRecordingAcknowledged(true); setConfig(current => current ? { ...current, recordingAccepted: true } : current); setCinematicHandoff(intro && !reducedMotion); setHandoffInteractive(!intro || reducedMotion); install(value); setIntro(false); setFilmEnded(false);
     } catch (cause) {
       if (lifecycle.current !== generation) return;
@@ -481,18 +498,29 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     let active = true;
     void Promise.all([api<Configuration>('/inception'), fetch('/inception-assets/manifest.json', { cache: 'no-store' }).then(response => response.ok ? response.json() as Promise<MediaManifest> : {})]).then(async ([nextConfig, nextManifest]) => {
       if (!active) return;
-      setConfig(nextConfig); setManifest(nextManifest); setConsented(Boolean(nextConfig.recordingAccepted)); setRecordingAcknowledged(Boolean(nextConfig.recordingAccepted)); setSelectedProfile(nextConfig.defaultProfileId || 'standard');
+      setConfig(nextConfig); setManifest(nextManifest); setConsented(Boolean(nextConfig.recordingAccepted)); setRecordingAcknowledged(Boolean(nextConfig.recordingAccepted));
+      const linkedProfile = new URLSearchParams(window.location.search).get('profile');
+      const allowlistedProfile = linkedProfile && ['story', 'standard', 'guarded', 'sealed'].includes(linkedProfile) && nextConfig.profiles.some(profile => profile.id === linkedProfile) ? linkedProfile : null;
+      setSelectedProfile(allowlistedProfile || nextConfig.defaultProfileId || 'standard');
       const intentKey = startStorageFor(nextConfig.actorScope), intentText = localStorage.getItem(intentKey);
+      const completedAcknowledgement = readCompletedRoundAcknowledgement(nextConfig.actorScope);
+      if (completedAcknowledgement?.outcome === 'failed') setEntryPrompt('continue');
+      if (!allowlistedProfile && completedAcknowledgement && nextConfig.profiles.some(profile => profile.id === completedAcknowledgement.profileId)) setSelectedProfile(completedAcknowledgement.profileId);
       if (intentText) {
-        try { const intent = JSON.parse(intentText) as { profileId: string; clientStartId: string }; setSelectedProfile(intent.profileId); setPendingStart(intent); if (nextConfig.recordingAccepted) await startRound(intent.profileId, { clientStartId: intent.clientStartId }, false, intentKey, true); }
+        try { const intent = JSON.parse(intentText) as { profileId: string; clientStartId: string }; setSelectedProfile(intent.profileId); setPendingStart(intent); setEntryPrompt('continue'); }
         catch { if (active) setError('The saved start receipt could not be checked. Retry with the same start key.'); }
       } else {
         const receipt = sessionStorage.getItem(sessionStorageKey);
-        if (receipt) { try { const saved = JSON.parse(receipt) as { id: string }; await fetchSession(saved.id); } catch { sessionStorage.removeItem(sessionStorageKey); } }
-        if (!sessionStorage.getItem(sessionStorageKey) && nextConfig.activeRoundId) await fetchSession(nextConfig.activeRoundId).catch(() => undefined);
+        if (receipt) { try { const saved = JSON.parse(receipt) as { id: string }; await fetchSession(saved.id, completedAcknowledgement, true); } catch { sessionStorage.removeItem(sessionStorageKey); } }
+        if (!sessionStorage.getItem(sessionStorageKey) && nextConfig.activeRoundId) await fetchSession(nextConfig.activeRoundId, completedAcknowledgement, true).catch(() => undefined);
         if (!sessionStorage.getItem(sessionStorageKey)) {
           const latest = await api<Session | null>('/inception/latest').catch(() => null);
-          if (latest && active) install(latest);
+          if (latest && active) {
+            if (completedAcknowledgement?.roundId === latest.round.id && latest.round.endedAt) {
+              sessionStorage.removeItem(sessionStorageKey);
+              sessionStorage.removeItem(`workshop-inception-send:${latest.round.id}`);
+            } else { install(latest); setEntryVisible(true); if (!latest.round.endedAt) setEntryPrompt('continue'); }
+          }
         }
       }
     }).catch(cause => { if (active) setError((cause as Error).message); }).finally(() => { if (active) setLoading(false); });
@@ -524,7 +552,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   }, [activeModal]);
 
   useEffect(() => {
-    if (!session?.round.endedAt || review?.status !== 'pending') return;
+    if (!session?.round.endedAt || review?.status !== 'pending' || entryVisible) return;
     const roundId = session.round.id, generation = lifecycle.current, roundToken = roundGeneration.current;
     let active = true, attempts = 0, timer = 0;
     const poll = async () => {
@@ -536,7 +564,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
         if (result.review && result.review.status !== 'pending') {
           setReview(result.review);
           setSession(current => current?.round.id === roundId ? { ...current, state: result.state } : current);
-          void playConfirmedEnding(roundId, result.review, result.state);
+          if (!entryVisible) void playConfirmedEnding(roundId, result.review, result.state);
           if (!(result.review.status === 'complete' && result.review.verdict === 'recovered' && result.state.safeOpened && result.state.revealedCombination)) setCinematicPhase(null);
           if (result.review.status === 'complete') setSendStatus(result.review.verdict === 'recovered' ? 'Review complete. The safe is open.' : 'Review complete. Read the result below.');
           return;
@@ -547,7 +575,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     };
     timer = window.setTimeout(poll, 1500);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [session?.round.id, session?.round.endedAt, review?.status]);
+  }, [session?.round.id, session?.round.endedAt, review?.status, entryVisible, playConfirmedEnding]);
 
   useEffect(() => {
     if (session?.round.endedAt) return;
@@ -582,36 +610,70 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   useEffect(() => { if (!retryCooldownUntil) { setRetrySeconds(0); return; } const tick = () => { const seconds = Math.max(0, Math.ceil((retryCooldownUntil - Date.now()) / 1000)); setRetrySeconds(seconds); if (!seconds) setRetryCooldownUntil(0); }; tick(); const timer = window.setInterval(tick, 1000); return () => window.clearInterval(timer); }, [retryCooldownUntil]);
   const enterFullscreen = async () => {
     setImmersive(true);
-    try { if (!document.fullscreenElement) await rootRef.current?.requestFullscreen(); setFullscreen(Boolean(document.fullscreenElement)); }
+    try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); setFullscreen(Boolean(document.fullscreenElement)); }
     catch { setFullscreen(false); setImmersive(true); }
   };
-  const leave = async () => { lifecycle.current++; await disposeAmbient(); if (document.fullscreenElement) await document.exitFullscreen().catch(() => undefined); setImmersive(false); onHome(); };
+  const leave = async () => {
+    const wasCompleted = Boolean(session?.round.endedAt && review?.status === 'complete');
+    const confirmedFailure = Boolean(wasCompleted && (review?.verdict === 'not_recovered' || review?.verdict === 'partial'));
+    const sessionProfileId = session ? (session.profile.profileRevision === 1 ? 'standard' : session.profile.profileId || selectedProfile) : null;
+    if (wasCompleted && session && config) {
+      const profileId = sessionProfileId || selectedProfile;
+      localStorage.setItem(completedRoundStorageFor(config.actorScope), JSON.stringify({ roundId: session.round.id, profileId, ...(confirmedFailure ? { outcome: 'failed' as const } : {}) } satisfies CompletedRoundAcknowledgement));
+      sessionStorage.removeItem(sessionStorageKey);
+      sessionStorage.removeItem(`workshop-inception-send:${session.round.id}`);
+    }
+    lifecycle.current++; endingGenerationRef.current++;
+    if (cinematicTimerRef.current !== null) { window.clearTimeout(cinematicTimerRef.current); cinematicTimerRef.current = null; }
+    if (entryTransitionTimerRef.current !== null) { window.clearTimeout(entryTransitionTimerRef.current); entryTransitionTimerRef.current = null; }
+    successVideoRef.current?.pause();
+    introVideoRef.current?.pause();
+    await disposeAmbient();
+    if (document.fullscreenElement) await document.exitFullscreen().catch(() => undefined);
+    setBusy(false); startLock.current = false;
+    setImmersive(false); setEntryTransition(false); setEntryVisible(true); setEntryPrompt(confirmedFailure || Boolean(pendingStart) || Boolean(session && !session.round.endedAt) ? 'continue' : 'begin'); if (sessionProfileId) setSelectedProfile(sessionProfileId); setEntryReturning(true); setIntro(false); setFilmEnded(false); setCinematicPhase(null); setEndingCardPhase(null); setSuccessEnding(null); setActiveModal(null);
+    if (entryTransitionTimerRef.current !== null) window.clearTimeout(entryTransitionTimerRef.current);
+    entryTransitionTimerRef.current = window.setTimeout(() => { setEntryReturning(false); entryTransitionTimerRef.current = null; }, reducedMotion ? 60 : 800);
+    if (wasCompleted) { setSession(null); setReview(null); setMessageText(''); setPendingSend(null); setSendStatus(''); }
+  };
+  leaveRef.current = leave;
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() === 'm' && !event.repeat && !(event.target instanceof HTMLElement && /INPUT|TEXTAREA|SELECT/.test(event.target.tagName))) { setSound((current: typeof defaultSound) => ({ ...current, muted: !current.muted })); return; }
       if (event.key !== 'Escape') return;
       if (activeModal) { setActiveModal(null); return; }
-      if (intro && pendingStart) { event.preventDefault(); setIntro(false); setFilmEnded(false); return; }
+      if (intro) { event.preventDefault(); void leaveRef.current(); return; }
       if (cinematicPhase === 'entry') return;
-      if (cinematicPhase === 'film' || cinematicPhase === 'closing') { event.preventDefault(); void leave(); return; }
-      if (intro) { event.preventDefault(); finishIntro(true); return; }
-      if (session) { event.preventDefault(); void leave(); }
+      if (cinematicPhase === 'film' || cinematicPhase === 'closing') { event.preventDefault(); void leaveRef.current(); return; }
+      if (session) { event.preventDefault(); void leaveRef.current(); }
     };
     window.addEventListener('keydown', onEscape);
     return () => window.removeEventListener('keydown', onEscape);
   }, [activeModal, intro, pendingStart, session?.round.id, cinematicPhase]);
-  const beginIntro = () => {
-    if (!config?.connected || busy || (!config.recordingAccepted && !consented)) return;
-    if (!manifest.introVideo) { void startRound(selectedProfile); return; }
+  const beginIntro = (forceNew = false) => {
+    if (!config || busy || (config.recordingNoticeRequired === true && !config.recordingAccepted && !consented)) return;
+    if (session && !forceNew) {
+      setEntryTransition(true);
+      if (entryTransitionTimerRef.current !== null) window.clearTimeout(entryTransitionTimerRef.current);
+      entryTransitionTimerRef.current = window.setTimeout(() => { setEntryTransition(false); entryTransitionTimerRef.current = null; }, reducedMotion ? 60 : 800);
+      setEntryVisible(false); setImmersive(true); setError('');
+      if (!session.round.endedAt) startAmbient();
+      return;
+    }
+    setEntryVisible(false);
+    setEntryTransition(true);
+    if (entryTransitionTimerRef.current !== null) window.clearTimeout(entryTransitionTimerRef.current);
+    entryTransitionTimerRef.current = window.setTimeout(() => { setEntryTransition(false); entryTransitionTimerRef.current = null; }, reducedMotion ? 60 : 800);
+    if (!manifest.introVideo) { void startRound(selectedProfile, pendingStart ? { clientStartId: pendingStart.clientStartId } : undefined); return; }
     setError(''); setIntroMediaIssue(''); introProgressRef.current = { at: Date.now(), time: 0 }; introStartRequested.current = false; void enterFullscreen();
     startAmbient();
     sessionStorage.setItem('workshop-inception-intro-at', String(Date.now())); setIntroTimeLeft(introDurationSeconds); setFilmEnded(!manifest.introVideo); setIntroMediaAttempt(0); setIntro(true);
   };
   const finishIntro = (skip = false) => {
     if (!intro || busy || introStartRequested.current) return;
-    if (skip) { introVideoRef.current?.pause(); setFilmEnded(true); introStartRequested.current = true; void startRound(selectedProfile); }
+    if (skip) { introVideoRef.current?.pause(); setFilmEnded(true); introStartRequested.current = true; void startRound(pendingStart?.profileId || selectedProfile, pendingStart ? { clientStartId: pendingStart.clientStartId } : undefined); }
   };
-  useEffect(() => { if (intro && introTimeLeft <= 0 && (!manifest.introVideo || filmEnded) && !introStartRequested.current) { introStartRequested.current = true; void startRound(selectedProfile); } }, [introTimeLeft, intro, filmEnded, selectedProfile, startRound, manifest.introVideo]);
+  useEffect(() => { if (intro && introTimeLeft <= 0 && (!manifest.introVideo || filmEnded) && !introStartRequested.current) { introStartRequested.current = true; void startRound(pendingStart?.profileId || selectedProfile, pendingStart ? { clientStartId: pendingStart.clientStartId } : undefined); } }, [introTimeLeft, intro, filmEnded, selectedProfile, pendingStart, startRound, manifest.introVideo]);
 
   const inspect = async (type: 'inspect_safe' | 'inspect_room' | 'present_safe') => {
     if (!session || busy || actionLock.current || closed || session.state.safeOpened) return;
@@ -714,7 +776,7 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
     if (busy || review?.status === 'pending') return;
     roundGeneration.current++;
     setSession(null); setReview(null); setMessageText(''); setPendingSend(null); sessionStorage.removeItem(sessionStorageKey); setError('');
-    setSelectedProfile(session?.profile.profileRevision === 1 ? 'standard' : session?.profile.profileId || selectedProfile); beginIntro();
+    setSelectedProfile(session?.profile.profileRevision === 1 ? 'standard' : session?.profile.profileId || selectedProfile); beginIntro(true);
     if (!sound.muted) startAmbient(undefined, true);
   };
   const archiveOldAndStartCurrent = async () => {
@@ -739,10 +801,19 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
   };
 
   if (loading) return <main className="inception-loading" aria-busy="true">Opening the strongroom…</main>;
-  if (!config) return <main className="inception-loading"><p role="alert">{error || 'The strongroom is unavailable.'}</p><button onClick={onHome}>Return to workshop</button></main>;
+  if (!config) return <main className="inception-loading"><p role="alert">{error || 'The strongroom is unavailable.'}</p><button onClick={() => window.location.reload()}>Retry</button></main>;
   const activeProfile = session?.profile || config.profiles.find(item => item.id === selectedProfile) || config.profiles[0];
+  const entryAction = entryPrompt === 'continue' ? 'Click to continue' : 'Click anywhere to begin';
+  const hasConfirmedFailure = Boolean(session?.round.endedAt && review?.status === 'complete' && (review.verdict === 'not_recovered' || review.verdict === 'partial'));
+  const entryPoster = <button ref={entryPosterRef} type="button" className={`inception-entry-poster ${entryTransition ? 'is-transitioning' : ''} ${entryReturning ? 'is-returning' : ''}`} aria-label={entryAction} aria-hidden={Boolean(successEnding) || undefined} disabled={busy || Boolean(successEnding) || entryTransition || entryReturning || (config.recordingNoticeRequired === true && !config.recordingAccepted && !consented)} onClick={() => beginIntro()}>
+    {manifest.entryPoster && <img className="inception-entry-poster-image" src={manifest.entryPoster} alt="" aria-hidden="true" />}
+    <span className="inception-entry-poster-shade" aria-hidden="true" />
+    {manifest.entryWordmark && <img className="inception-entry-wordmark" src={manifest.entryWordmark} alt="" aria-hidden="true" />}
+    <span className="inception-entry-prompt">{entryAction}</span>
+    {error && <span className="inception-entry-error" role="alert">{error}</span>}
+  </button>;
   const gameBackground = session?.state.safeOpened && cinematicPhase !== 'entry' ? manifest.openFrame : manifest.closedFrame;
-  return <main ref={rootRef} className={`inception-root ${fullscreen ? 'is-fullscreen' : ''} ${immersive ? 'is-immersive' : ''} ${reducedMotion ? 'reduced-motion' : ''}`} style={{ ...(gameBackground ? { '--scene-art': `url("${gameBackground}")` } : {}), ...(manifest.dialogueTexture ? { '--dialogue-texture': `url("${manifest.dialogueTexture}")` } : {}) } as CSSProperties}>
+  return <main ref={rootRef} inert={entryVisible || entryTransition ? true : undefined} className={`inception-root ${fullscreen ? 'is-fullscreen' : ''} ${immersive ? 'is-immersive' : ''} ${reducedMotion ? 'reduced-motion' : ''}`} style={{ ...(gameBackground ? { '--scene-art': `url("${gameBackground}")` } : {}), ...(manifest.dialogueTexture ? { '--dialogue-texture': `url("${manifest.dialogueTexture}")` } : {}) } as CSSProperties}>
     <div className="inception-shade" aria-hidden="true" />
     {!session ? intro ? <section className="inception-intro" aria-label="Strongroom approach">
       {manifest.introVideo && !introMediaIssue ? <video ref={introVideoRef} key={`${manifest.introVideo}-${introMediaAttempt}`} className="inception-intro-video" autoPlay playsInline muted onTimeUpdate={event => { const video = event.currentTarget; setIntroTimeLeft(Math.max(0, Math.ceil(introDurationSeconds - video.currentTime))); introProgressRef.current = { at: Date.now(), time: video.currentTime }; }} onEnded={() => { setIntroTimeLeft(0); setFilmEnded(true); }} onError={() => setIntroMediaIssue('The approach could not play. Retry it or continue to the strongroom.')}>
@@ -750,20 +821,13 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
       </video> : manifest.bridgeVideo && !introMediaIssue ? <video key={`${manifest.bridgeVideo}-${filmEnded}`} className="inception-intro-video" autoPlay playsInline muted><source src={manifest.bridgeVideo} type="video/mp4" /></video> : <div className={`inception-intro-scene ${filmEnded ? 'handoff' : ''}`} style={(manifest.bridgeFrame || manifest.closedFrame) ? { backgroundImage: `url("${manifest.bridgeFrame || manifest.closedFrame}")` } : undefined}><p>THE DREAM IS BEGINNING TO SHIFT</p><div className="inception-intro-caption">Fischer is close. The safe is nearby.</div></div>}
       {introCaptionLayout && <div className="inception-film-caption-bands" style={introCaptionLayout}>{introCaptionText && <span className="inception-film-caption" style={{ top: '93.5185%' }} aria-label="English captions" aria-live="polite">{introCaptionText}</span>}</div>}
       {introMediaIssue && <div className="inception-media-recovery" role="alert"><p>{introMediaIssue}</p><div><Button className="inception-quiet-button" disabled={busy} onClick={() => { introProgressRef.current = { at: Date.now(), time: 0 }; setIntroTimeLeft(introDurationSeconds); setIntroMediaIssue(''); setIntroMediaAttempt(value => value + 1); }}>Retry approach</Button><Button className="inception-quiet-button" disabled={busy} onClick={() => finishIntro(true)}>Continue</Button></div></div>}
-      {pendingStart && !busy && <div className="inception-media-recovery" role="alert"><p>The start receipt could not be confirmed.</p><Button className="inception-quiet-button" onClick={() => void startRound(pendingStart.profileId, { clientStartId: pendingStart.clientStartId })}>Retry start</Button><Button className="inception-quiet-button" onClick={() => { setIntro(false); setFilmEnded(false); }}>Return to entry</Button></div>}
+      {pendingStart && !busy && <div className="inception-media-recovery" role="alert"><p>The start receipt could not be confirmed.</p><Button className="inception-quiet-button" onClick={() => void startRound(pendingStart.profileId, { clientStartId: pendingStart.clientStartId })}>Retry start</Button><Button className="inception-quiet-button" onClick={() => { setIntro(false); setFilmEnded(false); setEntryVisible(true); }}>Return to entry</Button></div>}
       {error && <p className="inception-inline-error" role="alert">{error}</p>}
-    </section> : <section className="inception-entry">
-      <header><span className="inception-kicker">A DREAM OF THE STRONGROOM</span><div className="inception-entry-header-actions"><button className="inception-entry-sound" aria-label={sound.muted ? 'Unmute sound' : 'Mute sound'} aria-pressed={sound.muted} onClick={() => setSound((current: typeof defaultSound) => ({ ...current, muted: !current.muted }))}>{sound.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}<span>{sound.muted ? 'Sound off' : 'Sound on'}</span></button><button className="inception-back" onClick={onHome}><ArrowLeft size={15} />Workshop</button></div></header>
-      <div className="inception-entry-copy"><p className="inception-kicker">INCEPTION</p><h1>Inception Strongroom</h1><p>You are Eames. Fischer cannot remember the combination. Help him return to the moment he first said it, before the dream collapses.</p></div>
-      {!config.recordingAccepted && <label className="inception-consent"><input type="checkbox" checked={consented} onChange={event => setConsented(event.target.checked)} /><span>{RECORDING_NOTICE} <strong>I understand and agree to this recording.</strong></span></label>}
-      <fieldset className="inception-profiles"><legend>Choose a conversation style</legend>{config.profiles.map(profile => <button type="button" key={profile.id} className={selectedProfile === profile.id ? 'selected' : ''} onClick={() => setSelectedProfile(profile.id)} aria-pressed={selectedProfile === profile.id}><span>{profile.label}</span><small>{profile.description}</small></button>)}</fieldset>
-      {!config.connected && <p className="inception-inline-error" role="status">The target model is not connected yet. Your saved conversations remain available.</p>}
-      {hasAmbient && <p className="inception-media-note">Sound begins when you enter. You can mute it anytime.</p>}
-      {pendingStart && !busy && <div className="inception-receipt" role="alert"><p>The start receipt is not confirmed. Retry with the saved request key.</p><Button className="inception-primary" disabled={!config.recordingAccepted && !consented} onClick={() => void startRound(pendingStart.profileId, { clientStartId: pendingStart.clientStartId })}>Check start receipt</Button></div>}
-      {error && <p className="inception-inline-error" role="alert">{error}</p>}
-      {!pendingStart && <div className="inception-entry-actions"><Button className="inception-primary" disabled={!config.connected || busy || (!config.recordingAccepted && !consented)} onClick={beginIntro}>Watch and begin<ArrowRight size={16} /></Button><Button className="inception-secondary" disabled={!config.connected || busy || (!config.recordingAccepted && !consented)} onClick={() => void startRound(selectedProfile)}>Begin without film</Button></div>}
-      <footer>{config.reviewEnabled ? 'Five minutes. Your saved conversation determines whether the safe opens.' : 'Five minutes. Conversation review is currently unavailable.'}</footer>
-    </section> : <section className={`inception-play ${cinematicHandoff ? 'is-cinematic-handoff' : ''} ${cinematicPhase ? `is-cinematic-${cinematicPhase}` : ''} ${!handoffInteractive ? 'is-handoff-locked' : ''}`} aria-label="Inception strongroom">
+    </section> : pendingStart && !entryVisible ? <section className="inception-entry-recovery" role="alert">
+      <p>{busy ? 'Checking the saved start request…' : error || 'The start request is not confirmed yet.'}</p>
+      {!busy && <Button className="inception-primary" disabled={config.recordingNoticeRequired === true && !config.recordingAccepted && !consented} onClick={() => void startRound(pendingStart.profileId, { clientStartId: pendingStart.clientStartId })}>Check start receipt</Button>}
+      {!busy && <Button className="inception-secondary" onClick={() => setEntryVisible(true)}>Return to poster</Button>}
+    </section> : null : <section className={'inception-play ' + (cinematicHandoff ? 'is-cinematic-handoff ' : '') + (cinematicPhase ? 'is-cinematic-' + cinematicPhase + ' ' : '') + (!handoffInteractive ? 'is-handoff-locked' : '')} aria-label="Inception strongroom">
       <header className="inception-topbar" inert={!handoffInteractive || Boolean(successEnding) || Boolean(cinematicPhase) ? true : undefined}><div className="inception-top-actions"><span className={`inception-clock ${remaining <= 45 ? 'urgent' : ''}`} role="timer" aria-label={`${time(remaining)} remaining`}>{time(remaining)}</span><label className="inception-volume" aria-label="Sound volume"><Volume2 size={15} /><input type="range" min="0" max="0.7" step="0.05" value={sound.volume} disabled={closed} onChange={event => setSound({ ...sound, volume: Number(event.target.value) })} /></label><button className="inception-icon-button" aria-label={sound.muted ? 'Unmute sound' : 'Mute sound'} disabled={closed} onClick={() => { const muted = !sound.muted; setSound({ ...sound, muted }); if (!muted) startAmbient(false); }}>{sound.muted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>{hasAmbient && !sound.muted && !soundReady && !closed && <button className="inception-icon-button" onClick={() => startAmbient(false)}>Play sound</button>}<button className="inception-icon-button" aria-label={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} onClick={() => fullscreen ? void document.exitFullscreen().catch(() => undefined) : void enterFullscreen()}><Maximize2 size={16} /></button><button className="inception-icon-button" aria-label="Leave strongroom" onClick={() => void leave()}><X size={18} /></button></div></header>
       {cinematicPhase === 'checking' && <p className="visually-hidden" role="status">Checking the saved conversation…</p>}
       <div className={`inception-scene-row ${gameBackground ? 'has-art' : ''}`} inert={!handoffInteractive || Boolean(successEnding) || Boolean(cinematicPhase) ? true : undefined}>
@@ -793,7 +857,8 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
             <div className="inception-result-actions">
               {!review && config.reviewEnabled && session.round.endedAt && <Button className="inception-secondary" disabled={busy} onClick={() => void requestReview()}>Check outcome</Button>}
               {review?.status === 'unavailable' && review.retryable && config.reviewEnabled && <Button className="inception-secondary" disabled={busy} onClick={() => void requestReview()}>Retry review</Button>}
-              {session.round.endedAt && <Button className="inception-secondary" disabled={busy || review?.status === 'pending'} onClick={replay}>Start a new attempt</Button>}
+              {session.round.endedAt && hasConfirmedFailure && <Button className="inception-secondary" disabled={busy} onClick={() => void leave()}>Return to main menu</Button>}
+              {session.round.endedAt && !hasConfirmedFailure && <Button className="inception-secondary" disabled={busy || review?.status === 'pending'} onClick={replay}>Start a new attempt</Button>}
               {session.state.safeOpened && review?.status === 'complete' && review.verdict === 'recovered' && manifest.successVideo && <Button aria-label="Rewatch ending" className="inception-secondary" onClick={replayConfirmedEnding}>Rewatch the ending</Button>}
             </div>
           </div>}
@@ -804,77 +869,60 @@ export function InceptionLevel({ onHome }: { onHome: () => void }) {
         <button className="inception-modal-close" aria-label="Close" onClick={() => setActiveModal(null)}><X size={18} /></button>
         {activeModal === 'safe' ? <><p className="inception-kicker">OBJECT INSPECTION</p><h2 id="inception-modal-title">{session.state.safeOpened ? 'Inside the strongroom safe' : 'The strongroom safe'}</h2>{session.state.safeOpened ? <div className="inception-open-interior" aria-label="Inside the open strongroom safe">{manifest.openFrame ? <img src={manifest.openFrame} alt="The open strongroom safe" /> : <p>The door is open. The mechanism is still.</p>}</div> : <><div className="inception-safe-zoom" role="img" aria-label="Close view of the compact green safe, brushed-metal keypad, and circular handle" style={manifest.closedFrame ? { backgroundImage: `url("${manifest.closedFrame}")` } : undefined} /><p className="inception-safe-detail">{session.state.safeInspected ? 'A compact safe is recessed in the dark-green bedside cabinet. Its brushed-steel face holds twelve rounded metal buttons, a small display, and a circular handle. No code is visible.' : 'A compact dark-green bedside safe with a brushed-metal face and circular handle.'}</p>{!session.state.safePresented && <Button className="inception-secondary" disabled={!session.state.safeInspected || busy || closed} onClick={() => void inspect('present_safe')}>Present safe to Fischer</Button>}</>}{busy && <p role="status">Saving inspection…</p>}</> : <><p className="inception-kicker">OBJECT INSPECTION</p><h2 id="inception-modal-title">The strongroom</h2><p>A quiet bedside cabinet stands by the bed. White bedlinen runs along the right edge of the frame; nothing else in view explains the combination.</p>{busy && <p role="status">Saving observation…</p>}</>}
       </section></div>}
-      {successEnding && <section className={`inception-success-ending ${['closing', 'title', 'title-fade', 'title-black', 'logo', 'logo-fade', 'hold'].includes(successEnding) ? 'is-title-card' : ''} ${['title-fade', 'logo-fade'].includes(successEnding) ? 'is-card-exit' : ''}`} aria-label="Inception ending" aria-live="polite">
-        <video ref={successVideoRef} key={`${manifest.successVideo}-${successEndingAttempt}`} className="inception-success-ending-video" playsInline preload="auto" muted={sound.muted} onTimeUpdate={event => {
-          const video = event.currentTarget;
-          const duration = manifest.successDurationSeconds || video.duration || 29;
-          const left = Math.max(0, duration - video.currentTime);
-          setSuccessTimeLeft(Math.ceil(left));
-          if (left <= 1.15) beginCreditsHandoff(video);
-        }} onEnded={event => {
+      {successEnding && createPortal(<section className={`inception-success-ending ${endingCardPhase ? 'is-title-card' : ''} ${endingCardPhase === 'title-fade' || endingCardPhase === 'logo-fade' ? 'is-card-exit' : ''} ${successEnding === 'return' ? 'is-returning' : ''}`} aria-label="Inception ending" aria-live="polite">
+        <video ref={successVideoRef} key={`${manifest.successVideo}-${successEndingAttempt}`} className="inception-success-ending-video" playsInline preload="auto" muted={sound.muted} onEnded={event => {
           const video = event.currentTarget;
           const lifecycleToken = lifecycle.current;
           const roundToken = roundGeneration.current;
           const endingToken = ++endingGenerationRef.current;
           const isCurrentEnding = () => lifecycle.current === lifecycleToken && roundGeneration.current === roundToken && endingGenerationRef.current === endingToken;
-          const schedule = (delay: number, callback: () => void) => {
-            if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current);
-            cinematicTimerRef.current = window.setTimeout(() => { if (isCurrentEnding()) callback(); }, delay);
+          setEndingCardPhase('final-black');
+          const finishCoda = async () => {
+            if (!isCurrentEnding()) return;
+            await disposeAmbient();
+            if (!isCurrentEnding()) return;
+            video.pause();
+            endingMediaDisposalRef.current = true;
+            video.removeAttribute('src');
+            video.querySelectorAll('source').forEach(source => source.removeAttribute('src'));
+            video.load();
+            const completedRoundId = session?.round.id;
+            if (completedRoundId) {
+              const profileId = session.profile.profileRevision === 1 ? 'standard' : session.profile.profileId || selectedProfile;
+              localStorage.setItem(completedRoundStorageFor(config.actorScope), JSON.stringify({ roundId: completedRoundId, profileId } satisfies CompletedRoundAcknowledgement));
+              sessionStorage.removeItem(sessionStorageKey);
+              sessionStorage.removeItem(`workshop-inception-send:${completedRoundId}`);
+            }
+            sessionStorage.removeItem('workshop-inception-intro-at');
+            endingWasShownRef.current = false;
+            setSelectedProfile(session?.profile.profileRevision === 1 ? 'standard' : session?.profile.profileId || selectedProfile);
+            setEntryPrompt('begin'); setEntryReturning(false);
+            setActiveModal(null); setIntro(false); setFilmEnded(false); setCinematicHandoff(false); setHandoffInteractive(true); setCinematicPhase(null); setEndingCardPhase(null);
+            if (document.fullscreenElement) await document.exitFullscreen().catch(() => undefined);
+            if (!isCurrentEnding()) return;
+            setImmersive(false);
+            setEntryVisible(true);
+            setSuccessEnding('return');
+            const returnTimer = window.setTimeout(() => {
+              if (isCurrentEnding()) { setSession(null); setReview(null); setMessageText(''); setPendingSend(null); setSendStatus(''); setError(''); setSuccessEnding(null); cinematicTimerRef.current = null; }
+            }, reducedMotion ? 50 : 750);
+            cinematicTimerRef.current = returnTimer;
           };
-          const endingAudio = audioRef.current;
-          const creditsEnded = endingAudio?.waitForCreditsEnd();
-          setSuccessEnding('closing'); setCinematicPhase('closing');
-          video.muted = true;
-          beginCreditsHandoff(video);
-          if (sound.muted) { video.volume = 0; endingAudio?.fadeCreditsIn(0); }
-          schedule(reducedMotion ? 50 : 700, () => {
-            setSuccessEnding('title');
-            const creditsDuration = manifest.creditsDurationSeconds || 24.256;
-            const fadeAt = Math.max(0, creditsDuration - 11.5);
-            const audioWait = endingAudio?.waitForCreditsTime(fadeAt) || Promise.resolve(false);
-            const remaining = Math.max(0, fadeAt - (endingAudio?.creditsCurrentTime || 0));
-            let fallbackTimer = 0;
-            const fallbackWait = new Promise<void>(resolve => { fallbackTimer = window.setTimeout(resolve, remaining * 1000 + 1000); });
-            void Promise.race([audioWait, fallbackWait]).then(() => {
-              window.clearTimeout(fallbackTimer);
-              if (!isCurrentEnding()) return;
-              setSuccessEnding('title-fade');
-              schedule(reducedMotion ? 50 : 750, () => {
-                setSuccessEnding('title-black');
-                schedule(reducedMotion ? 50 : 500, () => {
-                  setSuccessEnding('logo');
-                  const logoFadeAt = Math.max(0, creditsDuration - 1.2);
-                  const logoWait = endingAudio?.waitForCreditsTime(logoFadeAt) || Promise.resolve(false);
-                  const logoRemaining = Math.max(0, logoFadeAt - (endingAudio?.creditsCurrentTime || 0));
-                  let logoFallbackTimer = 0;
-                  const logoFallback = new Promise<void>(resolve => { logoFallbackTimer = window.setTimeout(resolve, logoRemaining * 1000 + 1000); });
-                  void Promise.race([logoWait, logoFallback]).then(() => {
-                    window.clearTimeout(logoFallbackTimer);
-                    if (!isCurrentEnding()) return;
-                    setSuccessEnding('logo-fade');
-                    schedule(reducedMotion ? 50 : 750, () => {
-                      setSuccessEnding('hold');
-                      const finishAudio = async () => {
-                        if (endingAudio && audioRef.current === endingAudio) await disposeAmbient();
-                        if (isCurrentEnding()) setSuccessEnding('hold');
-                      };
-                      if (!endingAudio || sound.muted || !endingAudio.isPlaying) void finishAudio();
-                      else void creditsEnded?.then(() => { if (isCurrentEnding()) void finishAudio(); });
-                    });
-                  });
-                });
-              });
-            });
-          });
-        }} onError={() => { endingGenerationRef.current++; if (cinematicTimerRef.current !== null) window.clearTimeout(cinematicTimerRef.current); setSuccessEndingError('The ending video could not be played. Your saved result remains available.'); setSuccessEnding('error'); setCinematicPhase(null); void disposeAmbient(); }}>
+          const blackHoldTimer = window.setTimeout(() => {
+            if (cinematicTimerRef.current === blackHoldTimer) cinematicTimerRef.current = null;
+            if (isCurrentEnding()) void finishCoda();
+          }, reducedMotion ? 50 : 500);
+          cinematicTimerRef.current = blackHoldTimer;
+        }} onError={() => { if (endingMediaDisposalRef.current) return; endingGenerationRef.current++; if (cinematicTimerRef.current !== null) { window.clearTimeout(cinematicTimerRef.current); cinematicTimerRef.current = null; } setSuccessEndingError('The ending video could not be played. Your saved result remains available.'); setSuccessEnding('error'); setCinematicPhase(null); setEndingCardPhase(null); void disposeAmbient(); }}>
           <source src={manifest.successVideo || undefined} type="video/mp4" />{manifest.successCaptions && <track ref={successCaptionTrackRef} kind="captions" src={manifest.successCaptions} srcLang="en" label="English scene captions" />}
         </video>
-        {successEnding === 'playing' && successCaptionLayout && <div className="inception-film-caption-bands" style={successCaptionLayout}>{successCaptionText && <span className="inception-film-caption" style={{ top: '93.5185%' }} aria-label="English captions" aria-live="polite">{successCaptionText}</span>}</div>}
+        {successEnding === 'playing' && endingCardPhase === null && successCaptionLayout && <div className="inception-film-caption-bands" style={successCaptionLayout}>{successCaptionText && <span className="inception-film-caption" style={{ top: '93.5185%' }} aria-label="English captions" aria-live="polite">{successCaptionText}</span>}</div>}
         <h2 ref={successTitleRef} tabIndex={-1} className="visually-hidden">Inception ending</h2>
-        {(successEnding === 'title' || successEnding === 'title-fade') && <div className="inception-ending-card inception-ending-title-card" role="heading" aria-level={1}>{manifest.endingWordmark ? <img src={manifest.endingWordmark} alt="INCEPTION" /> : 'INCEPTION'}</div>}
-        {(successEnding === 'logo' || successEnding === 'logo-fade') && manifest.endingLogo && <div className="inception-ending-card inception-ending-logo-card"><img src={manifest.endingLogo} alt="CSES" style={{ '--device-pixel-ratio': String(window.devicePixelRatio || 1) } as CSSProperties} /></div>}
-        {(successEnding === 'blocked' || successEnding === 'error') && <div className="inception-media-recovery" role={successEnding === 'error' ? 'alert' : 'status'}><p>{successEndingError || 'The ending could not start automatically.'}</p>{successEnding === 'blocked' && <Button className="inception-quiet-button" onClick={() => { endingGenerationRef.current++; setSuccessEndingError(''); setSuccessEndingAttempt(value => value + 1); setSuccessEnding('playing'); }}>Play ending</Button>}{successEnding === 'error' && <Button className="inception-quiet-button" onClick={() => { endingGenerationRef.current++; setSuccessEndingError(''); setSuccessEnding(null); setCinematicPhase(null); }}>Return to result</Button>}</div>}
-      </section>}
+        {(endingCardPhase === 'title' || endingCardPhase === 'title-fade') && <div className="inception-ending-card inception-ending-title-card" role="heading" aria-level={1}>{manifest.endingWordmark ? <img src={manifest.endingWordmark} alt="INCEPTION" /> : 'INCEPTION'}</div>}
+        {(endingCardPhase === 'logo' || endingCardPhase === 'logo-fade') && manifest.endingLogo && <div className="inception-ending-card inception-ending-logo-card"><img src={manifest.endingLogo} alt="CSES" style={{ '--device-pixel-ratio': String(window.devicePixelRatio || 1) } as CSSProperties} /></div>}
+        {(successEnding === 'blocked' || successEnding === 'error') && <div className="inception-media-recovery" role={successEnding === 'error' ? 'alert' : 'status'}><p>{successEndingError || 'The ending could not start automatically.'}</p>{successEnding === 'blocked' && <Button className="inception-quiet-button" onClick={() => { endingGenerationRef.current++; setSuccessEndingError(''); setSuccessEndingAttempt(value => value + 1); setEndingCardPhase(null); setSuccessEnding('playing'); }}>Play ending</Button>}{successEnding === 'error' && <Button className="inception-quiet-button" onClick={() => { endingGenerationRef.current++; setSuccessEndingError(''); setSuccessEnding(null); setCinematicPhase(null); }}>Return to result</Button>}</div>}
+      </section>, document.body)}
     </section>}
+    {(entryVisible || entryTransition) && createPortal(entryPoster, document.body)}
   </main>;
 }

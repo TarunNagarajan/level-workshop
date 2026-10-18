@@ -72,16 +72,32 @@
  .inception-dialogue .inception-play-footer{padding:5px 0;font-size:9px}
  .inception-result{min-height:150px;max-height:50%;padding:9px}
 }
+
+/* Fullscreen-free cinematic entry and the same poster after the ending. */
+.inception-entry-poster{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;width:100vw;height:100dvh;min-height:100dvh;overflow:hidden;padding:24px;border:0;background:#0b0c0b;color:#f3f0e8;cursor:pointer;isolation:isolate}
+.inception-entry-poster-image,.inception-entry-poster-shade{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.inception-entry-poster-image{z-index:-2;object-fit:cover;object-position:center 52%}
+.inception-entry-poster-shade{z-index:-1;background:linear-gradient(180deg,rgba(3,4,4,.12),rgba(3,4,4,.02) 34%,rgba(3,4,4,.38) 70%,rgba(3,4,4,.68))}
+.inception-entry-wordmark{position:absolute;left:50%;bottom:clamp(105px,17vh,180px);width:min(70vw,980px);height:auto;max-height:24vh;object-fit:contain;transform:translateX(-50%);filter:drop-shadow(0 2px 10px rgba(0,0,0,.4))}
+.inception-entry-prompt{position:absolute;left:50%;bottom:clamp(58px,10vh,104px);transform:translateX(-50%);color:rgba(247,243,234,.92);font:500 clamp(13px,1.25vw,17px)/1.4 'DM Sans',sans-serif;letter-spacing:.035em;text-shadow:0 1px 8px #000;text-align:center;white-space:nowrap}
+.inception-entry-error{position:absolute;left:50%;bottom:18px;max-width:min(600px,90vw);transform:translateX(-50%);color:#ffd4ca;font:14px/1.4 'DM Sans',sans-serif;text-shadow:0 1px 5px #000;text-align:center}
+.inception-entry-poster:focus-visible{outline:3px solid #d72735;outline-offset:-8px}
+.inception-entry-poster.is-transitioning{animation:inception-entry-out .8s ease-in both}
+.inception-entry-poster.is-returning{animation:inception-entry-in .75s ease-out both}
+.inception-success-ending.is-returning{pointer-events:none}
+@keyframes inception-entry-out{to{opacity:0}}
+@keyframes inception-entry-in{from{opacity:0}to{opacity:1}}
+@media(max-width:760px){.inception-entry-wordmark{bottom:clamp(100px,17vh,160px);width:min(76vw,680px)}.inception-entry-prompt{bottom:clamp(54px,9vh,84px)}}
 .inception-entry-header-actions{display:flex;align-items:center;gap:8px}
 .inception-entry-sound{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:0 10px;border:1px solid rgba(233,222,196,.23);border-radius:4px;background:rgba(12,13,13,.44);color:#e8e4db;font:11px 'DM Sans',sans-serif;cursor:pointer}
 @media(max-width:420px){.inception-play{padding-right:8px;padding-left:8px}.inception-play>.inception-topbar{height:46px}.inception-scene-row.has-art .inception-dialogue{padding-right:8px;padding-left:8px}.inception-dialogue .inception-composer textarea{min-height:42px}.inception-result-copy>strong{font-size:18px}}
 @media(max-width:420px) and (max-height:680px){.inception-play>.inception-topbar{height:42px}.inception-scene-row.has-art .inception-dialogue{gap:5px;padding-top:6px}.inception-conversation article p{font-size:12px}.inception-dialogue .inception-composer{padding-top:6px}.inception-dialogue .inception-composer>label{margin-bottom:3px;font-size:11px}.inception-dialogue .inception-composer textarea{min-height:36px;max-height:54px}.inception-dialogue .inception-composer-actions{flex-direction:row;align-items:center;justify-content:space-between}.inception-dialogue .inception-composer-actions>div{width:auto}.inception-dialogue .inception-send-status{max-width:42%;font-size:10px}}
 @media(max-height:460px) and (min-width:761px){.inception-play>.inception-topbar{height:42px}.inception-scene-row.has-art .inception-dialogue{gap:6px;padding:48px 14px 9px}.inception-dialogue .inception-location{font-size:9px}.inception-conversation{min-height:36px;padding-bottom:7px}.inception-conversation article{padding:8px 0}.inception-conversation article p{font-size:12px;line-height:1.35}.inception-dialogue .inception-composer{padding:6px 9px}.inception-dialogue .inception-composer>label{margin-bottom:3px;font-size:11px}.inception-dialogue .inception-composer textarea{min-height:42px;max-height:54px;padding:6px 8px;font-size:14px}.inception-dialogue .inception-composer-actions{flex-direction:row;align-items:center;justify-content:space-between;gap:4px;padding-top:4px}.inception-dialogue .inception-composer-actions>div{width:auto;flex-wrap:nowrap;gap:4px}.inception-dialogue .inception-composer-actions .inception-primary,.inception-dialogue .inception-composer-actions .inception-secondary{min-height:31px;padding:0 8px;font-size:10px}.inception-dialogue .inception-send-status{max-width:44%;font-size:10px}.inception-dialogue .inception-play-footer{gap:5px;padding-top:4px;font-size:9px}.inception-old-version,.inception-expired-controls{max-height:24%;padding:7px 9px}.inception-result{min-height:140px;max-height:46%;padding:7px 9px;overflow:hidden}.inception-result-copy>strong{font-size:17px}.inception-result-copy>p,.inception-result-copy blockquote p{font-size:12px}.inception-result-actions button{min-height:30px}}
 
-.inception-success-ending{position:fixed;inset:0;z-index:10001;display:grid;place-items:center;overflow:hidden;background:#000;color:#f4f3ef;animation:inception-ending-in .8s ease-out both}
+.inception-success-ending{position:fixed;inset:0;z-index:2147483001;display:grid;place-items:center;overflow:hidden;background:#000;color:#f4f3ef;animation:inception-ending-in .8s ease-out both}
 .inception-success-ending.is-title-card{animation:none}
+.inception-success-ending.is-returning{animation:inception-ending-out .75s ease-in both}
 .inception-success-ending-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;opacity:1;transition:opacity .7s ease}
-.inception-success-ending.is-title-card .inception-success-ending-video{opacity:0;visibility:hidden}
 .inception-ending-card{position:absolute;inset:0;display:grid;align-content:center;justify-items:center;gap:12px;padding:24px;box-sizing:border-box;color:#f4f3ef;text-align:center;animation:inception-card-in 1.2s ease-out both}
 .inception-success-ending.is-card-exit .inception-ending-title-card{animation:inception-card-out .75s ease-in both}
 .inception-ending-title-card{font:400 clamp(26px,4.4vw,54px)/1 'DM Sans',sans-serif;letter-spacing:.29em;text-indent:.29em}
@@ -89,6 +105,7 @@
 .inception-success-ending.is-card-exit .inception-ending-logo-card{animation:inception-card-out .75s ease-in both}
 .inception-ending-logo-card img{display:block;width:min(400px,82vw,calc(1080px / var(--device-pixel-ratio,1)));max-height:min(400px,82vw,calc(1080px / var(--device-pixel-ratio,1)));height:auto;object-fit:contain}
 @keyframes inception-ending-in{from{opacity:0}to{opacity:1}}
+@keyframes inception-ending-out{from{opacity:1}to{opacity:0}}
 @keyframes inception-card-in{from{opacity:0}to{opacity:1}}
 @keyframes inception-card-out{from{opacity:1}to{opacity:0}}
 @media(prefers-reduced-motion:reduce){.inception-scene-row.has-art,.inception-dialogue,.inception-topbar{transition:none!important}.inception-conversation{scroll-behavior:auto}}

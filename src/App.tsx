@@ -24,7 +24,7 @@ let approvedNavigation: string | null = null;
 export function navigate(path: string) {
   if (!window.dispatchEvent(new CustomEvent('workshop:navigate', { cancelable: true }))) return false;
   historyIndex += 1;
-  approvedNavigation = path;
+  approvedNavigation = new URL(path, window.location.href).pathname;
   window.history.pushState({ ...window.history.state, __workshopIndex: historyIndex }, '', path);
   window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }));
   return true;
@@ -38,9 +38,11 @@ export function App() {
   const [dark, setDark] = useState(localStorage.getItem('workshop-theme') === 'dark');
   const [tourOpen, setTourOpen] = useState(false); const [tourUser, setTourUser] = useState('');
   const standaloneCollection = path.startsWith('/collect/');
-  const inWorkspace = !/^\/(play|enter|owner|join|collect)\//.test(path) && !path.startsWith('/reference/play/') && !path.startsWith('/diary/play/') && path !== '/reference/research/preview';
-  const requiresStandaloneConsent = path === '/inception' || path.startsWith('/collect/') || path.startsWith('/play/') || path.startsWith('/reference/play/') || path.startsWith('/diary/play/');
-  const recordingPermitted = Boolean(bootstrap) && (bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true);
+  const isInceptionRoute = /^\/inception\/?$/.test(path);
+  const inceptionDestination = isInceptionRoute ? `${path}${window.location.search}` : path;
+  const inWorkspace = !/^\/(play|enter|owner|join|collect)\//.test(path) && !path.startsWith('/reference/play/') && !path.startsWith('/diary/play/') && path !== '/reference/research/preview' && !isInceptionRoute;
+  const requiresStandaloneConsent = path.startsWith('/collect/') || path.startsWith('/play/') || path.startsWith('/reference/play/') || path.startsWith('/diary/play/');
+  const recordingPermitted = Boolean(bootstrap) && (isInceptionRoute ? bootstrap?.recordingAccepted === true : bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true);
   useEffect(() => { if (bootstrap?.user && recordingPermitted && path === '/' && tourUser !== bootstrap.user.id) { setTourUser(bootstrap.user.id); if (!bootstrap.tutorialDone) setTourOpen(true); } }, [bootstrap, recordingPermitted, path, tourUser]);
   useEffect(() => {
     if (typeof window.history.state?.__workshopIndex === 'number') historyIndex = window.history.state.__workshopIndex;
@@ -68,7 +70,7 @@ export function App() {
   }, []);
   const reload = () => api<Bootstrap>('/bootstrap').then(setBootstrap).catch(e => setError(e.message));
   useEffect(() => { if (!standaloneCollection) void reload(); }, [standaloneCollection]);
-  useEffect(() => { const allowed = !requiresStandaloneConsent && Boolean(bootstrap) && (bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true); setRecordingAcknowledged(allowed); navigateMetrics(path); }, [path, bootstrap, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired, requiresStandaloneConsent]);
+  useEffect(() => { const allowed = !requiresStandaloneConsent && Boolean(bootstrap) && (isInceptionRoute ? bootstrap?.recordingAccepted === true : bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true); setRecordingAcknowledged(allowed); navigateMetrics(path); }, [path, bootstrap, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired, requiresStandaloneConsent, isInceptionRoute]);
   useEffect(() => { syncMetricsIdentity(bootstrap?.user?.id || null); }, [path, bootstrap?.user?.id, bootstrap?.needsSetup, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired]);
   useEffect(() => {
     const listener = (event: MessageEvent) => {
@@ -90,10 +92,11 @@ export function App() {
   else if (path.startsWith('/play/')) content = <BlindPlay token={path.split('/')[2]} />;
   else if (!bootstrap) content = <div className="auth-shell"><Mark />{error ? <><p className="error">{error}</p><Button onClick={reload}>Retry</Button></> : <p className="muted">Opening workshop…</p>}</div>;
   else if (path.startsWith('/enter/') || path.startsWith('/owner/')) content = <LinkEntry token={path.split('/')[2]} owner={path.startsWith('/owner/')} onDone={() => { navigate('/'); void reload(); }} />;
-  else if (!bootstrap.user && bootstrap.rootEntry && !path.startsWith('/join/')) content = <RootEntry onDone={() => { navigate(path || '/'); void reload(); }} />;
+  else if (!bootstrap.user && bootstrap.rootEntry && !path.startsWith('/join/')) content = <RootEntry onDone={() => { navigate(isInceptionRoute ? inceptionDestination : path || '/'); void reload(); }} />;
   else if (!bootstrap.user && bootstrap.privateEntry && !path.startsWith('/join/')) content = <div className="auth-shell"><div className="auth-card"><Mark /><p className="eyebrow">LEVEL WORKSHOP</p><h1>A private workshop.</h1><p className="muted auth-description">Open the invitation link shared with you to enter the workshop.</p></div></div>;
-  else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate(path === '/diary' || path === '/mission' || path === '/inception' ? path : '/'); void reload(); }} />;
-  else if (bootstrap.recordingNoticeRequired === true && (bootstrap.recordingAccepted !== true || bootstrap.recordingNoticeVersion !== 'recording-notice-v1')) content = <RecordingNotice onAccepted={() => { setRecordingAcknowledged(true); void reload(); }} />;
+  else if (!bootstrap.user || path.startsWith('/join/')) content = <Auth setup={bootstrap.needsSetup} invite={path.startsWith('/join/') ? path.split('/')[2] : undefined} onDone={() => { navigate(path === '/diary' || path === '/mission' ? path : isInceptionRoute ? inceptionDestination : '/'); void reload(); }} />;
+  else if ((isInceptionRoute || bootstrap.recordingNoticeRequired === true) && (bootstrap.recordingAccepted !== true || bootstrap.recordingNoticeVersion !== 'recording-notice-v1')) content = <RecordingNotice title={isInceptionRoute ? 'Before you enter Inception' : undefined} onAccepted={() => { setRecordingAcknowledged(true); void reload(); }} />;
+  else if (isInceptionRoute) content = <div className="inception-standalone-route"><InceptionLevel /></div>;
   else {
     const user = bootstrap.user;
     const memberModel = { connected: bootstrap.model.connected, model: bootstrap.model.model || 'Not configured', provider: bootstrap.model.provider || 'Not configured' };
@@ -115,7 +118,7 @@ export function App() {
         {page === 'mission' ? <MissionLevel />
           : page === 'editor' ? <Editor key={path} levelId={path.split('/')[2]} user={user} model={memberModel} notify={notify} />
           : page === 'diary' ? <RiddleDiary canShare={user.role === 'admin'} onHome={() => navigate('/')} />
-          : page === 'inception' ? <InceptionLevel onHome={() => navigate('/')} />
+          : page === 'inception' ? <InceptionLevel />
           : page === 'attempts' ? <Attempts selectedId={path.split('/')[2]} notify={notify} />
           : page === 'collections' ? <CollectionArea path={path} notify={notify} user={user} />
           : page === 'reference' ? <PassportReference key={path} researchWorld={path.startsWith('/reference/research/') && user.role === 'admin' ? path.split('/')[3] : undefined} />
@@ -127,7 +130,7 @@ export function App() {
       </main>
     </div>;
   }
-  return <>{content}{tourOpen && inWorkspace && bootstrap?.user && recordingPermitted && <Tutorial key={bootstrap.user.id} user={bootstrap.user} path={path} navigate={navigate} close={() => { setTourOpen(false); setBootstrap(b => b ? { ...b, tutorialDone: true } : b); }} />}{toast && <div role="status" className="toast"><Check size={15} />{toast}<button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast('')}>×</button></div>}</>;
+  return <>{content}{!isInceptionRoute && tourOpen && inWorkspace && bootstrap?.user && recordingPermitted && <Tutorial key={bootstrap.user.id} user={bootstrap.user} path={path} navigate={navigate} close={() => { setTourOpen(false); setBootstrap(b => b ? { ...b, tutorialDone: true } : b); }} />}{!isInceptionRoute && toast && <div role="status" className="toast"><Check size={15} />{toast}<button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast('')}>×</button></div>}</>;
 }
 
 function RootEntry({ onDone }: { onDone: () => void }) {

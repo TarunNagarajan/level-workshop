@@ -5,12 +5,19 @@
   "dialogueTexture": "/inception-assets/strongroom-walnut-texture-v1.webp",
   "bridgeFrame": "/inception-assets/strongroom-closed-v1.webp",
   "bridgeVideo": null,
-  "introVideo": "/inception-assets/strongroom-intro-v4.mp4",
-  "introDurationSeconds": 25,
-  "captions": "/inception-assets/strongroom-intro-v4.vtt",
-  "successVideo": "/inception-assets/strongroom-success-v2.mp4",
+  "introVideo": "/inception-assets/strongroom-intro-v5.mp4",
+  "introDurationSeconds": 24.85,
+  "captions": "/inception-assets/strongroom-intro-v5.vtt",
+  "successVideo": "/inception-assets/strongroom-success-v3.mp4",
   "successCaptions": "/inception-assets/strongroom-success-v1.vtt",
-  "successDurationSeconds": 29.17,
+  "successFilmDurationSeconds": 29.166666666666668,
+  "successDurationSeconds": 51.56666666666667,
+  "successTitleFadeStartSeconds": 33.40775,
+  "successTitleFadeEndSeconds": 34.15775,
+  "successLogoStartSeconds": 34.65775,
+  "successLogoFadeStartSeconds": 50.81375,
+  "entryPoster": "/inception-assets/entry-poster-v1.jpg",
+  "entryWordmark": "/inception-assets/inception-wordmark-red-v1.svg",
   "roomTone": "/inception-assets/strongroom-roomtone-v1.mp3",
   "portraits": {
     "eames": "/inception-assets/eames-portrait-v1.webp",
@@ -53,12 +60,12 @@
     },
     "introVideo": {
       "kind": "versioned edited film excerpt with actual strongroom door footage and generated safe bridge; immutable after publication",
-      "durationSeconds": 25,
-      "actualFilmExcerptSeconds": 18,
+      "durationSeconds": 24.85,
+      "actualFilmExcerptSeconds": 17.85,
       "generatedBridgeSeconds": 7.6,
       "sourceSegmentsSeconds": [
         [
-          66.25,
+          66.4,
           68.65
         ],
         [
@@ -75,14 +82,19 @@
         ]
       ],
       "sourceDescription": "Existing film-first75.mp4 and cached door-source-60-150.mp4, source offsets converted to original film seconds",
-      "sha256": "2403afb956d7ca412f33e4fe911afc8ac3602fe42d851c3928e69cd3d359093e"
+      "sourceCutInSeconds": 66.4,
+      "sourceCutOutSeconds": 68.65,
+      "firstFramesReviewed": true,
+      "sha256": "fba8c1a447c990689abf062678e839bfe7999c457b2ea56376c860f48ff12386",
+      "bytes": 5091300
     },
     "captions": {
       "kind": "scene-summary captions for the edited film excerpt",
-      "durationSeconds": 25,
-      "sha256": "13cc71c955c121237a166c574c17ea4cc5c3bf542b04343d01df6927e015d07d"
+      "durationSeconds": 24.85,
+      "sha256": "9b880295c75004d7a9d86bfb8da85604417ae0c14c98c8619aaeb2499c4fa04d",
+      "bytes": 404
     },
-    "successVideo": {
+    "successVideoV2": {
       "kind": "Versioned ending using the same reviewed cached source interval and framing as v1; neither video nor audio terminal fade is applied.",
       "sourceDescription": "Previously reviewed local film cache; no remote download",
       "sourceIntervalSeconds": [
@@ -104,6 +116,34 @@
       "bytes": 6599221,
       "audioPacketStreamSha256": "973270722374d37e165195d6bb6b910b687f193d85ff5cb791961d55bfe90755",
       "archivedV1Sha256": "8f387fdbcad3bffd9c1bee6666ed02f37d583966fb8ea70dd1d4cb1e0bea0bf8"
+    },
+    "successVideoV3": {
+      "kind": "single-stream versioned ending with an exact 875-frame film section followed by black and the naturally resolving licensed composition; no visual or audio fade at the Eames cut",
+      "sourceDescription": "Existing local film cache and user-supplied licensed composition; no remote download",
+      "sourceIntervalSeconds": [
+        39.5,
+        68.65
+      ],
+      "videoCrop": "1920x800 at x=0,y=140; padded to 1920x1080 with black after the 875th frame",
+      "filmFrameRate": 30,
+      "filmFrameCount": 875,
+      "filmDurationSeconds": 29.166666666666668,
+      "durationSeconds": 51.56666666666667,
+      "audio": "48 kHz stereo AAC at 160 kbit/s, one continuous stream with a fixed equal-power overlap at the visual cut",
+      "audioSourceAlignment": {
+        "filmOverlapStartSeconds": 28,
+        "filmEndSeconds": 29.166666666666668,
+        "scoreOverlapStartSeconds": 120.69225,
+        "scoreAtFilmEndSeconds": 121.85891666666667,
+        "overlapSeconds": 1.166667,
+        "scoreEndSeconds": 144.256,
+        "fixedCalibrationDb": 4.748,
+        "crossfade": "Equal-power cosine out and sine in; title exit remains aligned to composition time 126.10–126.85 seconds"
+      },
+      "sha256": "0256321d45e8afbb91304adbd1c63ac078d4cd7c17371456a5ff171a9a000317",
+      "bytes": 8693839,
+      "archivedV1Sha256": "8f387fdbcad3bffd9c1bee6666ed02f37d583966fb8ea70dd1d4cb1e0bea0bf8",
+      "archivedV2Sha256": "d5e8e418dd364efb810b137e31b22c98b779f3016fa437f9124a4b701db88b0f"
     },
     "successCaptions": {
       "kind": "scene-summary captions for the edited film ending",
@@ -300,19 +340,6 @@
         }
       }
     },
-    "endingWordmark": {
-      "kind": "white recolor of the public-domain simple text logo sourced from Wikimedia Commons; source license category is public domain for simple text-logo artwork, with trademark caveat noted on the source page",
-      "source": "https://commons.wikimedia.org/wiki/File:Inception-wordmark.svg",
-      "author": "Know-World",
-      "sourceDate": "2011-01-25",
-      "sourceSha1": "954fb7372a7ec96e11876639c88c91cec6115968",
-      "dimensions": [
-        1130.6,
-        144.8
-      ],
-      "fill": "#f4f3ef",
-      "sha256": "069ae9505e1e9db8491cd5f62564740830bebc62298d2dac7acfaf66ba6fe5a2"
-    },
     "gameplayLoop": {
       "kind": "continuous loop edit of user-supplied licensed score; licensing assertion supplied by the user and not independently verified",
       "sourceDescription": "User-supplied latest download; no local path or source title is published",
@@ -380,10 +407,95 @@
       ],
       "bytes": 11768,
       "sha256": "3a900361cae625a9fbbfdb481fc1e8a6b34fe40227d2f38a41d1166cf7ca0789"
+    },
+    "entryPoster": {
+      "kind": "user-selected actual film still copied byte-for-byte; sharp 3840x1600 source, no resampling or alteration",
+      "source": "https://i0.wp.com/imgs.screencaps.us/201/4k-0-inception/full/inception4k-movie-screencaps.com-13886.jpg?ssl=1",
+      "sourcePage": "https://movie-screencaps.com/inception-2010-4k/page/78",
+      "dimensions": [
+        3840,
+        1600
+      ],
+      "bytes": 305553,
+      "copiedByteForByte": true,
+      "sha256": "26ab6185b1bcd4f2686b74d750dd6fb081de8cf92254b4b5d94290632c490781"
+    },
+    "entryWordmark": {
+      "kind": "red poster treatment using the existing Inception wordmark SVG geometry; rendered as vector",
+      "source": "inception-wordmark-v1.svg",
+      "fill": "#c51628",
+      "dimensions": [
+        1130.6,
+        144.8
+      ],
+      "bytes": 2094,
+      "sha256": "d1721b982d1b0fa0519af00f4100e7786533a8fe4bdc53bfd45dbc94fbe6bf0d"
+    },
+    "introVideoV4": {
+      "kind": "versioned edited film excerpt with actual strongroom door footage and generated safe bridge; immutable after publication",
+      "durationSeconds": 25,
+      "actualFilmExcerptSeconds": 18,
+      "generatedBridgeSeconds": 7.6,
+      "sourceSegmentsSeconds": [
+        [
+          66.25,
+          68.65
+        ],
+        [
+          77.5,
+          79.5
+        ],
+        [
+          88.5,
+          91.5
+        ],
+        [
+          15.6,
+          26.2
+        ]
+      ],
+      "sourceDescription": "Existing film-first75.mp4 and cached door-source-60-150.mp4, source offsets converted to original film seconds",
+      "sha256": "2403afb956d7ca412f33e4fe911afc8ac3602fe42d851c3928e69cd3d359093e",
+      "bytes": 5154384
+    },
+    "captionsV4": {
+      "kind": "scene-summary captions for the edited film excerpt",
+      "durationSeconds": 25,
+      "sha256": "13cc71c955c121237a166c574c17ea4cc5c3bf542b04343d01df6927e015d07d",
+      "bytes": 404
+    },
+    "endingWordmarkV1": {
+      "kind": "white recolor of the public-domain simple text logo sourced from Wikimedia Commons; source license category is public domain for simple text-logo artwork, with trademark caveat noted on the source page",
+      "source": "https://commons.wikimedia.org/wiki/File:Inception-wordmark.svg",
+      "author": "Know-World",
+      "sourceDate": "2011-01-25",
+      "sourceSha1": "954fb7372a7ec96e11876639c88c91cec6115968",
+      "dimensions": [
+        1130.6,
+        144.8
+      ],
+      "fill": "#f4f3ef",
+      "sha256": "069ae9505e1e9db8491cd5f62564740830bebc62298d2dac7acfaf66ba6fe5a2"
+    },
+    "endingWordmark": {
+      "kind": "red wordmark using the same original public-domain simple text-logo geometry as the archived white SVG; rendered as vector",
+      "source": "https://commons.wikimedia.org/wiki/File:Inception-wordmark.svg",
+      "author": "Know-World",
+      "sourceDate": "2011-01-25",
+      "sourceSha1": "954fb7372a7ec96e11876639c88c91cec6115968",
+      "dimensions": [
+        1130.6,
+        144.8
+      ],
+      "fill": "#c51628",
+      "bytes": 2094,
+      "sha256": "d1721b982d1b0fa0519af00f4100e7786533a8fe4bdc53bfd45dbc94fbe6bf0d",
+      "geometrySourceSha256": "069ae9505e1e9db8491cd5f62564740830bebc62298d2dac7acfaf66ba6fe5a2"
     }
   },
   "creditsCue": "/inception-assets/strongroom-score-credits-tail-v2.mp3",
-  "endingWordmark": "/inception-assets/inception-wordmark-v1.svg",
+  "endingWordmarkV1": "/inception-assets/inception-wordmark-v1.svg",
+  "endingWordmark": "/inception-assets/inception-wordmark-red-v1.svg",
   "gameplayLoop": "/inception-assets/strongroom-score-gameplay-v1.mp3",
   "creditsDurationSeconds": 24.256,
   "successVideoV1": "/inception-assets/strongroom-success-v1.mp4",

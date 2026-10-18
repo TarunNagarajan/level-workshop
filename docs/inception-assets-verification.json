@@ -319,5 +319,78 @@
     ],
     "sha256": "3a900361cae625a9fbbfdb481fc1e8a6b34fe40227d2f38a41d1166cf7ca0789",
     "copiedByteForByte": true
+  },
+  {
+    "file": "strongroom-intro-v5.mp4",
+    "bytes": 5091300,
+    "durationSeconds": 24.85,
+    "dimensions": "1920x1080",
+    "frameRate": 30,
+    "videoCodec": "h264",
+    "audioCodec": "aac",
+    "actualFilmExcerptSeconds": 17.85,
+    "generatedBridgeSeconds": 7.6,
+    "sourceSegmentsSeconds": [
+      [
+        66.4,
+        68.65
+      ],
+      [
+        77.5,
+        79.5
+      ],
+      [
+        88.5,
+        91.5
+      ],
+      [
+        15.6,
+        26.2
+      ]
+    ],
+    "sha256": "fba8c1a447c990689abf062678e839bfe7999c457b2ea56376c860f48ff12386"
+  },
+  {
+    "file": "strongroom-intro-v5.vtt",
+    "bytes": 404,
+    "durationSeconds": 24.85,
+    "sha256": "9b880295c75004d7a9d86bfb8da85604417ae0c14c98c8619aaeb2499c4fa04d"
+  },
+  {
+    "file": "strongroom-success-v3.mp4",
+    "bytes": 8693839,
+    "durationSeconds": 51.56666666666667,
+    "filmDurationSeconds": 29.166666666666668,
+    "filmFrameCount": 875,
+    "dimensions": "1920x1080",
+    "frameRate": 30,
+    "videoCodec": "h264",
+    "audioCodec": "aac",
+    "scoreAtFilmEndSeconds": 121.85891666666667,
+    "scoreCalibrationDb": 4.748,
+    "sha256": "0256321d45e8afbb91304adbd1c63ac078d4cd7c17371456a5ff171a9a000317"
+  },
+  {
+    "file": "entry-poster-v1.jpg",
+    "bytes": 305553,
+    "dimensions": "3840x1600",
+    "source": "https://movie-screencaps.com/inception-2010-4k/page/78",
+    "sha256": "26ab6185b1bcd4f2686b74d750dd6fb081de8cf92254b4b5d94290632c490781",
+    "copiedByteForByte": true
+  },
+  {
+    "file": "inception-wordmark-red-v1.svg",
+    "bytes": 2094,
+    "dimensions": "1130.6x144.8",
+    "fill": "#c51628",
+    "sha256": "d1721b982d1b0fa0519af00f4100e7786533a8fe4bdc53bfd45dbc94fbe6bf0d"
+  },
+  {
+    "file": "inception-wordmark-v1.svg",
+    "bytes": 2094,
+    "dimensions": "1130.6x144.8",
+    "fill": "#f4f3ef",
+    "sha256": "069ae9505e1e9db8491cd5f62564740830bebc62298d2dac7acfaf66ba6fe5a2",
+    "archived": true
   }
 ]

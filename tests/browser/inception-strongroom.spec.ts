@@ -3,22 +3,87 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { signInOwner } from './auth';
 
+async function finishApproachForTest(page: import('@playwright/test').Page) {
+  const video = page.locator('video.inception-intro-video').first();
+  await expect(video).toBeVisible();
+  await video.evaluate(element => {
+    const media = element as HTMLVideoElement;
+    media.pause();
+    if (Number.isFinite(media.duration) && media.duration > 0) media.currentTime = media.duration;
+    media.dispatchEvent(new Event('ended', { bubbles: true }));
+  });
+  await expect(page.locator('.inception-play')).toBeVisible();
+  await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/);
+  await expect(page.locator('.inception-root')).not.toHaveAttribute('inert', '');
+}
+
+async function acceptInceptionRecordingNotice(page: import('@playwright/test').Page) {
+  const notice = page.getByRole('heading', { name: 'Before you enter Inception' });
+  const root = page.locator('.inception-root');
+  await expect(notice.or(root)).toBeVisible({ timeout: 10000 });
+  if (await notice.isVisible()) {
+    await page.getByRole('checkbox', { name: 'I understand and agree to this recording.' }).check();
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(notice).toHaveCount(0);
+  }
+}
+
 async function startFreshAttempt(page: import('@playwright/test').Page, skipApproach = true) {
+  await acceptInceptionRecordingNotice(page);
   await expect(page.locator('.inception-root')).toBeVisible();
+  const returnedMenu = page.getByRole('button', { name: 'Return to main menu' });
+  if (await returnedMenu.count()) {
+    await returnedMenu.click();
+    const continueButton = page.getByRole('button', { name: 'Click to continue' });
+    await expect(continueButton).toBeVisible();
+    await continueButton.click();
+    await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+    if (skipApproach) await finishApproachForTest(page);
+    return;
+  }
+  if (await page.locator('.inception-root').getAttribute('inert') !== null && await page.locator('.inception-play').count()) {
+    await page.getByRole('button', { name: /Click (anywhere to begin|to continue)/ }).click();
+    await expect(page.locator('.inception-root')).not.toHaveAttribute('inert', '');
+  }
   const expiredFinish = page.getByRole('button', { name: 'Finish and review' });
-  if (await expiredFinish.count()) { await expiredFinish.click(); await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible(); }
+  if (await expiredFinish.count()) {
+    await expiredFinish.click();
+    const next = page.getByRole('button', { name: /^(Start a new attempt|Return to main menu)$/ });
+    await expect(next).toBeVisible();
+    if (await page.getByRole('button', { name: 'Return to main menu' }).count()) {
+      await page.getByRole('button', { name: 'Return to main menu' }).click();
+      await page.getByRole('button', { name: 'Click to continue' }).click();
+      await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+      if (skipApproach) await finishApproachForTest(page);
+      return;
+    }
+  }
   const composer = page.getByLabel('Speak to Fischer');
   if (await composer.count()) {
     const finish = page.getByRole('button', { name: 'Finish and review' });
-    if (await finish.count()) { await finish.click(); await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible(); }
+    if (await finish.count()) {
+      await finish.click();
+      const next = page.getByRole('button', { name: /^(Start a new attempt|Return to main menu)$/ });
+      await expect(next).toBeVisible();
+      if (await page.getByRole('button', { name: 'Return to main menu' }).count()) {
+        await page.getByRole('button', { name: 'Return to main menu' }).click();
+        await page.getByRole('button', { name: 'Click to continue' }).click();
+        await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+        if (skipApproach) await finishApproachForTest(page);
+        return;
+      }
+    }
   }
   const replay = page.getByRole('button', { name: 'Start a new attempt' });
-  if (await replay.count()) { await replay.click(); await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible(); if (skipApproach) { await page.keyboard.press('Escape'); await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/); } return; }
+  if (await replay.count()) { await replay.click(); await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible(); if (skipApproach) await finishApproachForTest(page); return; }
   const consent = page.getByRole('checkbox', { name: /I understand and agree to this recording/ });
   if (await consent.count()) await consent.check();
-  const begin = page.getByRole('button', { name: 'Begin without film' });
-  if (skipApproach && await begin.count()) await begin.click();
-  else { await page.getByRole('button', { name: 'Watch and begin' }).click(); if (skipApproach) await page.keyboard.press('Escape'); }
+  const begin = page.getByRole('button', { name: /^Click (anywhere to begin|to continue)$/ });
+  if (await begin.count()) {
+    if (await consent.count()) await consent.check();
+    await begin.click();
+    if (skipApproach) { await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible(); await finishApproachForTest(page); }
+  }
   if (skipApproach) await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/);
 }
 
@@ -74,7 +139,25 @@ async function expectCaptionCenteredInEncodedBar(page: import('@playwright/test'
 test.describe('Inception strongroom', () => {
   test.use({ baseURL: 'http://127.0.0.1:4323' });
 
+  test('Escape cancels the approach, exits real fullscreen, and returns to the poster without starting a round', async ({ page }) => {
+    await signInOwner(page.request);
+    let starts = 0;
+    await page.route('**/api/inception/start', async route => { if (route.request().method() === 'POST') starts++; await route.continue(); });
+    await page.goto('/inception');
+    await acceptInceptionRecordingNotice(page);
+    const entry = page.getByRole('button', { name: 'Click anywhere to begin' });
+    await entry.click();
+    await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+    expect(await page.evaluate(() => document.fullscreenElement === document.documentElement)).toBeTruthy();
+    await page.keyboard.press('Escape');
+    await expect(entry).toBeVisible();
+    await expect(entry).toBeEnabled();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBeTruthy();
+    expect(starts).toBe(0);
+  });
+
   test('intro skip starts one round; inspection, conversation and review keep the saved state honest', async ({ page }) => {
+    test.setTimeout(120000);
     await signInOwner(page.request);
     await page.addInitScript(() => {
       const probe: any = { gains: [] as Array<{ initialized: number[]; targets: number[] }>, attempted: [] as string[], played: [] as string[], pauses: [] as Array<{ path: string; time: number }>, gameplayElement: null as HTMLAudioElement | null, gameplayPlayCalls: 0, closes: 0 };
@@ -106,14 +189,28 @@ test.describe('Inception strongroom', () => {
     const errors: string[] = [];
     page.on('response', response => { if (response.url().includes('/inception-assets/') && response.status() >= 400) errors.push(`${response.status()} ${response.url()}`); });
 
-    await page.goto('/inception');
-    await expect(page.getByRole('button', { name: /Standard/ })).toHaveAttribute('aria-pressed', 'true');
+    await page.goto('/inception/?profile=sealed');
+    await acceptInceptionRecordingNotice(page);
+    expect(page.url()).toContain('/inception/?profile=sealed');
+    await expect(page.locator('.sidebar, nav[aria-label="Main navigation"]')).toHaveCount(0);
+    await expect(page.locator('a[href]')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Click anywhere to begin' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Standard|Story|Guarded|Sealed/ })).toHaveCount(0);
     const media = await (await page.request.get('/inception-assets/manifest.json')).json();
-    for (const path of [media.closedFrame, media.openFrame, media.bridgeFrame, media.introVideo, media.captions, media.gameplayLoop, media.roomTone, media.portraits?.eames, media.portraits?.fischer].filter(Boolean)) {
+    for (const path of [media.closedFrame, media.openFrame, media.bridgeFrame, media.entryPoster, media.entryWordmark, media.introVideo, media.captions, media.successVideo, media.gameplayLoop, media.roomTone, media.portraits?.eames, media.portraits?.fischer].filter(Boolean)) {
       expect((await page.request.get(path)).ok(), `media asset should be served: ${path}`).toBeTruthy();
     }
-    await page.getByRole('checkbox', { name: /I understand and agree to this recording/ }).check();
-    await page.getByRole('button', { name: 'Watch and begin' }).click();
+    const posterCover = await page.evaluate(() => {
+      const poster = document.querySelector<HTMLElement>('.inception-entry-poster')!;
+      const points = [[1, 1], [innerWidth - 2, 1], [1, innerHeight - 2], [innerWidth - 2, innerHeight - 2]];
+      return { bounds: poster.getBoundingClientRect().toJSON(), viewport: { width: innerWidth, height: innerHeight }, hits: points.map(([x, y]) => document.elementFromPoint(x, y)?.closest('.inception-entry-poster') === poster) };
+    });
+    expect(posterCover.bounds.left).toBe(0);
+    expect(posterCover.bounds.top).toBe(0);
+    expect(posterCover.bounds.width).toBeGreaterThanOrEqual(posterCover.viewport.width - 1);
+    expect(posterCover.bounds.height).toBeGreaterThanOrEqual(posterCover.viewport.height - 1);
+    expect(posterCover.hits.every(Boolean)).toBeTruthy();
+    await page.getByRole('button', { name: 'Click anywhere to begin' }).click();
     await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
     await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioProbe.gains.length)).toBeGreaterThanOrEqual(3);
     const initialAudio = await page.evaluate(() => (window as any).__inceptionAudioProbe);
@@ -124,7 +221,8 @@ test.describe('Inception strongroom', () => {
     await expect(page.locator('.inception-intro-chrome')).toHaveCount(0);
     await expect(page.locator('.inception-intro button')).toHaveCount(0);
     expect(starts).toBe(0);
-    await page.keyboard.press('Escape');
+    expect(await page.evaluate(() => document.fullscreenElement === document.documentElement)).toBeTruthy();
+    await finishApproachForTest(page);
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
     expect(starts).toBe(1);
 
@@ -242,6 +340,20 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('log', { name: 'Conversation transcript' })).toBeVisible();
     await expect(page.getByRole('button', { name: /Conversation history|Full conversation/i })).toHaveCount(0);
 
+    const parkedTranscriptCount = await transcript.locator('article').count();
+    await page.keyboard.press('Escape');
+    const entryButton = page.getByRole('button', { name: 'Click to continue' });
+    await expect(entryButton).toBeVisible();
+    await expect(page.locator('.inception-root')).toHaveAttribute('inert', '');
+    await composer.evaluate(element => (element as HTMLTextAreaElement).focus());
+    expect(await composer.evaluate(element => document.activeElement === element)).toBeFalsy();
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() => Boolean(document.activeElement?.closest('.inception-root')))).toBeFalsy();
+    await entryButton.click();
+    await expect(page.getByRole('region', { name: 'Inception strongroom' })).toBeVisible();
+    expect(starts).toBe(1);
+    await expect(transcript.locator('article')).toHaveCount(parkedTranscriptCount);
+
     await page.getByRole('button', { name: 'Finish and review' }).click();
     await expect(page.getByText('The dream gives way. The safe stays locked.')).toBeVisible();
     await expect(page.getByRole('group', { name: 'Closed strongroom safe' })).toBeVisible();
@@ -250,17 +362,20 @@ test.describe('Inception strongroom', () => {
     await expect(page.locator('.inception-sound-recovery')).toHaveCount(0);
     expect(starts).toBe(1);
     expect(errors).toEqual([]);
-    const replay = page.getByRole('button', { name: 'Start a new attempt' });
+    const replay = page.getByRole('button', { name: 'Return to main menu' });
     const gainsBeforeReplay = await page.evaluate(() => (window as any).__inceptionAudioProbe.gains.length as number);
     await replay.click();
+    await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible();
+    expect(starts).toBe(1);
+    await page.getByRole('button', { name: 'Click to continue' }).click();
     await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
     await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioProbe.gains.length)).toBeGreaterThanOrEqual(gainsBeforeReplay + 3);
     expect(starts).toBe(1);
-    await page.keyboard.press('Escape');
+    await finishApproachForTest(page);
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
     expect(starts).toBe(2);
     await page.getByRole('button', { name: 'Finish and review' }).click();
-    await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^(Return to main menu|Start a new attempt)$/ })).toBeVisible();
   });
 
   test('transcript follows scrolling at reply arrival, not only when Send is pressed', async ({ page }) => {
@@ -381,6 +496,7 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByLabel('Speak to Fischer')).toBeDisabled();
     await page.getByRole('group', { name: 'Finish the expired conversation' }).getByRole('button', { name: 'Retry saved message' }).click();
     await expect(page.getByRole('button', { name: 'Finish and review' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Click anywhere to begin' })).toHaveCount(0);
     expect(messageRequests).toBe(2);
     await page.getByRole('button', { name: 'Finish and review' }).click();
     await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible();
@@ -442,6 +558,7 @@ test.describe('Inception strongroom', () => {
       };
     });
     await page.goto('/inception');
+    await acceptInceptionRecordingNotice(page);
     await expect(page.locator('.inception-root')).toBeVisible();
     await startFreshAttempt(page);
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
@@ -479,10 +596,78 @@ test.describe('Inception strongroom', () => {
     await expect(page.locator('.inception-success-ending')).toBeVisible();
     await expect(page.locator('.inception-result')).toHaveCount(0);
     await page.keyboard.press('Escape');
-    await expect(page.locator('.inception-root')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Click anywhere to begin' })).toBeVisible();
     await page.goto('/inception');
-    await expect(page.getByText('The lock turns. You’re inside.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Click anywhere to begin' })).toBeVisible();
+    await expect(page.locator('.inception-result')).toHaveCount(0);
     expect(reviewPosts).toBe(1);
+  });
+
+  test('a confirmed failed attempt returns to the continue poster without losing its record or starting until clicked', async ({ page }) => {
+    await signInOwner(page.request);
+    await page.goto('/inception/?profile=guarded');
+    await acceptInceptionRecordingNotice(page);
+    await startFreshAttempt(page);
+    let starts = 0, reviewPosts = 0;
+    page.on('request', request => {
+      if (request.method() !== 'POST') return;
+      if (request.url().endsWith('/api/inception/start')) starts++;
+      if (/\/api\/inception\/rounds\/[^/]+\/review$/.test(request.url())) reviewPosts++;
+    });
+    const composer = page.getByLabel('Speak to Fischer');
+    await composer.fill('[fixture:inception-no-disclosure] The combination remains unknown.');
+    await composer.press('Enter');
+    await expect(page.getByRole('button', { name: 'Finish and review' })).toBeVisible();
+    const failedRoundId = await page.evaluate(() => JSON.parse(sessionStorage.getItem('workshop-inception-session') || '{}').id as string);
+    expect(failedRoundId).toBeTruthy();
+    await page.getByRole('button', { name: 'Finish and review' }).click();
+    await expect(page.getByText('The dream gives way. The safe stays locked.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Return to main menu' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Start a new attempt' })).toHaveCount(0);
+    expect(reviewPosts).toBe(1);
+
+    await page.getByRole('button', { name: 'Return to main menu' }).click();
+    const continueButton = page.getByRole('button', { name: 'Click to continue' });
+    await expect(continueButton).toBeVisible();
+    await expect(page).toHaveURL(/\/inception\/?\?profile=guarded$/);
+    await expect(page.locator('.inception-result')).toHaveCount(0);
+    expect(starts).toBe(0);
+    expect(reviewPosts).toBe(1);
+    const savedFailure = await page.evaluate(async roundId => {
+      const roundResponse = await fetch(`/api/inception/rounds/${roundId}`);
+      const reviewResponse = await fetch(`/api/inception/rounds/${roundId}/review`);
+      const round = await roundResponse.json(), review = await reviewResponse.json();
+      return { roundStatus: roundResponse.status, reviewStatus: reviewResponse.status, messages: round.round?.messages || round.messages || [], review: review.review || review };
+    }, failedRoundId);
+    expect(savedFailure.roundStatus).toBe(200);
+    expect(savedFailure.reviewStatus).toBe(200);
+    expect(savedFailure.messages.some((message: { content?: string }) => message.content?.includes('[fixture:inception-no-disclosure]'))).toBeTruthy();
+    expect(savedFailure.review).toMatchObject({ status: 'complete', verdict: 'not_recovered' });
+
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible();
+    await expect(page.locator('.sidebar, nav[aria-label="Main navigation"]')).toHaveCount(0);
+    await expect(page.locator('.inception-result')).toHaveCount(0);
+    expect(starts).toBe(0);
+    expect(reviewPosts).toBe(1);
+    const continueAfterReload = page.getByRole('button', { name: 'Click to continue' });
+    await continueAfterReload.click();
+    await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+    await finishApproachForTest(page);
+    await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
+    expect(starts).toBe(1);
+    const freshRoundId = await page.evaluate(() => JSON.parse(sessionStorage.getItem('workshop-inception-session') || '{}').id as string);
+    expect(freshRoundId).toBeTruthy();
+    expect(freshRoundId).not.toBe(failedRoundId);
+    const preservedAfterContinue = await page.evaluate(async roundId => {
+      const [round, review] = await Promise.all([
+        fetch(`/api/inception/rounds/${roundId}`).then(response => response.json()),
+        fetch(`/api/inception/rounds/${roundId}/review`).then(response => response.json()),
+      ]);
+      return { messages: round.round?.messages || round.messages || [], review: review.review || review };
+    }, failedRoundId);
+    expect(preservedAfterContinue.messages.some((message: { content?: string }) => message.content?.includes('[fixture:inception-no-disclosure]'))).toBeTruthy();
+    expect(preservedAfterContinue.review).toMatchObject({ status: 'complete', verdict: 'not_recovered' });
   });
 
   test('a saved disclosure opens the safe only after judged review and captures desktop and phone states', async ({ page }) => {
@@ -506,6 +691,7 @@ test.describe('Inception strongroom', () => {
     page.on('request', request => { if (request.method() === 'POST' && request.url().includes('/api/telemetry/events')) telemetryBatches.push(request.postData() || ''); });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto('/inception');
+    await acceptInceptionRecordingNotice(page);
     await expect(page.locator('.inception-root')).toBeVisible();
     await startFreshAttempt(page);
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
@@ -592,7 +778,7 @@ test.describe('Inception strongroom', () => {
     }
     await expect(page.locator('.inception-success-ending')).toBeVisible();
     await expect(page.locator('.inception-result')).toHaveCount(0);
-    const successManifest = await page.evaluate(async () => (await (await fetch('/inception-assets/manifest.json')).json()) as { successVideo: string; successDurationSeconds: number });
+    const successManifest = await page.evaluate(async () => (await (await fetch('/inception-assets/manifest.json')).json()) as { successVideo: string; successFilmDurationSeconds: number; successDurationSeconds: number; successTitleFadeStartSeconds: number; successTitleFadeEndSeconds: number; successLogoStartSeconds: number; successLogoFadeStartSeconds: number });
     expect(successManifest.successDurationSeconds).toBeGreaterThan(0);
     await expect(page.locator('.inception-success-ending')).toBeVisible();
     expect(await page.locator('.inception-success-ending source').getAttribute('src')).toBe(successManifest.successVideo);
@@ -615,73 +801,55 @@ test.describe('Inception strongroom', () => {
     await page.waitForTimeout(750);
     await page.screenshot({ path: join(snapshotDirectory, 'inception-success-ending-desktop.png') });
     const requestsAtWin = protectedActions.length;
+    const endingVideo = page.locator('.inception-success-ending video');
+    const sameStream = await endingVideo.evaluate(video => ({ source: video.querySelector('source')?.getAttribute('src'), controls: (video as HTMLVideoElement).controls, tracks: video.querySelectorAll('track').length }));
+    expect(sameStream.source).toBe(successManifest.successVideo);
+    expect(sameStream.controls).toBe(false);
     await expect(page.locator('.inception-success-ending button, .inception-success-ending input, .inception-success-ending video[controls]')).toHaveCount(0);
-    await page.locator('.inception-success-ending video').evaluate(video => { const ending = video as HTMLVideoElement; ending.currentTime = ending.duration; ending.dispatchEvent(new Event('ended')); });
+    const setEndingTime = async (seconds: number) => endingVideo.evaluate((video, time) => { const media = video as HTMLVideoElement; media.currentTime = time; media.dispatchEvent(new Event('timeupdate')); }, seconds);
+    await setEndingTime(successManifest.successFilmDurationSeconds + 0.3);
     await expect(page.locator('.inception-success-ending')).toHaveClass(/is-title-card/);
-    await expect(page.locator('.inception-result')).toHaveCount(0);
-    await expect(page.getByRole('heading', { name: 'INCEPTION', exact: true })).toBeVisible({ timeout: 10000 });
-    await expect(page.locator('.inception-result')).toHaveCount(0);
-    const creditsPath = await page.evaluate(() => (window as any).__inceptionAudioLifecycle.audioElements[1]?.src as string);
-    expect(creditsPath).toContain('strongroom-score-credits-tail-v2.mp3');
-    await page.evaluate(() => { ((window as any).__inceptionAudioLifecycle.audioElements[1] as HTMLAudioElement).pause(); });
-    await expect(page.locator('.inception-success-ending')).toHaveClass(/is-title-card/);
-    await page.evaluate(() => {
-      const audio = (window as any).__inceptionAudioLifecycle.audioElements[1] as HTMLAudioElement;
-      audio.currentTime = 21.5;
-      audio.dispatchEvent(new Event('timeupdate'));
-    });
-    await expect.poll(() => page.locator('.inception-success-ending').evaluate(element => element.classList.contains('is-card-exit')), { timeout: 10000 }).toBe(true);
-    await expect.poll(() => page.getByRole('heading', { name: 'INCEPTION', exact: true }).evaluate(element => Number.parseFloat(getComputedStyle(element).opacity)), { timeout: 1000 }).toBeLessThan(0.9);
-    const titleOpacity = await page.getByRole('heading', { name: 'INCEPTION', exact: true }).evaluate(element => Number.parseFloat(getComputedStyle(element).opacity));
-    const titleAnimationState = await page.evaluate(() => {
-      const title = document.querySelector<HTMLElement>('.inception-ending-title-card')!;
-      return { reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches, animations: title.getAnimations().map(animation => ({ playState: animation.playState, currentTime: animation.currentTime, name: animation.animationName })) };
-    });
-    expect(titleOpacity, JSON.stringify(titleAnimationState)).toBeGreaterThan(0);
-    expect(titleOpacity, JSON.stringify(titleAnimationState)).toBeLessThan(0.9);
-    await expect(page.getByRole('heading', { name: 'INCEPTION', exact: true })).toHaveCount(0, { timeout: 2000 });
-    await expect(page.locator('.inception-ending-credit-card')).toHaveCount(0);
+    await expect(page.locator('.inception-ending-title-card')).toHaveCount(0);
+    await setEndingTime(successManifest.successFilmDurationSeconds + 0.85);
+    await expect(page.getByRole('heading', { name: 'INCEPTION', exact: true })).toBeVisible();
+    await setEndingTime(successManifest.successTitleFadeStartSeconds + 0.1);
+    await expect(page.locator('.inception-success-ending')).toHaveClass(/is-card-exit/);
+    const titleOpacity = await page.locator('.inception-ending-title-card').evaluate(element => Number.parseFloat(getComputedStyle(element).opacity));
+    expect(titleOpacity).toBeGreaterThan(0);
+    expect(titleOpacity).toBeLessThan(1);
+    await setEndingTime(successManifest.successTitleFadeEndSeconds + 0.1);
+    await expect(page.locator('.inception-ending-title-card')).toHaveCount(0);
     await expect(page.locator('.inception-ending-logo-card')).toHaveCount(0);
-    await expect(page.locator('.inception-success-ending')).toBeVisible();
-    await expect(page.getByText(/CSES ML Team|Brought to you by/)).toHaveCount(0);
-    await page.evaluate(() => {
-      const audio = (window as any).__inceptionAudioLifecycle.audioElements[1] as HTMLAudioElement;
-      audio.playbackRate = 0.25;
-      audio.currentTime = 22.8;
-      void audio.play();
-    });
+    await setEndingTime(successManifest.successLogoStartSeconds + 0.1);
     const logoCard = page.locator('.inception-ending-logo-card');
-    await expect(logoCard).toBeVisible({ timeout: 5000 });
-    await expect(logoCard.locator('img')).toHaveAttribute('src', /cses-society-logo-v1\.png/);
+    await expect(logoCard).toBeVisible();
     await expect(logoCard.getByRole('img', { name: 'CSES' })).toBeVisible();
-    const logoLayout = await logoCard.locator('img').evaluate(image => {
-      const rect = image.getBoundingClientRect();
-      return { width: rect.width, height: rect.height, centerX: rect.left + rect.width / 2, centerY: rect.top + rect.height / 2, viewportWidth: innerWidth, viewportHeight: innerHeight, dpr: devicePixelRatio };
-    });
+    const logoLayout = await logoCard.locator('img').evaluate(image => { const rect = image.getBoundingClientRect(); return { width: rect.width, centerX: rect.left + rect.width / 2, centerY: rect.top + rect.height / 2, viewportWidth: innerWidth, viewportHeight: innerHeight, dpr: devicePixelRatio }; });
     expect(logoLayout.width).toBeLessThanOrEqual(400);
     expect(logoLayout.width * logoLayout.dpr).toBeLessThanOrEqual(1080);
     expect(Math.abs(logoLayout.centerX - logoLayout.viewportWidth / 2)).toBeLessThan(1);
     expect(Math.abs(logoLayout.centerY - logoLayout.viewportHeight / 2)).toBeLessThan(1);
-    await expect(page.locator('.inception-ending-title-card')).toHaveCount(0);
-    await expect.poll(() => page.locator('.inception-success-ending').evaluate(element => element.classList.contains('is-card-exit'))).toBe(false);
-    await expect(page.locator('.inception-success-ending')).toHaveClass(/is-title-card/);
-    await expect(page.locator('.inception-success-ending')).toBeVisible();
-    await expect.poll(() => page.locator('.inception-success-ending').evaluate(element => element.classList.contains('is-card-exit')), { timeout: 2000 }).toBe(true);
-    await page.evaluate(() => { ((window as any).__inceptionAudioLifecycle.audioElements[1] as HTMLAudioElement).pause(); });
-    await expect.poll(() => logoCard.evaluate(element => Number.parseFloat(getComputedStyle(element).opacity)), { timeout: 2000 }).toBeLessThan(0.9);
-    await expect(logoCard).toHaveCount(0, { timeout: 2000 });
-    await page.evaluate(() => {
-      const audio = (window as any).__inceptionAudioLifecycle.audioElements[1] as HTMLAudioElement;
-      audio.currentTime = 24.25;
-      audio.dispatchEvent(new Event('ended'));
-    });
+    await setEndingTime(successManifest.successLogoFadeStartSeconds + 0.1);
+    await expect.poll(() => logoCard.evaluate(element => Number.parseFloat(getComputedStyle(element).opacity))).toBeLessThan(1);
+    await expect(page.getByText(/CSES ML Team|Brought to you by/)).toHaveCount(0);
+    await endingVideo.evaluate(video => { const media = video as HTMLVideoElement; media.currentTime = media.duration; media.dispatchEvent(new Event('ended')); });
     await expect(page.locator('.inception-success-ending')).toHaveClass(/is-title-card/);
     await expect(page.locator('.inception-result')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Click anywhere to begin' })).toBeVisible({ timeout: 6000 });
+    await expect(page.locator('.inception-success-ending')).toHaveCount(0);
+    await expect(page.locator('.inception-play, .inception-result')).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => (window as any).__inceptionAudioLifecycle.closed)).toBeGreaterThan(0);
     expect(protectedActions).toHaveLength(requestsAtWin);
-    await page.keyboard.press('Escape');
-    await expect(page.locator('.inception-root')).toHaveCount(0);
-    await page.goto('/inception');
+
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Click anywhere to begin' })).toBeVisible();
+    await expect(page.locator('.inception-play, .inception-result')).toHaveCount(0);
+    await expect(page.locator('.inception-success-ending')).toHaveCount(0);
+    await page.evaluate(async () => {
+      const config = await (await fetch('/api/inception')).json();
+      localStorage.removeItem(`workshop-inception-completed-round:${config.actorScope}`);
+    });
+    await page.reload();
     await expect(page.locator('.inception-root')).toHaveClass(/is-immersive/);
     await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
     await expect(page.getByRole('log', { name: 'Conversation transcript' })).toContainText('[fixture:inception-disclosure]');
@@ -689,13 +857,21 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('button', { name: /Rewatch ending/ })).toBeVisible();
     await page.getByRole('button', { name: /Rewatch ending/ }).click();
     await expect(page.locator('.inception-success-ending')).toBeVisible();
+    expect(await page.evaluate(() => document.fullscreenElement === document.documentElement && document.fullscreenElement.contains(document.querySelector('.inception-success-ending')))).toBeTruthy();
     await expect(page.locator('.inception-result')).toHaveCount(0);
     expect(protectedActions).toHaveLength(requestsAtWin);
     await page.keyboard.press('Escape');
-    await expect(page.locator('.inception-root')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Click anywhere to begin' })).toBeVisible();
     await expect.poll(() => telemetryBatches.join('\n'), { timeout: 20000 }).toContain('"interaction":"review"');
     await page.unroute('**/api/inception/rounds/*/review');
     await page.goto('/inception');
+    await expect(page.getByRole('button', { name: 'Click anywhere to begin' })).toBeVisible();
+    await expect(page.locator('.inception-result')).toHaveCount(0);
+    await page.evaluate(async () => {
+      const config = await (await fetch('/api/inception')).json();
+      localStorage.removeItem(`workshop-inception-completed-round:${config.actorScope}`);
+    });
+    await page.reload();
     await expect(page.locator('.inception-root')).toHaveClass(/is-immersive/);
     await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
     await expect(page.locator('.inception-success-ending')).toHaveCount(0);
@@ -764,14 +940,9 @@ test.describe('Inception strongroom', () => {
   test('the healthy manifest-timed approach waits for native video end without starting early', async ({ page }) => {
     await signInOwner(page.request);
     await page.goto('/inception');
+    await acceptInceptionRecordingNotice(page);
     await expect(page.locator('.inception-root')).toBeVisible();
-    await expect.poll(() => page.locator('.inception-entry, .inception-play').count()).toBe(1);
-    if (await page.locator('.inception-entry').count()) {
-      await expect(page.getByRole('button', { name: 'Mute sound' })).toBeVisible();
-      await page.getByRole('button', { name: 'Mute sound' }).click();
-      await expect(page.getByRole('button', { name: 'Unmute sound' })).toBeVisible();
-      await page.getByRole('button', { name: 'Unmute sound' }).click();
-    }
+    await expect.poll(() => page.locator('.inception-entry-poster, .inception-play').count()).toBe(1);
     await startFreshAttempt(page, false);
     await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
     const introDuration = await page.evaluate(async () => (await (await fetch('/inception-assets/manifest.json')).json()).introDurationSeconds as number);
@@ -793,6 +964,7 @@ test.describe('Inception strongroom', () => {
     await signInOwner(page.request);
     await page.setViewportSize({ width: 1920, height: 1080 });
     await page.goto('/inception');
+    await acceptInceptionRecordingNotice(page);
     await expect(page.locator('.inception-root')).toBeVisible();
     await startFreshAttempt(page, false);
     const caption = page.locator('.inception-intro .inception-film-caption');
@@ -812,7 +984,7 @@ test.describe('Inception strongroom', () => {
     const introFit = await caption.evaluate(element => ({ height: element.clientHeight, contentHeight: element.scrollHeight }));
     expect(introFit.contentHeight).toBeLessThanOrEqual(introFit.height + 1);
     await page.keyboard.press('Escape');
-    await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Click anywhere to begin' })).toBeVisible();
   });
 
   test('a failed intro shows recovery controls and can be retried or continued', async ({ page }) => {
@@ -821,8 +993,9 @@ test.describe('Inception strongroom', () => {
     await page.route(`**${introPath}`, route => route.abort());
     await signInOwner(page.request);
     await page.goto('/inception');
+    await acceptInceptionRecordingNotice(page);
     await expect(page.locator('.inception-root')).toBeVisible();
-    await expect.poll(() => page.locator('.inception-entry, .inception-play').count()).toBe(1);
+    await expect.poll(() => page.locator('.inception-entry-poster, .inception-play').count()).toBe(1);
     await startFreshAttempt(page, false);
     await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
     await expect(page.locator('.inception-root')).toHaveClass(/is-immersive/);
@@ -833,9 +1006,12 @@ test.describe('Inception strongroom', () => {
     await expect(page.locator('video.inception-intro-video')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Continue' })).toHaveCount(0);
     await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: 'Click anywhere to begin' })).toBeVisible();
+    await expect(page).toHaveURL(/\/inception\/?$/);
+    await page.getByRole('button', { name: 'Click anywhere to begin' }).click();
+    await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+    await finishApproachForTest(page);
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
-    await page.keyboard.press('Escape');
-    await expect(page).toHaveURL(/\/$/);
   });
 
   test('a lost intro start receipt retries the same request key and reuses the created round', async ({ page }) => {
@@ -854,12 +1030,18 @@ test.describe('Inception strongroom', () => {
       if (requestKeys.length === 1) { firstRoundId = session.round.id; await route.abort(); }
       else await route.fulfill({ response, json: session });
     });
-    await page.keyboard.press('Escape');
+    await finishApproachForTest(page);
     await expect(page.getByRole('button', { name: 'Retry start' })).toBeVisible();
-    await page.getByRole('button', { name: 'Retry start' }).click();
+    const firstRequestId = requestKeys[0];
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible();
+    expect(requestKeys).toHaveLength(1);
+    await page.getByRole('button', { name: 'Click to continue' }).click();
+    await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+    await finishApproachForTest(page);
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
     expect(requestKeys).toHaveLength(2);
-    expect(requestKeys[1]).toBe(requestKeys[0]);
+    expect(requestKeys[1]).toBe(firstRequestId);
     expect(firstRoundId).not.toBe('');
     await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('workshop-inception-session') || '{}').id)).toBe(firstRoundId);
   });

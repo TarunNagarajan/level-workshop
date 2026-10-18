@@ -2,6 +2,7 @@
 :root[data-theme='dark'] { color-scheme: dark; --bg: #242723; --paper: #2a2e29; --sidebar: #20231f; --ink: #e1e1d5; --muted: #a0a294; --line: #41463c; --accent: #a2b3c7; --accent-soft: #343d43; --hover: #32382e; --input: #292d27; --danger: #e5a194; --green: #a2b999; --shadow: 0 12px 50px #0003; }
 * { box-sizing: border-box; }
 body { margin: 0; color: var(--ink); background: var(--bg); }
+.inception-standalone-route { position: fixed; inset: 0; z-index: 2147482990; width: 100vw; height: 100dvh; overflow: hidden; background: #111; }
 button, input, textarea, select { font: inherit; }
 button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; background: transparent; color: inherit; cursor: pointer; transition: background 160ms, color 160ms, border-color 160ms; }
