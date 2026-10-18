@@ -226,7 +226,9 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
       const round = await get('SELECT * FROM rounds WHERE id=?', existing.round_id);
       let reservationId;
       try { reservationId = JSON.parse(round?.config || '{}').capacityReservationId; } catch { reservationId = null; }
-      await capacity.attachReservation(reservationId, existing.round_id);
+      let stillActive = Boolean(round && !round.ended_at);
+      try { stillActive &&= Date.now() < Number(round.started_at) + JSON.parse(round.data).duration * 1000; } catch { stillActive = false; }
+      if (stillActive) await capacity.attachReservation(reservationId, existing.round_id);
       return res.json(await sessionFor(round));
     }
     const latest = await get("SELECT r.id,r.started_at,r.ended_at,r.data FROM rounds r JOIN inception_sessions s ON s.round_id=r.id WHERE s.actor_id=? ORDER BY s.created_at DESC LIMIT 1", actor.id);
