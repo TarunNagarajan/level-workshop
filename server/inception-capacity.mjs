@@ -1,21 +1,44 @@
 import { randomUUID } from 'node:crypto';
 import { GEMINI_BASE_URL, GEMINI_MODEL } from './model.mjs';
 
-const DAY = 24 * 60 * 60 * 1000;
 const QUOTA_FRESH_MS = 60_000;
 const RESERVE = 10_000;
 const RESERVATION_TTL = 15 * 60_000;
-const APP_TARGET = 1_200_000;
+const APPLICATION_OPERATING_TARGET = 1_200_000;
+const DEFAULT_APP_DAILY_BUDGET = 200_000;
 const GOOGLE_ID = 'google-gemini';
 const GROQ_ID = 'groq';
 
 const int = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
-const retry = value => Number.isInteger(value) && value > 0 ? Math.min(value, 86_400) : 60;
+const retry = (value, fallback = 60) => Number.isInteger(value) && value > 0 ? Math.min(value, 86_400) : fallback;
 const dateKey = at => new Date(at).toISOString().slice(0, 10);
+
+function applicationDailyBudget(env) {
+  const raw = env.INCEPTION_GROQ_DAILY_TOKEN_BUDGET;
+  if (raw === undefined || raw === '') return { value: DEFAULT_APP_DAILY_BUDGET, valid: true, source: 'default' };
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return { value: null, valid: false, source: 'environment' };
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0
+    ? { value, valid: true, source: 'environment' }
+    : { value: null, valid: false, source: 'environment' };
+}
+
+function cooldownSeconds(providerId, error) {
+  if (!error) return null;
+  if (error.providerCode === 'rate_limited') {
+    const daily = String(error.rateLimitScope || '').endsWith('_daily');
+    return retry(error.retryAfterSeconds, daily ? 86_400 : 60);
+  }
+  if (error.providerCode === 'timeout' || error.providerCode === 'provider_unavailable') return retry(error.retryAfterSeconds, 30);
+  if (['provider_auth', 'provider_configuration_changed', 'provider_rejected'].includes(error.providerCode)) return retry(error.retryAfterSeconds, 300);
+  return providerId === GOOGLE_ID && error.providerCode === 'rate_limited' ? retry(error.retryAfterSeconds) : null;
+}
 
 export function inceptionProviderCapacity({ store, primary, env = process.env, now = () => Date.now() }) {
   const { get, all, run } = store;
-  const flagEnabled = env.INCEPTION_AUTO_PROVIDER === 'true' && Boolean(env.GEMINI_API_KEY);
+  const routingEnabled = env.INCEPTION_AUTO_PROVIDER === 'true';
+  const flagEnabled = routingEnabled && Boolean(primary.apiKey || env.GEMINI_API_KEY);
+  const appBudget = applicationDailyBudget(env);
 
   async function observe(providerId, { usage = null, error = null, at = now() } = {}) {
     const code = error?.providerCode || null;
@@ -24,7 +47,8 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
     const tpdLimit = int(quota.limit);
     const tpdUsed = int(quota.used);
     const quotaAt = tpdLimit !== null && tpdUsed !== null && (error?.rateLimitScope === 'tokens_daily') ? at : null;
-    const blockedUntil = providerId === GOOGLE_ID && code === 'rate_limited' ? at + retry(error.retryAfterSeconds) * 1000 : null;
+    const cooldown = cooldownSeconds(providerId, error);
+    const blockedUntil = cooldown === null ? null : at + cooldown * 1000;
     const day = dateKey(at);
     await run(`INSERT INTO inception_provider_health
       (provider_id, observed_at, last_success_at, blocked_until, last_error_code, daily_limit, daily_used, daily_observed_at, app_tokens_today, app_usage_day, failed_calls_today, failed_calls_day, app_tokens_after_observation)
@@ -33,7 +57,7 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
       observed_at=CASE WHEN excluded.observed_at>inception_provider_health.observed_at THEN excluded.observed_at ELSE inception_provider_health.observed_at END,
       last_success_at=CASE WHEN excluded.last_success_at IS NOT NULL AND (inception_provider_health.last_success_at IS NULL OR excluded.last_success_at>inception_provider_health.last_success_at) THEN excluded.last_success_at ELSE inception_provider_health.last_success_at END,
       blocked_until=CASE WHEN excluded.observed_at>=inception_provider_health.observed_at AND excluded.blocked_until IS NOT NULL THEN CASE WHEN COALESCE(inception_provider_health.blocked_until,0)>excluded.blocked_until THEN inception_provider_health.blocked_until ELSE excluded.blocked_until END WHEN excluded.observed_at>=inception_provider_health.observed_at AND inception_provider_health.blocked_until<=excluded.observed_at THEN NULL ELSE inception_provider_health.blocked_until END,
-      last_error_code=CASE WHEN excluded.last_error_code IS NOT NULL AND excluded.observed_at>=inception_provider_health.observed_at THEN excluded.last_error_code ELSE inception_provider_health.last_error_code END,
+      last_error_code=CASE WHEN excluded.observed_at>=inception_provider_health.observed_at THEN excluded.last_error_code ELSE inception_provider_health.last_error_code END,
       daily_limit=CASE WHEN excluded.daily_observed_at IS NOT NULL AND (inception_provider_health.daily_observed_at IS NULL OR excluded.daily_observed_at>=inception_provider_health.daily_observed_at) THEN excluded.daily_limit ELSE inception_provider_health.daily_limit END,
       daily_used=CASE WHEN excluded.daily_observed_at IS NOT NULL AND (inception_provider_health.daily_observed_at IS NULL OR excluded.daily_observed_at>=inception_provider_health.daily_observed_at) THEN excluded.daily_used ELSE inception_provider_health.daily_used END,
       app_tokens_after_observation=CASE WHEN excluded.daily_observed_at IS NOT NULL AND (inception_provider_health.daily_observed_at IS NULL OR excluded.daily_observed_at>=inception_provider_health.daily_observed_at) THEN 0 ELSE inception_provider_health.app_tokens_after_observation+excluded.app_tokens_today END,
@@ -67,14 +91,20 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
   }
 
   async function reservePrimary(at) {
+    const day = dateKey(at);
     const reservationId = randomUUID();
     const expiresAt = at + RESERVATION_TTL;
     if (store.dialect === 'sqlite') {
       return store.transaction(() => {
+        run(`INSERT INTO inception_provider_health (provider_id,observed_at) VALUES (?,?) ON CONFLICT(provider_id) DO NOTHING`, GROQ_ID, at);
         run('INSERT INTO inception_provider_reservations (reservation_id,provider_id,tokens,created_at,expires_at) VALUES (?,?,?,?,?)', reservationId, GROQ_ID, RESERVE, at, expiresAt);
         const claimed = run(`UPDATE inception_provider_health SET reserved_tokens=reserved_tokens+?
-          WHERE provider_id=? AND daily_observed_at>=? AND daily_observed_at<=?
-          AND daily_limit-daily_used-app_tokens_after_observation-reserved_tokens>=?`, RESERVE, GROQ_ID, at - QUOTA_FRESH_MS, at, RESERVE);
+          WHERE provider_id=? AND (blocked_until IS NULL OR blocked_until<=?)
+          AND (CASE WHEN app_usage_day=? THEN app_tokens_today ELSE 0 END)+reserved_tokens+?<=?
+          AND (daily_observed_at IS NULL OR daily_observed_at<? OR daily_observed_at>?
+            OR daily_limit-daily_used-app_tokens_after_observation-reserved_tokens>=?)`,
+          RESERVE, GROQ_ID, at, day, RESERVE, appBudget.value,
+          at - QUOTA_FRESH_MS, at, RESERVE);
         if (!claimed.changes) {
           run('DELETE FROM inception_provider_reservations WHERE reservation_id=?', reservationId);
           return null;
@@ -82,32 +112,51 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
         return reservationId;
       });
     }
+    await run('INSERT INTO inception_provider_health (provider_id,observed_at) VALUES (?,?) ON CONFLICT(provider_id) DO NOTHING', GROQ_ID, at);
     const claimed = await all(`WITH reserved AS (
         UPDATE inception_provider_health SET reserved_tokens=reserved_tokens+?
-        WHERE provider_id=? AND daily_observed_at>=? AND daily_observed_at<=?
-          AND daily_limit-daily_used-app_tokens_after_observation-reserved_tokens>=?
+        WHERE provider_id=? AND (blocked_until IS NULL OR blocked_until<=?)
+          AND (CASE WHEN app_usage_day=? THEN app_tokens_today ELSE 0 END)+reserved_tokens+?<=?
+          AND (daily_observed_at IS NULL OR daily_observed_at<? OR daily_observed_at>?
+            OR daily_limit-daily_used-app_tokens_after_observation-reserved_tokens>=?)
         RETURNING provider_id
       ) INSERT INTO inception_provider_reservations (reservation_id,provider_id,tokens,created_at,expires_at)
-        SELECT ?,?,?,?,? FROM reserved RETURNING reservation_id`, RESERVE, GROQ_ID, at - QUOTA_FRESH_MS, at, RESERVE, reservationId, GROQ_ID, RESERVE, at, expiresAt);
+        SELECT ?,?,?,?,? FROM reserved RETURNING reservation_id`, RESERVE, GROQ_ID, at, day, RESERVE, appBudget.value,
+      at - QUOTA_FRESH_MS, at, RESERVE, reservationId, GROQ_ID, RESERVE, at, expiresAt);
     return claimed[0]?.reservation_id || null;
   }
 
   async function selectForStart() {
-    if (!flagEnabled) return { config: { model: primary.model, baseUrl: primary.baseUrl, reasoningEffort: primary.reasoningEffort || 'low', providerId: GROQ_ID }, reason: 'feature_disabled', checkedAt: now(), reservationId: null };
+    if (!routingEnabled) return { config: { model: primary.model, baseUrl: primary.baseUrl, reasoningEffort: primary.reasoningEffort || 'low', providerId: GROQ_ID }, reason: 'feature_disabled', checkedAt: now(), reservationId: null };
     const at = now();
+    if (!appBudget.valid) throw Object.assign(new Error('The Inception provider budget configuration is invalid.'), { status: 503, providerCode: 'provider_configuration_changed' });
     await releaseExpiredReservations(at);
     const row = await get('SELECT * FROM inception_provider_health WHERE provider_id=?', GROQ_ID);
-    const fresh = Boolean(primary.apiKey && row?.daily_observed_at && at - Number(row.daily_observed_at) <= QUOTA_FRESH_MS && at >= Number(row.daily_observed_at) && row.daily_limit != null && row.daily_used != null);
+    const fresh = Boolean(row?.daily_observed_at && at - Number(row.daily_observed_at) <= QUOTA_FRESH_MS && at >= Number(row.daily_observed_at) && row.daily_limit != null && row.daily_used != null);
     const providerRemaining = fresh ? Math.max(0, Number(row.daily_limit) - Number(row.daily_used)) : null;
+    const groqBlocked = Number(row?.blocked_until || 0) > at;
+    const appUsedToday = row?.app_usage_day === dateKey(at) ? Number(row.app_tokens_today || 0) : 0;
+    const appReserved = Number(row?.reserved_tokens || 0);
+    const appAvailable = Math.max(0, appBudget.value - appUsedToday - appReserved);
     let reservationId = null;
-    if (fresh && providerRemaining - Number(row.app_tokens_after_observation || 0) - Number(row.reserved_tokens || 0) >= RESERVE) reservationId = await reservePrimary(at);
+    if (primary.apiKey && !groqBlocked && appAvailable >= RESERVE) reservationId = await reservePrimary(at);
     const useGoogle = !reservationId;
     const reason = !primary.apiKey ? 'primary_credentials_unavailable'
-      : !fresh ? 'primary_daily_unknown'
-      : providerRemaining - Number(row.app_tokens_after_observation || 0) - Number(row.reserved_tokens || 0) < RESERVE ? 'primary_daily_low'
-      : 'primary_daily_low'; // A failed atomic reservation means another start consumed the remaining reserve.
+      : groqBlocked ? 'primary_cooldown'
+      : appAvailable < RESERVE ? 'primary_application_budget_low'
+      : fresh && providerRemaining - Number(row.app_tokens_after_observation || 0) - Number(row.reserved_tokens || 0) < RESERVE ? 'primary_daily_low'
+      : 'primary_reservation_unavailable'; // Another start or a newer health update claimed the available allowance.
     if (useGoogle) {
       const fallbackHealth = await get('SELECT blocked_until FROM inception_provider_health WHERE provider_id=?', GOOGLE_ID);
+      if (!env.GEMINI_API_KEY) {
+        const blockedUntil = Math.max(Number(row?.blocked_until || 0), Number(fallbackHealth?.blocked_until || 0));
+        throw Object.assign(new Error('No Inception model is currently available. Please try again later.'), {
+          status: blockedUntil > at ? 429 : 503,
+          providerCode: blockedUntil > at ? 'rate_limited' : 'provider_unavailable',
+          rateLimitScope: 'unknown',
+          ...(blockedUntil > at ? { retryAfterSeconds: retry(Math.ceil((blockedUntil - at) / 1000)) } : {}),
+        });
+      }
       if (Number(fallbackHealth?.blocked_until || 0) > at) {
         const error = Object.assign(new Error('The available model is temporarily rate limited. Please try again shortly.'), {
           status: 429, providerCode: 'rate_limited', rateLimitScope: 'unknown', retryAfterSeconds: retry(Math.ceil((Number(fallbackHealth.blocked_until) - at) / 1000)),
@@ -116,7 +165,7 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
       }
       return { config: { model: GEMINI_MODEL, baseUrl: GEMINI_BASE_URL, providerId: GOOGLE_ID, reasoningEffort: 'low' }, reason, checkedAt: at, reservationId: null };
     }
-    return { config: { model: primary.model, baseUrl: primary.baseUrl, providerId: GROQ_ID, reasoningEffort: primary.reasoningEffort || 'low', capacityReservationId: reservationId }, reason: 'primary_daily_available', checkedAt: at, reservationId };
+    return { config: { model: primary.model, baseUrl: primary.baseUrl, providerId: GROQ_ID, reasoningEffort: primary.reasoningEffort || 'low', capacityReservationId: reservationId }, reason: fresh ? 'primary_daily_available' : 'primary_daily_unknown', checkedAt: at, reservationId };
   }
 
   async function attachReservation(reservationId, roundId) {
@@ -155,17 +204,30 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
     await releaseExpiredReservations();
     const list = await all('SELECT provider_id, observed_at, last_success_at, blocked_until, last_error_code, daily_limit, daily_used, daily_observed_at, app_tokens_today, app_usage_day, failed_calls_today, failed_calls_day, app_tokens_after_observation, reserved_tokens FROM inception_provider_health WHERE provider_id IN (?,?)', GROQ_ID, GOOGLE_ID);
     const at = now(), today = dateKey(at);
+    const groq = list.find(row => row.provider_id === GROQ_ID);
+    const applicationTokensToday = groq?.app_usage_day === today ? Number(groq.app_tokens_today || 0) : 0;
+    const activeReservedTokens = Number(groq?.reserved_tokens || 0);
     return {
       featureEnabled: flagEnabled,
-      selectionPolicy: { reserveTokens: RESERVE, quotaObservationFreshMs: QUOTA_FRESH_MS, unknownPrimaryHeadroomSelects: GOOGLE_ID },
-      applicationOperatingTargetTokensPerDay: APP_TARGET,
+      selectionPolicy: { primary: GROQ_ID, fallback: GOOGLE_ID, providerOrder: [GROQ_ID, GOOGLE_ID], reserveTokens: RESERVE, quotaObservationFreshMs: QUOTA_FRESH_MS, unknownPrimaryHeadroomSelects: GROQ_ID },
+      applicationDailyBudget: {
+        tokens: appBudget.value,
+        source: appBudget.source,
+        valid: appBudget.valid,
+        usageToday: applicationTokensToday,
+        activeReservedTokens,
+        availableTokens: appBudget.valid ? Math.max(0, appBudget.value - applicationTokensToday - activeReservedTokens) : null,
+        day: today,
+        capacityMeaning: 'application_planning_cap_not_provider_entitlement',
+      },
+      applicationOperatingTargetTokensPerDay: APPLICATION_OPERATING_TARGET,
       providers: Object.fromEntries([GROQ_ID, GOOGLE_ID].map(id => {
         const item = list.find(row => row.provider_id === id);
         const quotaAge = item?.daily_observed_at == null ? null : Math.max(0, at - Number(item.daily_observed_at));
         const dailyFresh = quotaAge !== null && quotaAge <= QUOTA_FRESH_MS && at >= Number(item.daily_observed_at) && item.daily_limit != null && item.daily_used != null;
         const observedRemaining = dailyFresh ? Math.max(0, Number(item.daily_limit) - Number(item.daily_used)) : null;
         const appAfter = dailyFresh ? Number(item.app_tokens_after_observation || 0) : null;
-        const reserved = dailyFresh ? Number(item.reserved_tokens || 0) : null;
+        const reserved = Number(item?.reserved_tokens || 0);
         return [id, {
           configured: id === GROQ_ID ? Boolean(primary.apiKey) : Boolean(env.GEMINI_API_KEY),
           model: id === GROQ_ID ? primary.model : GEMINI_MODEL,
