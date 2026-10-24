@@ -56,27 +56,121 @@ test('native Gemini adapter rejects HTTP 200 error payloads, truncation, and quo
   } finally { globalThis.fetch = originalFetch; }
 });
 
-test('prestart policy treats unknown or low Groq daily quota conservatively and shares observations through SQLite', async () => {
+test('prestart policy prefers Groq with unknown headroom and honors persistent daily quota cooldowns', async () => {
   const store = openStore(':memory:');
   const env = { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'gemini-secret' };
   const capacity = inceptionProviderCapacity({ store, primary, env });
   try {
     const first = await capacity.selectForStart();
-    assert.equal(first.config.providerId, 'google-gemini');
+    assert.equal(first.config.providerId, 'groq');
     assert.equal(first.reason, 'primary_daily_unknown');
+    await capacity.releaseReservation(first.reservationId);
     await capacity.observe('groq', { error: Object.assign(new Error('limit'), { providerCode: 'rate_limited', rateLimitScope: 'tokens_daily', quota: { limit: 200000, used: 199621 } }) });
     const second = await inceptionProviderCapacity({ store, primary, env }).selectForStart();
-    assert.equal(second.reason, 'primary_daily_low');
+    assert.equal(second.reason, 'primary_cooldown');
     assert.equal(second.config.providerId, 'google-gemini');
     const status = await capacity.status();
+    assert.equal(status.applicationDailyBudget.tokens, 200_000);
+    assert.equal(status.applicationDailyBudget.capacityMeaning, 'application_planning_cap_not_provider_entitlement');
     assert.equal(status.applicationOperatingTargetTokensPerDay, 1_200_000);
     assert.equal(status.providers.groq.providerObservedDailyRemainingTokens, 379);
     assert.equal(status.providers.groq.conservativeAvailableTokens, 379);
     assert.equal(status.providers['google-gemini'].dailyHeadroomStatus, 'unknown');
     assert.equal(JSON.stringify(status).includes('gemini-secret'), false);
     assert.equal(JSON.stringify(status).includes('groq-secret'), false);
-    await store.run('INSERT INTO inception_provider_health (provider_id,observed_at,daily_limit,daily_used,daily_observed_at,app_tokens_today,app_usage_day) VALUES (?,?,?,?,?,?,?) ON CONFLICT(provider_id) DO UPDATE SET daily_limit=excluded.daily_limit,daily_used=excluded.daily_used,daily_observed_at=excluded.daily_observed_at', 'groq', Date.now(), 2_000_000, 100, Date.now(), 0, new Date().toISOString().slice(0, 10));
-    assert.equal((await capacity.selectForStart()).config.providerId, 'groq');
+    await capacity.observe('groq', { usage: { totalTokens: 100 } });
+    const afterSuccess = await capacity.selectForStart();
+    assert.equal(afterSuccess.config.providerId, 'google-gemini', 'a success does not erase an unexpired daily quota cooldown');
+    assert.equal(afterSuccess.reason, 'primary_cooldown');
+  } finally { store.db.close(); }
+});
+
+test('fresh low observed quota and exhausted application budget select Gemma', async () => {
+  const store = openStore(':memory:');
+  const at = Date.UTC(2026, 9, 24, 12);
+  const env = { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'gemini-secret' };
+  const capacity = inceptionProviderCapacity({ store, primary, env, now: () => at });
+  try {
+    await store.run('INSERT INTO inception_provider_health (provider_id,observed_at,daily_limit,daily_used,daily_observed_at) VALUES (?,?,?,?,?)', 'groq', at, 20_000, 10_001, at);
+    const observedLow = await capacity.selectForStart();
+    assert.equal(observedLow.config.providerId, 'google-gemini');
+    assert.equal(observedLow.reason, 'primary_daily_low');
+
+    const lowBudget = inceptionProviderCapacity({ store, primary, env: { ...env, INCEPTION_GROQ_DAILY_TOKEN_BUDGET: '10000' }, now: () => at });
+    await store.run('UPDATE inception_provider_health SET daily_limit=NULL,daily_used=NULL,daily_observed_at=NULL WHERE provider_id=?', 'groq');
+    const pair = await Promise.all([lowBudget.selectForStart(), lowBudget.selectForStart()]);
+    assert.deepEqual(pair.map(selection => selection.config.providerId).sort(), ['google-gemini', 'groq']);
+    const first = pair.find(selection => selection.config.providerId === 'groq');
+    const second = pair.find(selection => selection.config.providerId === 'google-gemini');
+    assert.ok(['primary_application_budget_low', 'primary_reservation_unavailable'].includes(second.reason));
+    assert.equal((await lowBudget.status()).applicationDailyBudget.activeReservedTokens, 10_000);
+    await lowBudget.releaseReservation(first.reservationId);
+    await lowBudget.observe('groq', { usage: { totalTokens: 10_000 }, at: at + 1 });
+    assert.equal((await lowBudget.selectForStart()).config.providerId, 'google-gemini');
+  } finally { store.db.close(); }
+});
+
+test('cooldown expiry retries Groq after unknown quota and clears errors without erasing active cooldown', async () => {
+  const store = openStore(':memory:');
+  let at = 1_000;
+  const env = { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'gemini-secret' };
+  const capacity = inceptionProviderCapacity({ store, primary, env, now: () => at });
+  try {
+    await capacity.observe('groq', { error: Object.assign(new Error('throttle'), { providerCode: 'rate_limited', rateLimitScope: 'tokens_minute' }), at });
+    at += 1_000;
+    await capacity.observe('groq', { usage: { totalTokens: 12 }, at });
+    let row = await store.get('SELECT blocked_until,last_error_code FROM inception_provider_health WHERE provider_id=?', 'groq');
+    assert.equal(row.blocked_until, 61_000);
+    assert.equal(row.last_error_code, null);
+    await capacity.observe('groq', { error: Object.assign(new Error('late throttle'), { providerCode: 'rate_limited', rateLimitScope: 'tokens_minute', retryAfterSeconds: 120 }), at: at - 500 });
+    row = await store.get('SELECT blocked_until,last_error_code FROM inception_provider_health WHERE provider_id=?', 'groq');
+    assert.equal(row.blocked_until, 61_000);
+    assert.equal(row.last_error_code, null);
+    at = 61_000;
+    const recovered = await capacity.selectForStart();
+    assert.equal(recovered.config.providerId, 'groq');
+    assert.equal(recovered.reason, 'primary_daily_unknown');
+    await capacity.releaseReservation(recovered.reservationId);
+  } finally { store.db.close(); }
+});
+
+test('application budget rolls at UTC midnight while an active reservation remains charged', async () => {
+  const store = openStore(':memory:');
+  let at = Date.UTC(2026, 9, 24, 23, 59);
+  const env = { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'gemini-secret', INCEPTION_GROQ_DAILY_TOKEN_BUDGET: '10000' };
+  const capacity = inceptionProviderCapacity({ store, primary, env, now: () => at });
+  try {
+    const beforeMidnight = await capacity.selectForStart();
+    await capacity.observe('groq', { usage: { totalTokens: 1_000 }, at });
+    at += 2 * 60_000;
+    const afterMidnight = await capacity.selectForStart();
+    assert.equal(afterMidnight.config.providerId, 'google-gemini');
+    assert.equal((await capacity.status()).applicationDailyBudget.usageToday, 0);
+    await capacity.releaseReservation(beforeMidnight.reservationId);
+    const afterRelease = await capacity.selectForStart();
+    assert.equal(afterRelease.config.providerId, 'groq');
+    await capacity.releaseReservation(afterRelease.reservationId);
+  } finally { store.db.close(); }
+});
+
+test('invalid budget configuration and two unavailable providers reject before reserving', async () => {
+  const store = openStore(':memory:');
+  const at = Date.now();
+  try {
+    const invalid = inceptionProviderCapacity({ store, primary, env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'gemini-secret', INCEPTION_GROQ_DAILY_TOKEN_BUDGET: '10k' }, now: () => at });
+    await assert.rejects(invalid.selectForStart(), error => error.status === 503 && error.providerCode === 'provider_configuration_changed');
+    const noCredentials = inceptionProviderCapacity({ store, primary: { ...primary, apiKey: '' }, env: { INCEPTION_AUTO_PROVIDER: 'true' }, now: () => at });
+    await assert.rejects(noCredentials.selectForStart(), error => error.status === 503 && error.providerCode === 'provider_unavailable');
+    const noFallback = inceptionProviderCapacity({ store, primary, env: { INCEPTION_AUTO_PROVIDER: 'true', INCEPTION_GROQ_DAILY_TOKEN_BUDGET: '10000' }, now: () => at });
+    const reserved = await noFallback.selectForStart();
+    assert.equal(reserved.config.providerId, 'groq');
+    await assert.rejects(noFallback.selectForStart(), error => error.status === 503 && error.providerCode === 'provider_unavailable');
+    await noFallback.releaseReservation(reserved.reservationId);
+    const bothBlocked = inceptionProviderCapacity({ store, primary, env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'gemini-secret' }, now: () => at });
+    await store.run('UPDATE inception_provider_health SET observed_at=?,blocked_until=? WHERE provider_id=?', at, at + 30_000, 'groq');
+    await store.run('INSERT INTO inception_provider_health (provider_id,observed_at,blocked_until) VALUES (?,?,?)', 'google-gemini', at, at + 20_000);
+    await assert.rejects(bothBlocked.selectForStart(), error => error.status === 429 && error.providerCode === 'rate_limited');
+    assert.equal((await store.get('SELECT COUNT(*) AS n FROM inception_provider_reservations')).n, 0);
   } finally { store.db.close(); }
 });
 
@@ -123,7 +217,7 @@ test('concurrent starts reserve Groq capacity once and account for usage after t
     clock += 61_000;
     const stale = await capacity.selectForStart();
     assert.equal(stale.config.providerId, 'google-gemini');
-    assert.equal(stale.reason, 'primary_daily_unknown');
+    assert.equal(stale.reason, 'primary_cooldown');
   } finally { store.db.close(); }
 });
 
@@ -188,16 +282,16 @@ test('selected Inception rounds route target and judge through the frozen provid
     assert.equal(started.status, 201, JSON.stringify(started.body));
     const roundId = started.body.round.id;
     const frozen = JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config);
-    assert.equal(frozen.providerId, 'google-gemini');
+    assert.equal(frozen.providerId, 'groq');
     assert.equal(frozen.selectionReason, 'primary_daily_unknown');
     assert.doesNotMatch(JSON.stringify(frozen), /secret/);
     await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie: owner, body: { content: 'What do you remember?', requestId: randomUUID() } });
     await fixture.request(`/inception/rounds/${roundId}/finish`, { method: 'POST', cookie: owner, body: { answer: 'done' } });
     await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie: owner, body: {} });
     assert.equal(fixture.calls.length, 2);
-    assert.deepEqual(fixture.calls.map(call => call.config.providerId), ['google-gemini', 'google-gemini']);
-    assert.deepEqual(fixture.calls.map(call => call.config.apiKey), ['gemini-secret', 'gemini-secret']);
-    assert.equal(fixture.calls[0].config.model, GEMINI_MODEL);
+    assert.deepEqual(fixture.calls.map(call => call.config.providerId), ['groq', 'groq']);
+    assert.deepEqual(fixture.calls.map(call => call.config.apiKey), ['groq-secret', 'groq-secret']);
+    assert.equal(fixture.calls[0].config.model, primary.model);
     assert.equal(fixture.calls[1].temperature, 0);
     assert.equal(fixture.calls[1].responseSchema.properties.evidence.maxItems, 6);
     assert.equal(JSON.stringify(await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).includes('gemini-secret'), false);
@@ -207,9 +301,29 @@ test('selected Inception rounds route target and judge through the frozen provid
   } finally { await fixture.close(); }
 });
 
+test('Gemma fallback rounds keep target and judge on their frozen provider', async () => {
+  const fixture = await routeHarness({ dailyLimit: 5_000 });
+  try {
+    const owner = (await fixture.request('/setup', { method: 'POST', body: { name: 'Owner', email: `fallback-${randomUUID()}@example.test`, password: 'long-test-password' } })).cookie;
+    await fixture.request('/recording/acknowledge', { method: 'POST', cookie: owner, body: { version: 'recording-notice-v1', accepted: true } });
+    const started = await fixture.request('/inception/start', { method: 'POST', cookie: owner, body: { profileId: 'standard', clientStartId: randomUUID().replaceAll('-', ''), consent: true } });
+    assert.equal(started.status, 201, JSON.stringify(started.body));
+    const roundId = started.body.round.id;
+    const frozen = JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config);
+    assert.equal(frozen.providerId, 'google-gemini');
+    assert.equal(frozen.selectionReason, 'primary_daily_low');
+    await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie: owner, body: { content: 'What do you remember?', requestId: randomUUID() } });
+    await fixture.request(`/inception/rounds/${roundId}/finish`, { method: 'POST', cookie: owner, body: { answer: 'done' } });
+    await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie: owner, body: {} });
+    assert.deepEqual(fixture.calls.map(call => call.config.providerId), ['google-gemini', 'google-gemini']);
+    assert.deepEqual(fixture.calls.map(call => call.config.apiKey), ['gemini-secret', 'gemini-secret']);
+  } finally { await fixture.close(); }
+});
+
 test('known blocked fallback rejects prestart with retry metadata and allocates no round', async () => {
   const fixture = await routeHarness({ blocked: true });
   try {
+    await fixture.store.run('INSERT INTO inception_provider_health (provider_id,observed_at,blocked_until) VALUES (?,?,?)', 'groq', Date.now(), Date.now() + 15_000);
     const owner = (await fixture.request('/setup', { method: 'POST', body: { name: 'Owner', email: `cap-${randomUUID()}@example.test`, password: 'long-test-password' } })).cookie;
     await fixture.request('/recording/acknowledge', { method: 'POST', cookie: owner, body: { version: 'recording-notice-v1', accepted: true } });
     const response = await fixture.request('/inception/start', { method: 'POST', cookie: owner, body: { profileId: 'standard', clientStartId: randomUUID().replaceAll('-', ''), consent: true } });
@@ -251,6 +365,7 @@ test('PGlite stores fallback backoff for a second server instance', async () => 
   try {
     const first = inceptionProviderCapacity({ store: fixture.store, primary, env });
     await first.observe('google-gemini', { error: Object.assign(new Error('quota'), { providerCode: 'rate_limited', retryAfterSeconds: 90 }) });
+    await first.observe('groq', { error: Object.assign(new Error('throttle'), { providerCode: 'rate_limited', rateLimitScope: 'tokens_minute' }) });
     const restarted = inceptionProviderCapacity({ store: fixture.store, primary, env });
     await assert.rejects(restarted.selectForStart(), error => error.status === 429 && error.retryAfterSeconds > 0);
   } finally { await fixture.store.db.close(); }
@@ -266,5 +381,18 @@ test('PGlite atomically reserves a fresh Groq allowance across concurrent starts
     assert.deepEqual(pair.map(item => item.config.providerId).sort(), ['google-gemini', 'groq']);
     assert.equal((await fixture.store.get('SELECT reserved_tokens FROM inception_provider_health WHERE provider_id=?', 'groq')).reserved_tokens, 10_000);
     await capacity.releaseReservation(pair.find(item => item.reservationId)?.reservationId);
+  } finally { await fixture.store.db.close(); }
+});
+
+test('PGlite atomically enforces the application budget when provider headroom is unknown', async () => {
+  const fixture = await createFixture({ adapter: 'pglite' });
+  const at = Date.now(), env = { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'gemini-secret', INCEPTION_GROQ_DAILY_TOKEN_BUDGET: '10000' };
+  const capacity = inceptionProviderCapacity({ store: fixture.store, primary, env, now: () => at });
+  try {
+    const pair = await Promise.all([capacity.selectForStart(), capacity.selectForStart()]);
+    assert.deepEqual(pair.map(item => item.config.providerId).sort(), ['google-gemini', 'groq']);
+    assert.equal((await capacity.status()).applicationDailyBudget.activeReservedTokens, 10_000);
+    await capacity.releaseReservation(pair.find(item => item.reservationId)?.reservationId);
+    assert.equal((await capacity.status()).applicationDailyBudget.activeReservedTokens, 0);
   } finally { await fixture.store.db.close(); }
 });
