@@ -154,6 +154,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
   const roundGeneration = useRef(0);
   const installedRoundId = useRef<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerFocusIntent = useRef<{ roundId: string; generation: number; roundToken: number; focusAtSend: Element | null; sentFromComposer: boolean } | null>(null);
   const checkingComposerHeight = useRef<number | null>(null);
   const checkingTextareaHeight = useRef<number | null>(null);
   const introVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -205,6 +206,24 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
   }, [messageText, session?.round.id]);
 
   useEffect(() => {
+    const intent = composerFocusIntent.current;
+    if (!intent) return;
+    if (intent.generation !== lifecycle.current || intent.roundToken !== roundGeneration.current || session?.round.id !== intent.roundId) {
+      composerFocusIntent.current = null;
+      return;
+    }
+    if (closed || activeModal || cinematicPhase || successEnding || entryTransition || entryVisible || !handoffInteractive) {
+      composerFocusIntent.current = null;
+      return;
+    }
+    const input = inputRef.current;
+    if (busy || pendingSend || !input?.isConnected || input.disabled) return;
+    const active = document.activeElement;
+    if (active === intent.focusAtSend || (active === document.body && intent.sentFromComposer)) input.focus();
+    composerFocusIntent.current = null;
+  }, [session?.round.id, session?.round.endedAt, busy, pendingSend, closed, activeModal, cinematicPhase, successEnding, entryTransition, entryVisible, handoffInteractive]);
+
+  useEffect(() => {
     if (loading || !manifest.closedFrame) { setSafeBounds({}); return; }
     let disposed = false;
     const image = new Image();
@@ -249,6 +268,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     else void instance.start({ gameplayLoop: manifest.gameplayLoop, creditsCue: manifest.creditsCue, roomTone: manifest.roomTone }).then(playing => { if (lifecycle.current !== generation || audioRef.current !== instance) return; setSoundReady(playing); });
   }, [hasAmbient, closed, sound.muted, sound.volume, manifest.gameplayLoop, manifest.creditsCue, manifest.roomTone]);
   const install = useCallback((value: Session) => {
+    composerFocusIntent.current = null;
     roundGeneration.current++;
     sendOperation.current = null;
     actionOperation.current = null; startOperation.current = null; reviewOperation.current = null;
@@ -670,7 +690,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     }, 1000);
     return () => window.clearInterval(check);
   }, [intro, manifest.introVideo, filmEnded, introMediaIssue]);
-  useEffect(() => { lifecycle.current++; return () => { lifecycle.current++; const instance = audioRef.current; audioRef.current = null; if (instance) void instance.dispose(); }; }, []);
+  useEffect(() => { lifecycle.current++; return () => { lifecycle.current++; composerFocusIntent.current = null; const instance = audioRef.current; audioRef.current = null; if (instance) void instance.dispose(); }; }, []);
   useEffect(() => { localStorage.setItem(soundStorage, JSON.stringify(sound)); audioRef.current?.setVolume(sound.volume); if (audioRef.current?.isMuted !== sound.muted) audioRef.current?.setMuted(sound.muted); }, [sound]);
   useEffect(() => {
     if (expired) { void disposeAmbient(); return; }
@@ -711,6 +731,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
       sessionStorage.removeItem(`workshop-inception-send:${session.round.id}`);
     }
     lifecycle.current++; endingGenerationRef.current++; endingFinalizationRef.current = true;
+    composerFocusIntent.current = null;
     sendOperation.current = null; actionOperation.current = null; startOperation.current = null; reviewOperation.current = null;
     if (endingSkipAnimationRef.current !== null) window.cancelAnimationFrame(endingSkipAnimationRef.current);
     endingSkipAnimationRef.current = null;
@@ -907,23 +928,21 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     followConversationRef.current = !transcript || transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop < 72;
     preserveConversationScrollTopRef.current = followConversationRef.current ? null : transcript?.scrollTop ?? 0;
     const focusAtSend = document.activeElement;
+    const sentFromComposer = Boolean(focusAtSend === inputRef.current || (focusAtSend instanceof HTMLElement && focusAtSend.closest('.inception-composer')));
     const roundId = session.round.id, generation = lifecycle.current, roundToken = roundGeneration.current;
     const pending = existing || { id: crypto.randomUUID(), content: messageText.trim() };
     if (!existing) { sessionStorage.setItem(`workshop-inception-send:${session.round.id}`, JSON.stringify(pending)); setPendingSend(pending); }
     const operation = {};
+    composerFocusIntent.current = null;
     sendOperation.current = operation;
     setBusy(true); setError(''); setSendStatus(''); setSendPhase(retry ? 'checking' : 'sending');
     try {
       const next = await api<Round>(`/rounds/${session.round.id}/messages`, { method: 'POST', body: { content: pending.content, requestId: pending.id } });
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
+      if (sentFromComposer) composerFocusIntent.current = { roundId, generation, roundToken, focusAtSend, sentFromComposer };
       setSession(current => current?.round.id === roundId ? { ...current, round: { ...next, accessToken: current.round.accessToken } } : current);
       recordMetricsReply(roundId, session.round.accessToken); recordMetricsInteraction('reply', roundId, session.round.accessToken);
       setMessageText(''); setPendingSend(null); setSendStatus('Reply saved.'); setSendPhase('idle'); setFailureNeedsNewAttempt(false); sessionStorage.removeItem(sendFailureStorageFor(session.round.id)); sessionStorage.removeItem(`workshop-inception-send:${session.round.id}`); sessionStorage.removeItem(sendDraftStorageFor(session.round.id));
-      requestAnimationFrame(() => {
-        const active = document.activeElement;
-        const sentFromComposer = focusAtSend === inputRef.current || (focusAtSend instanceof HTMLElement && focusAtSend.closest('.inception-composer'));
-        if (active === focusAtSend || (active === document.body && sentFromComposer)) inputRef.current?.focus();
-      });
     } catch (cause) {
       if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
       const apiError = cause as ApiError;
@@ -1025,6 +1044,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
   };
   const replay = () => {
     if (busy || review?.status === 'pending') return;
+    composerFocusIntent.current = null;
     roundGeneration.current++;
     setSession(null); setReview(null); setMessageText(''); setPendingSend(null); sessionStorage.removeItem(sessionStorageKey); setError('');
     setSelectedProfile(session?.profile.profileRevision === 1 ? 'standard' : session?.profile.profileId || selectedProfile); beginIntro(true);
