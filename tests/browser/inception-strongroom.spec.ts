@@ -491,6 +491,81 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('button', { name: /^(Return to main menu|Start a new attempt)$/ })).toBeVisible();
   });
 
+  test('a delayed Enter reply restores keyboard input for the next prompt', async ({ page }) => {
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await startFreshAttempt(page);
+    const composer = page.getByLabel('Speak to Fischer');
+    const transcript = page.getByRole('log', { name: 'Conversation transcript' });
+    let releaseReply!: () => void;
+    let markRequestStarted!: () => void;
+    const requestStarted = new Promise<void>(resolve => { markRequestStarted = resolve; });
+    const replyGate = new Promise<void>(resolve => { releaseReply = resolve; });
+    await page.route('**/api/rounds/*/messages', async route => {
+      if (route.request().method() === 'POST') { markRequestStarted(); await replyGate; }
+      await route.continue();
+    });
+
+    const initialCount = await transcript.locator('article').count();
+    await composer.focus();
+    await page.keyboard.type('What can you tell me about the safe?');
+    await page.keyboard.press('Enter');
+    await requestStarted;
+    await expect(page.getByRole('button', { name: 'Sending to Fischer' })).toBeVisible();
+    releaseReply();
+    await expect(transcript.locator('article')).toHaveCount(initialCount + 2);
+    await expect(composer).toBeFocused();
+
+    await page.unroute('**/api/rounds/*/messages');
+    const nextCount = await transcript.locator('article').count();
+    await page.keyboard.type('Tell me one more thing about the room.');
+    await expect(composer).toHaveValue('Tell me one more thing about the room.');
+    await page.keyboard.press('Enter');
+    await expect(transcript.locator('article')).toHaveCount(nextCount + 2);
+  });
+
+  test('a pointer Send reply returns focus to the composer', async ({ page }) => {
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await startFreshAttempt(page);
+    const composer = page.getByLabel('Speak to Fischer');
+    const transcript = page.getByRole('log', { name: 'Conversation transcript' });
+    const count = await transcript.locator('article').count();
+    await composer.fill('What can you tell me about the safe?');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(transcript.locator('article')).toHaveCount(count + 2);
+    await expect(composer).toBeFocused();
+  });
+
+  test('a reply arriving after leaving cannot focus the hidden composer', async ({ page }) => {
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await startFreshAttempt(page);
+    const composer = page.getByLabel('Speak to Fischer');
+    let releaseReply!: () => void;
+    let markRequestStarted!: () => void;
+    const requestStarted = new Promise<void>(resolve => { markRequestStarted = resolve; });
+    const replyGate = new Promise<void>(resolve => { releaseReply = resolve; });
+    const replyResponse = page.waitForResponse(response => response.request().method() === 'POST' && /\/api\/rounds\/[^/]+\/messages$/.test(response.url()));
+    await page.route('**/api/rounds/*/messages', async route => {
+      if (route.request().method() === 'POST') { markRequestStarted(); await replyGate; }
+      await route.continue();
+    });
+    await composer.focus();
+    await page.keyboard.type('What can you tell me about the safe?');
+    await page.keyboard.press('Enter');
+    await requestStarted;
+    await page.keyboard.press('Escape');
+    const entry = page.getByRole('button', { name: 'Click to continue' });
+    await expect(entry).toBeVisible();
+    releaseReply();
+    await replyResponse;
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(composer).toBeDisabled();
+    await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('Click to continue');
+    await expect(composer).not.toBeFocused();
+  });
+
   test('transcript follows scrolling at reply arrival, not only when Send is pressed', async ({ page }) => {
     test.setTimeout(90000);
     await signInOwner(page.request);
