@@ -745,6 +745,60 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('button', { name: 'Start a new attempt' })).toHaveCount(0);
   });
 
+  test('a timed assist clears provider cooldown at four minutes and opens the existing success ending', async ({ page }) => {
+    test.setTimeout(90000);
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await startFreshAttempt(page);
+    const roundId = await page.evaluate(() => JSON.parse(sessionStorage.getItem('workshop-inception-session') || '{}').id as string);
+    const targetCallsBefore = await page.evaluate(async () => (await (await fetch('/api/__test/inception/target-calls')).json()).count as number);
+    const requestIds: string[] = [];
+    let firstRequest = true;
+    await page.route('**/api/rounds/*/messages', async route => {
+      if (route.request().method() === 'POST') {
+        requestIds.push(route.request().postDataJSON().requestId);
+        if (firstRequest) {
+          firstRequest = false;
+          await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: 'The fixture quota is unavailable.', receiptConfirmed: true, submissionId: 'fixture-terminal-receipt', submissionStatus: 'failed', failureCode: 'rate_limited', rateLimitScope: 'tokens_daily', retryAfterSeconds: 3600 }) });
+          return;
+        }
+      }
+      await route.continue();
+    });
+    const composer = page.getByLabel('Speak to Fischer');
+    await composer.fill('An ordinary question before my quota ran out.');
+    await composer.press('Enter');
+    await expect(page.getByText('The fixture quota is unavailable.')).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Retry in 60:00$/ })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible();
+    const shifted = await page.evaluate(async id => {
+      const response = await fetch('/api/__test/inception/shift-start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roundId: id }) });
+      return response.json();
+    }, roundId);
+    expect(shifted.startedAt).toBeLessThan(Date.now() - 240_000);
+    await page.reload();
+    await page.getByRole('button', { name: 'Click to continue' }).click();
+    await expect(composer).toBeVisible();
+    await expect(composer).toBeEnabled();
+    await expect(composer).toHaveValue('An ordinary question before my quota ran out.');
+    await expect(page.getByRole('button', { name: 'Start a new attempt' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
+    await composer.fill('What was your first answer?');
+    await composer.press('Enter');
+    await expect(page.getByText(/I remember it now\./)).toBeVisible();
+    expect(requestIds).toHaveLength(2);
+    expect(requestIds[0]).not.toBe(requestIds[1]);
+    await expect.poll(async () => page.evaluate(async () => (await (await fetch('/api/__test/inception/target-calls')).json()).count as number)).toBe(targetCallsBefore);
+    const transcript = await page.evaluate(async id => (await fetch(`/api/attempts/${id}/inception`)).json(), roundId);
+    expect(transcript.messages.at(-1)).toMatchObject({ synthetic: true, origin: 'timed_assist', generatedByModel: false });
+    await page.getByRole('button', { name: 'Finish and review' }).click();
+    await expect(page.locator('.inception-success-ending')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
+    expect(await page.evaluate(async () => (await (await fetch('/api/__test/inception/target-calls')).json()).count as number)).toBe(targetCallsBefore);
+    const saved = await page.evaluate(async id => (await fetch(`/api/attempts/${id}/inception`)).json(), roundId);
+    expect(saved.review).toMatchObject({ status: 'complete', verdict: 'recovered', reviewer_protocol: 'inception-timed-assist-v1' });
+  });
+
   test('an accepted but unresolved receipt has bounded recovery and retries with the same ID', async ({ page }) => {
     await page.addInitScript(() => {
       const originalFetch = window.fetch.bind(window);

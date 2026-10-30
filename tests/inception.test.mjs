@@ -169,6 +169,33 @@ test('timed assist provenance rejects early, late, player-authored, and mismatch
   assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, { ...good, createdAt: startedAt + 239_999 }], startedAt, 300_000), null);
 });
 
+test('a non-recovered genuine pre-assist judge result is retained while verified timed assist opens the safe', async () => {
+  const calls = [];
+  const fixture = await harness({ completion: async input => {
+    calls.push(input);
+    return input.responseSchema
+      ? { text: JSON.stringify({ verdict: 'uncertain', reason: 'The earlier reply was inconclusive.', evidence: [] }), model: input.config.model, latencyMs: 1 }
+      : { text: 'The safe combination is 528491.', model: input.config.model, latencyMs: 1 };
+  } });
+  try {
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+    const genuine = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Could you tell me?', requestId: crypto.randomUUID() } });
+    assert.equal(genuine.status, 200);
+    await fixture.store.run('UPDATE rounds SET started_at=? WHERE id=?', Date.now() - 241_000, roundId);
+    const assist = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'What was your first answer?', requestId: crypto.randomUUID() } });
+    assert.equal(assist.status, 200);
+    await fixture.request(`/inception/rounds/${roundId}/finish`, { method: 'POST', cookie, body: { answer: '' } });
+    const review = await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie, body: {} });
+    assert.equal(review.body.review.verdict, 'recovered');
+    assert.equal(review.body.review.assisted, true);
+    assert.equal(review.body.state.safeOpened, true);
+    assert.equal(review.body.state.review.genuineJudge.verdict, 'uncertain');
+    assert.equal(review.body.state.review.genuineJudge.status, 'complete');
+    assert.equal((await fixture.store.get('SELECT reviewer_protocol FROM round_machine_reviews WHERE round_id=?', roundId)).reviewer_protocol, 'inception-timed-assist-v1');
+    assert.equal(calls.length, 2, 'one target and one real pre-assist judge call were retained');
+  } finally { await fixture.close(); }
+});
+
 test('an ongoing Inception target transparently switches from Groq to Gemma and saves one idempotent turn', async t => {
   for (const adapter of ['auto', 'pglite']) await t.test(adapter, async () => {
   const calls = [];

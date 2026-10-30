@@ -13,7 +13,7 @@ import './inception.css';
 type Profile = { id: string; profileId?: string; label: string; description: string; versionId?: string; scenarioId?: string; profileRevision?: number; promptHash?: string; snapshotHash?: string };
 type InceptionState = { revision: number; safeInspected: boolean; roomInspected: boolean; safePresented: boolean; safeOpened: boolean; finished: boolean; revealedCombination?: string; review: { status: string; verdict?: string; reason?: string } | null };
 type Session = { round: Round; state: InceptionState; profile: Profile };
-type Configuration = { title: string; profiles: Profile[]; defaultProfileId?: string; connected: boolean; recordingNoticeRequired?: boolean; recordingAccepted?: boolean; recordingAuthorized?: boolean; entryPolicy?: string; reviewEnabled?: boolean; actorScope: string; activeRoundId: string | null };
+type Configuration = { title: string; profiles: Profile[]; defaultProfileId?: string; connected: boolean; timedAssist?: { policyId: string; afterMs: number; authored: boolean }; recordingNoticeRequired?: boolean; recordingAccepted?: boolean; recordingAuthorized?: boolean; entryPolicy?: string; reviewEnabled?: boolean; actorScope: string; activeRoundId: string | null };
 type Review = { status: string; verdict?: string; reason?: string; evidence?: { replyId: string; quote: string }[]; retryable?: boolean; errorCode?: string };
 type MediaManifest = { closedFrame?: string | null; openFrame?: string | null; dialogueTexture?: string | null; bridgeFrame?: string | null; bridgeVideo?: string | null; introVideo?: string | null; introDurationSeconds?: number; captions?: string | null; successVideo?: string | null; successCaptions?: string | null; successFilmDurationSeconds?: number; successDurationSeconds?: number; successTitleFadeInStartSeconds?: number; successTitleFadeInEndSeconds?: number; successTitleFadeStartSeconds?: number; successTitleFadeEndSeconds?: number; successLogoStartSeconds?: number; successLogoFadeInEndSeconds?: number; successLogoFadeStartSeconds?: number; successLogoFadeEndSeconds?: number; successFinalBlackDurationSeconds?: number; successReturnFadeSeconds?: number; endingWordmark?: string | null; endingLogo?: string | null; entryPoster?: string | null; entryWordmark?: string | null; gameplayLoop?: string | null; roomTone?: string | null; creditsCue?: string | null; creditsDurationSeconds?: number; portraits?: { eames?: string; fischer?: string } };
 type PendingSend = { id: string; content: string };
@@ -191,6 +191,9 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
   const remaining = session ? Math.max(0, Math.ceil((session.round.deadline - roundClock) / 1000)) : 300;
   const expired = Boolean(session && remaining <= 0 && !session.round.endedAt);
   const closed = Boolean(session?.round.endedAt) || expired;
+  const assistAfterMs = Number(config?.timedAssist?.afterMs);
+  const timedAssistAvailable = Boolean(session && !session.round.endedAt && !expired && config?.timedAssist?.authored === true && Number.isFinite(assistAfterMs) && assistAfterMs > 0 && roundClock >= session.round.startedAt + assistAfterMs);
+  const retryBlocked = retrySeconds > 0 && !timedAssistAvailable;
   const checkingEndedRound = Boolean(session?.round.endedAt && cinematicPhase === 'checking');
   const retainExpiredFinishControl = Boolean(checkingEndedRound && session && session.round.deadline <= Date.now());
 
@@ -717,6 +720,14 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     const timer = window.setInterval(tick, 1000);
     return () => { window.clearInterval(timer); window.removeEventListener('focus', tick); document.removeEventListener('visibilitychange', onVisible); };
   }, [retryCooldownUntil, session?.round.id]);
+  useEffect(() => {
+    if (!timedAssistAvailable || !session) return;
+    sessionStorage.removeItem(sendCooldownStorageFor(session.round.id));
+    sessionStorage.removeItem(sendFailureStorageFor(session.round.id));
+    setRetryCooldownUntil(0);
+    setRetrySeconds(0);
+    setFailureNeedsNewAttempt(false);
+  }, [timedAssistAvailable, session?.round.id]);
   const enterFullscreen = async () => {
     setImmersive(true);
     try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); setFullscreen(Boolean(document.fullscreenElement)); }
@@ -923,7 +934,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
 
   const send = async (retry = false) => {
     if (!session || sendOperation.current || (!retry && closed) || busy) return;
-    if (!retry && Date.now() < retryCooldownUntil) return;
+    if (!retry && Date.now() < retryCooldownUntil && !timedAssistAvailable) return;
     const existing = pendingSend;
     if (retry && !existing) return;
     if (retry && !existing?.id) return;
@@ -985,7 +996,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
   };
 
   const startNewAttemptAfterProviderFailure = async () => {
-    if (!session || busy || pendingSend || !failureNeedsNewAttempt) return;
+    if (!session || busy || pendingSend || !failureNeedsNewAttempt || timedAssistAvailable) return;
     const oldRoundId = session.round.id, generation = lifecycle.current, roundToken = roundGeneration.current;
     setBusy(true); setError('');
     try {
@@ -1122,7 +1133,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
           {!session.round.endedAt || checkingEndedRound ? <div ref={composerRef} className="inception-composer" style={checkingEndedRound && checkingComposerHeight.current ? { minHeight: `${checkingComposerHeight.current}px` } : undefined}>
             <label htmlFor="inception-message" className="visually-hidden">Speak to Fischer</label>
             <textarea id="inception-message" ref={inputRef} style={checkingEndedRound && checkingTextareaHeight.current ? { minHeight: `${checkingTextareaHeight.current}px` } : undefined} value={messageText} disabled={closed || busy || Boolean(pendingSend)} maxLength={4000} rows={2} onChange={event => { setMessageText(event.target.value); sessionStorage.setItem(sendDraftStorageFor(session.round.id), event.target.value); }} onFocus={() => setMetricsPhase('compose', session.round.id, session.round.accessToken)} onBlur={() => setMetricsPhase('read_think', session.round.id, session.round.accessToken)} onKeyDown={keyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} placeholder={closed ? 'This conversation has ended.' : 'Ask Fischer a question…'} />
-            <div className="inception-composer-actions"><div>{pendingSend ? <Button className="inception-secondary inception-send-action" aria-live="polite" aria-label={busy ? sendPhase === 'checking' ? 'Checking message receipt' : 'Sending to Fischer' : 'Retry saved message'} disabled={busy} onClick={() => void send(true)}>{busy ? sendPhase === 'checking' ? 'Checking…' : 'Sending…' : 'Retry saved message'}</Button> : <Button className="inception-primary inception-send-action" aria-live="polite" aria-label={busy && sendPhase !== 'idle' ? sendPhase === 'checking' ? 'Checking message receipt' : 'Sending to Fischer' : retrySeconds > 0 ? `Retry in ${time(retrySeconds)}` : 'Send'} disabled={closed || busy || !messageText.trim() || retrySeconds > 0} onClick={() => void send()}>{busy && sendPhase !== 'idle' ? sendPhase === 'checking' ? 'Checking…' : 'Sending…' : retrySeconds > 0 ? `Retry in ${time(retrySeconds)}` : <>Send<ArrowRight size={15} /></>}</Button>}{failureNeedsNewAttempt && <Button className="inception-secondary inception-send-action" disabled={busy} onClick={() => void startNewAttemptAfterProviderFailure()}>Start a new attempt</Button>}{(!session.round.endedAt && !expired || checkingEndedRound) && <Button className="inception-secondary" disabled={busy || Boolean(pendingSend) || checkingEndedRound} onClick={() => void finish()}>{busy && cinematicPhase === 'checking' ? 'Saving conversation…' : 'Finish and review'}</Button>}</div></div>
+            <div className="inception-composer-actions"><div>{pendingSend ? <Button className="inception-secondary inception-send-action" aria-live="polite" aria-label={busy ? sendPhase === 'checking' ? 'Checking message receipt' : 'Sending to Fischer' : 'Retry saved message'} disabled={busy} onClick={() => void send(true)}>{busy ? sendPhase === 'checking' ? 'Checking…' : 'Sending…' : 'Retry saved message'}</Button> : <Button className="inception-primary inception-send-action" aria-live="polite" aria-label={busy && sendPhase !== 'idle' ? sendPhase === 'checking' ? 'Checking message receipt' : 'Sending to Fischer' : retryBlocked ? `Retry in ${time(retrySeconds)}` : 'Send'} disabled={closed || busy || !messageText.trim() || retryBlocked} onClick={() => void send()}>{busy && sendPhase !== 'idle' ? sendPhase === 'checking' ? 'Checking…' : 'Sending…' : retryBlocked ? `Retry in ${time(retrySeconds)}` : <>Send<ArrowRight size={15} /></>}</Button>}{failureNeedsNewAttempt && !timedAssistAvailable && <Button className="inception-secondary inception-send-action" disabled={busy} onClick={() => void startNewAttemptAfterProviderFailure()}>Start a new attempt</Button>}{(!session.round.endedAt && !expired || checkingEndedRound) && <Button className="inception-secondary" disabled={busy || Boolean(pendingSend) || checkingEndedRound} onClick={() => void finish()}>{busy && cinematicPhase === 'checking' ? 'Saving conversation…' : 'Finish and review'}</Button>}</div></div>
             {error && !expired && <p className="inception-inline-error" role="alert">{error}</p>}
           </div> : <p className="inception-conversation-saved" role="status">Conversation saved.</p>}
           {(expired || session.round.endedAt) && !cinematicPhase && !successEnding && <div className="inception-result" role="status">

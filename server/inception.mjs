@@ -410,7 +410,7 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
       const attempts = Number(prior?.attempts || 0) + 1, runId = randomUUID(), startedAt = Date.now();
       await run(`INSERT INTO round_machine_reviews (round_id,status,attempts,run_id,started_at,completed_at,verdict,reason,evidence,error_code,reviewer_protocol)
         VALUES (?,'pending',?,?,?,NULL,NULL,NULL,NULL,NULL,?) ON CONFLICT(round_id) DO UPDATE SET status='pending',attempts=excluded.attempts,run_id=excluded.run_id,started_at=excluded.started_at,completed_at=NULL,verdict=NULL,reason=NULL,evidence=NULL,error_code=NULL,reviewer_protocol=excluded.reviewer_protocol`, current.id, attempts, runId, startedAt, inceptionReviewProtocol);
-      let assessed, metricsCallId, reviewProtocol = inceptionReviewProtocol, genuineJudgeFailure = null;
+      let assessed, metricsCallId, reviewProtocol = inceptionReviewProtocol, genuineJudgeResult = null;
       try {
         const savedMessages = JSON.parse(current.messages);
         const currentAssist = verifiedInceptionTimedAssist(savedMessages, Number(current.started_at), Number(JSON.parse(current.data).duration) * 1000);
@@ -421,17 +421,19 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
         assessed = { status: 'complete', verdict: review.verdict, reason: review.reason, evidence: JSON.stringify(review.evidence), errorCode: null };
       } catch (error) { assessed = { status: 'unavailable', verdict: null, reason: null, evidence: null, errorCode: error.reviewError || 'provider_error' }; }
       const savedMessages = JSON.parse(current.messages), fallbackAssist = verifiedInceptionTimedAssist(savedMessages, Number(current.started_at), Number(JSON.parse(current.data).duration) * 1000);
-      if (assessed.status !== 'complete' && fallbackAssist) {
-        genuineJudgeFailure = { status: 'unavailable', errorCode: assessed.errorCode, preAssistEvidence: fallbackAssist.genuineBefore.map(message => message.id) };
+      if (fallbackAssist && !(assessed.status === 'complete' && assessed.verdict === 'recovered')) {
+        genuineJudgeResult = assessed.status === 'complete'
+          ? { status: 'complete', verdict: assessed.verdict, reason: assessed.reason, evidence: JSON.parse(assessed.evidence || '[]').map(item => item.replyId), preAssistEvidence: fallbackAssist.genuineBefore.map(message => message.id) }
+          : { status: 'unavailable', errorCode: assessed.errorCode, preAssistEvidence: fallbackAssist.genuineBefore.map(message => message.id) };
         reviewProtocol = 'inception-timed-assist-v1';
-        const reason = 'Fischer recovered his own earlier answer after the four-minute mark. The separate earlier disclosure review was unavailable.';
-        assessed = { status: 'complete', verdict: 'recovered', reason, evidence: JSON.stringify([{ replyId: fallbackAssist.message.id, quote: fallbackAssist.message.content }]), errorCode: 'genuine_judge_unavailable' };
+        const reason = 'Fischer recovered his own earlier answer after the four-minute mark. The earlier disclosure was not independently confirmed as recovered.';
+        assessed = { status: 'complete', verdict: 'recovered', reason, evidence: JSON.stringify([{ replyId: fallbackAssist.message.id, quote: fallbackAssist.message.content }]), errorCode: genuineJudgeResult.status === 'unavailable' ? 'genuine_judge_unavailable' : null };
       }
       if (assessed.status === 'complete') {
         const state = await stateFor(current.id), evidenceRows = JSON.parse(assessed.evidence), assistedFallback = reviewProtocol === 'inception-timed-assist-v1';
         const opened = assistedFallback || assessed.verdict === 'recovered' && validInceptionDisclosure(JSON.parse(current.messages), evidenceRows.map(item => item.replyId));
         const assistForState = assistedFallback ? verifiedInceptionTimedAssist(JSON.parse(current.messages), Number(current.started_at), Number(JSON.parse(current.data).duration) * 1000) : null;
-        const next = { ...state, revision: state.revision + 1, safeOpened: opened, review: { status: 'complete', verdict: assessed.verdict, reason: assessed.reason, evidence: evidenceRows, ...(assistedFallback ? { completionOrigin: 'timed_assist', assisted: true, reviewerProtocol: reviewProtocol, assistedAt: assistForState?.at, assistElapsedMs: assistForState?.elapsedMs, ...(genuineJudgeFailure ? { genuineJudge: genuineJudgeFailure } : {}) } : {}) } };
+        const next = { ...state, revision: state.revision + 1, safeOpened: opened, review: { status: 'complete', verdict: assessed.verdict, reason: assessed.reason, evidence: evidenceRows, ...(assistedFallback ? { completionOrigin: 'timed_assist', assisted: true, reviewerProtocol: reviewProtocol, assistedAt: assistForState?.at, assistElapsedMs: assistForState?.elapsedMs, ...(genuineJudgeResult ? { genuineJudge: genuineJudgeResult } : {}) } : {}) } };
         const writes = await batch([
           ['UPDATE round_machine_reviews SET status=?,completed_at=?,verdict=?,reason=?,evidence=?,error_code=?,reviewer_protocol=? WHERE round_id=? AND run_id=? AND status=?', assessed.status, Date.now(), assessed.verdict, assessed.reason, assessed.evidence, assessed.errorCode, reviewProtocol, current.id, runId, 'pending'],
           ['UPDATE inception_sessions SET state=? WHERE round_id=? AND EXISTS (SELECT 1 FROM round_machine_reviews WHERE round_id=? AND run_id=? AND status=?)', JSON.stringify(next), current.id, current.id, runId, 'complete'],
