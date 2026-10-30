@@ -89,6 +89,7 @@ export function openStore(path) {
   const providerHealthColumns = new Set(db.prepare('PRAGMA table_info(inception_provider_health)').all().map(column => column.name));
   if (!providerHealthColumns.has('app_tokens_after_observation')) db.exec('ALTER TABLE inception_provider_health ADD COLUMN app_tokens_after_observation INTEGER NOT NULL DEFAULT 0');
   if (!providerHealthColumns.has('reserved_tokens')) db.exec('ALTER TABLE inception_provider_health ADD COLUMN reserved_tokens INTEGER NOT NULL DEFAULT 0');
+  if (!db.prepare('PRAGMA table_info(metrics_model_calls)').all().some(column => column.name === 'provider_slot')) db.exec('ALTER TABLE metrics_model_calls ADD COLUMN provider_slot TEXT');
   return {
     dialect: 'sqlite',
     db,

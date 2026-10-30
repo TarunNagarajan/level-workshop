@@ -19,8 +19,13 @@ export function createMetricsService({ store, enabled = false }) {
   const { get, all, run, batch } = store;
 
   async function recordCompletion(completion, input) {
-    const { metricsContext = {}, ...providerInput } = input;
-    if (!enabled) return completion(providerInput);
+    const { metricsContext = {}, beforeProviderCall, ...providerInput } = input;
+    const guardedInput = async () => {
+      if (typeof beforeProviderCall !== 'function') return providerInput;
+      const boundary = await beforeProviderCall(providerInput);
+      return Number.isInteger(boundary?.timeoutMs) ? { ...providerInput, timeoutMs: boundary.timeoutMs } : providerInput;
+    };
+    if (!enabled) return completion(await guardedInput());
     const config = providerInput.config || {};
     let body;
     try { body = config.providerId === 'google-gemini' ? buildGeminiCompletionBody(providerInput) : buildCompletionBody(providerInput); } catch { body = null; }
@@ -33,14 +38,15 @@ export function createMetricsService({ store, enabled = false }) {
       collection_id: metricsContext.collectionId || null, profile_id: metricsContext.profileId || null,
       source: safeSource(metricsContext.source), version_id: metricsContext.versionId || null,
     };
+    const providerSlot = metricsContext.source === 'inception-play' && ['groq', 'groq-secondary', 'google-gemini'].includes(config.providerId) ? config.providerId : null;
     try {
       const previous = await get("SELECT id FROM metrics_model_calls WHERE request_fingerprint = ? AND status IN ('failed','interrupted') AND started_at >= ? ORDER BY started_at DESC LIMIT 1", fingerprint, startedAt - 30 * 60 * 1000);
-      await run(`INSERT INTO metrics_model_calls (id, context_kind, round_id, orchestration_run_id, lane, actor_user_id, actor_role, collection_id, profile_id, source, version_id, started_at, requested_model, provider_host, status, request_fingerprint, retry_of_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?)`, callId, context.context_kind, context.round_id, context.orchestration_run_id, context.lane, context.actor_user_id, context.actor_role, context.collection_id, context.profile_id, context.source, context.version_id, startedAt, config.model || 'unknown', safeHost(config.baseUrl), fingerprint, previous?.id || null);
+      await run(`INSERT INTO metrics_model_calls (id, context_kind, round_id, orchestration_run_id, lane, actor_user_id, actor_role, collection_id, profile_id, source, version_id, started_at, requested_model, provider_host, provider_slot, status, request_fingerprint, retry_of_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?)`, callId, context.context_kind, context.round_id, context.orchestration_run_id, context.lane, context.actor_user_id, context.actor_role, context.collection_id, context.profile_id, context.source, context.version_id, startedAt, config.model || 'unknown', safeHost(config.baseUrl), providerSlot, fingerprint, previous?.id || null);
     } catch { /* Metrics must never prevent a provider call. */ }
     const perfStart = performance.now();
     try {
-      const result = await completion(providerInput);
+      const result = await completion(await guardedInput());
       const completedAt = now(), latencyMs = roundMs(performance.now() - perfStart), text = typeof result?.text === 'string' ? result.text : '';
       const usage = result?.usageDetails || {};
       try {
@@ -49,7 +55,9 @@ export function createMetricsService({ store, enabled = false }) {
       } catch { /* Best effort. */ }
       return { ...result, metricsCallId: callId };
     } catch (error) {
-      try { await run("UPDATE metrics_model_calls SET completed_at=?, latency_ms=?, status='failed', error_category=? WHERE id=? AND status='started'", now(), roundMs(performance.now() - perfStart), ERROR_MAP[error?.providerCode] || 'transport_or_provider', callId); } catch { /* Best effort. */ }
+      const status = error?.providerAttempted === false ? 'interrupted' : 'failed';
+      const category = error?.providerAttempted === false ? 'interrupted' : ERROR_MAP[error?.providerCode] || 'transport_or_provider';
+      try { await run("UPDATE metrics_model_calls SET completed_at=?, latency_ms=?, status=?, error_category=? WHERE id=? AND status='started'", now(), roundMs(performance.now() - perfStart), status, category, callId); } catch { /* Best effort. */ }
       throw error;
     }
   }
@@ -346,4 +354,4 @@ async function sessionDto(row,store){
   return {sessionId:row.id,createdAt:row.created_at,lastSeenAt:row.last_seen_at,closedAt:row.closed_at,userId:row.user_id,tabCount:Number(stats.tabs),pageCount:Number(stats.pages),events:Number(stats.events),activeMs:stats.active==null?null:Number(stats.active),visibleMs:stats.visible==null?null:Number(stats.visible),idleMs:stats.idle==null?null:Number(stats.idle),readThinkMs:stats.readThink==null?null:Number(stats.readThink),composeMs:stats.compose==null?null:Number(stats.compose),waitingMs:stats.waiting==null?null:Number(stats.waiting),routeUsage:routes.map(r=>({view:r.view,events:Number(r.events),activeMs:r.activeMs==null?null:Number(r.activeMs),visibleMs:r.visibleMs==null?null:Number(r.visibleMs)})),rounds:rounds.map(r=>({...r,hints:Number(r.hints),questions:Number(r.questions)})),coverage:{timedIntervals:Number(stats.timed),missingIntervals:Number(stats.missing)}};
 }
 
-function callDto(r){return {callId:r.id,context:{kind:r.context_kind,roundId:r.round_id,runId:r.orchestration_run_id,lane:r.lane,userId:r.actor_user_id,userRole:r.actor_role,collectionId:r.collection_id,profileId:r.profile_id,source:r.source,versionId:r.version_id},startedAt:r.started_at,completedAt:r.completed_at,latencyMs:r.latency_ms,requestedModel:r.requested_model,returnedModel:r.returned_model,providerHost:r.provider_host,status:r.status,errorCategory:r.error_category,tokens:{input:r.input_tokens,output:r.output_tokens,total:r.total_tokens},response:{chars:r.response_chars,words:r.response_words},retry:{inferred:Boolean(r.retry_of_id),retryOfId:r.retry_of_id},transcriptSaved:Boolean(r.transcript_saved)};}
+function callDto(r){return {callId:r.id,context:{kind:r.context_kind,roundId:r.round_id,runId:r.orchestration_run_id,lane:r.lane,userId:r.actor_user_id,userRole:r.actor_role,collectionId:r.collection_id,profileId:r.profile_id,source:r.source,versionId:r.version_id},startedAt:r.started_at,completedAt:r.completed_at,latencyMs:r.latency_ms,requestedModel:r.requested_model,returnedModel:r.returned_model,providerHost:r.provider_host,providerSlot:['groq','groq-secondary','google-gemini'].includes(r.provider_slot)?r.provider_slot:null,status:r.status,errorCategory:r.error_category,tokens:{input:r.input_tokens,output:r.output_tokens,total:r.total_tokens},response:{chars:r.response_chars,words:r.response_words},retry:{inferred:Boolean(r.retry_of_id),retryOfId:r.retry_of_id},transcriptSaved:Boolean(r.transcript_saved)};}

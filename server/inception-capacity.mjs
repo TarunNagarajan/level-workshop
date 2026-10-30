@@ -8,13 +8,14 @@ const APPLICATION_OPERATING_TARGET = 1_200_000;
 const DEFAULT_APP_DAILY_BUDGET = 200_000;
 const GOOGLE_ID = 'google-gemini';
 const GROQ_ID = 'groq';
+const SECONDARY_GROQ_ID = 'groq-secondary';
 
 const int = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const retry = (value, fallback = 60) => Number.isInteger(value) && value > 0 ? Math.min(value, 86_400) : fallback;
 const dateKey = at => new Date(at).toISOString().slice(0, 10);
 
-function applicationDailyBudget(env) {
-  const raw = env.INCEPTION_GROQ_DAILY_TOKEN_BUDGET;
+function applicationDailyBudget(env, secondary = false) {
+  const raw = secondary ? env.INCEPTION_GROQ_SECONDARY_DAILY_TOKEN_BUDGET : env.INCEPTION_GROQ_DAILY_TOKEN_BUDGET;
   if (raw === undefined || raw === '') return { value: DEFAULT_APP_DAILY_BUDGET, valid: true, source: 'default' };
   if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return { value: null, valid: false, source: 'environment' };
   const value = Number(raw);
@@ -37,8 +38,12 @@ function cooldownSeconds(providerId, error) {
 export function inceptionProviderCapacity({ store, primary, env = process.env, now = () => Date.now() }) {
   const { get, all, run } = store;
   const routingEnabled = env.INCEPTION_AUTO_PROVIDER === 'true';
-  const flagEnabled = routingEnabled && Boolean(primary.apiKey || env.GEMINI_API_KEY);
+  const secondary = env.GROQ_SECONDARY_API_KEY && env.GROQ_SECONDARY_API_KEY !== primary.apiKey
+    ? { apiKey: env.GROQ_SECONDARY_API_KEY, model: primary.model, baseUrl: 'https://api.groq.com/openai/v1', reasoningEffort: primary.reasoningEffort || 'low', providerId: SECONDARY_GROQ_ID }
+    : null;
+  const flagEnabled = routingEnabled && Boolean(primary.apiKey || secondary || env.GEMINI_API_KEY);
   const appBudget = applicationDailyBudget(env);
+  const secondaryBudget = applicationDailyBudget(env, true);
 
   async function observe(providerId, { usage = null, error = null, at = now() } = {}) {
     const code = error?.providerCode || null;
@@ -90,20 +95,20 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
     for (const item of expired) await releaseReservation(item.reservation_id);
   }
 
-  async function reservePrimary(at) {
+  async function reserveSlot(providerId, budget, at, roundId = null) {
     const day = dateKey(at);
     const reservationId = randomUUID();
     const expiresAt = at + RESERVATION_TTL;
     if (store.dialect === 'sqlite') {
       return store.transaction(() => {
-        run(`INSERT INTO inception_provider_health (provider_id,observed_at) VALUES (?,?) ON CONFLICT(provider_id) DO NOTHING`, GROQ_ID, at);
-        run('INSERT INTO inception_provider_reservations (reservation_id,provider_id,tokens,created_at,expires_at) VALUES (?,?,?,?,?)', reservationId, GROQ_ID, RESERVE, at, expiresAt);
+        run(`INSERT INTO inception_provider_health (provider_id,observed_at) VALUES (?,?) ON CONFLICT(provider_id) DO NOTHING`, providerId, at);
+        run('INSERT INTO inception_provider_reservations (reservation_id,provider_id,tokens,created_at,expires_at,round_id) VALUES (?,?,?,?,?,?)', reservationId, providerId, RESERVE, at, expiresAt, roundId);
         const claimed = run(`UPDATE inception_provider_health SET reserved_tokens=reserved_tokens+?
           WHERE provider_id=? AND (blocked_until IS NULL OR blocked_until<=?)
           AND (CASE WHEN app_usage_day=? THEN app_tokens_today ELSE 0 END)+reserved_tokens+?<=?
           AND (daily_observed_at IS NULL OR daily_observed_at<? OR daily_observed_at>?
             OR daily_limit-daily_used-app_tokens_after_observation-reserved_tokens>=?)`,
-          RESERVE, GROQ_ID, at, day, RESERVE, appBudget.value,
+          RESERVE, providerId, at, day, RESERVE, budget.value,
           at - QUOTA_FRESH_MS, at, RESERVE);
         if (!claimed.changes) {
           run('DELETE FROM inception_provider_reservations WHERE reservation_id=?', reservationId);
@@ -112,44 +117,50 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
         return reservationId;
       });
     }
-    await run('INSERT INTO inception_provider_health (provider_id,observed_at) VALUES (?,?) ON CONFLICT(provider_id) DO NOTHING', GROQ_ID, at);
+    await run('INSERT INTO inception_provider_health (provider_id,observed_at) VALUES (?,?) ON CONFLICT(provider_id) DO NOTHING', providerId, at);
     const claimed = await all(`WITH reserved AS (
         UPDATE inception_provider_health SET reserved_tokens=reserved_tokens+?
         WHERE provider_id=? AND (blocked_until IS NULL OR blocked_until<=?)
           AND (CASE WHEN app_usage_day=? THEN app_tokens_today ELSE 0 END)+reserved_tokens+?<=?
           AND (daily_observed_at IS NULL OR daily_observed_at<? OR daily_observed_at>?
             OR daily_limit-daily_used-app_tokens_after_observation-reserved_tokens>=?)
-        RETURNING provider_id
-      ) INSERT INTO inception_provider_reservations (reservation_id,provider_id,tokens,created_at,expires_at)
-        SELECT ?,?,?,?,? FROM reserved RETURNING reservation_id`, RESERVE, GROQ_ID, at, day, RESERVE, appBudget.value,
-      at - QUOTA_FRESH_MS, at, RESERVE, reservationId, GROQ_ID, RESERVE, at, expiresAt);
+      RETURNING provider_id
+      ) INSERT INTO inception_provider_reservations (reservation_id,provider_id,tokens,created_at,expires_at,round_id)
+      SELECT ?,?,?,?,?,? FROM reserved RETURNING reservation_id`, RESERVE, providerId, at, day, RESERVE, budget.value,
+      at - QUOTA_FRESH_MS, at, RESERVE, reservationId, providerId, RESERVE, at, expiresAt, roundId);
     return claimed[0]?.reservation_id || null;
   }
 
   async function selectForStart() {
     if (!routingEnabled) return { config: { model: primary.model, baseUrl: primary.baseUrl, reasoningEffort: primary.reasoningEffort || 'low', providerId: GROQ_ID }, reason: 'feature_disabled', checkedAt: now(), reservationId: null };
     const at = now();
-    if (!appBudget.valid) throw Object.assign(new Error('The Inception provider budget configuration is invalid.'), { status: 503, providerCode: 'provider_configuration_changed' });
+    if (!appBudget.valid || (secondary && !secondaryBudget.valid)) throw Object.assign(new Error('The Inception provider budget configuration is invalid.'), { status: 503, providerCode: 'provider_configuration_changed' });
     await releaseExpiredReservations(at);
-    const row = await get('SELECT * FROM inception_provider_health WHERE provider_id=?', GROQ_ID);
-    const fresh = Boolean(row?.daily_observed_at && at - Number(row.daily_observed_at) <= QUOTA_FRESH_MS && at >= Number(row.daily_observed_at) && row.daily_limit != null && row.daily_used != null);
-    const providerRemaining = fresh ? Math.max(0, Number(row.daily_limit) - Number(row.daily_used)) : null;
-    const groqBlocked = Number(row?.blocked_until || 0) > at;
-    const appUsedToday = row?.app_usage_day === dateKey(at) ? Number(row.app_tokens_today || 0) : 0;
-    const appReserved = Number(row?.reserved_tokens || 0);
-    const appAvailable = Math.max(0, appBudget.value - appUsedToday - appReserved);
-    let reservationId = null;
-    if (primary.apiKey && !groqBlocked && appAvailable >= RESERVE) reservationId = await reservePrimary(at);
-    const useGoogle = !reservationId;
-    const reason = !primary.apiKey ? 'primary_credentials_unavailable'
-      : groqBlocked ? 'primary_cooldown'
-      : appAvailable < RESERVE ? 'primary_application_budget_low'
-      : fresh && providerRemaining - Number(row.app_tokens_after_observation || 0) - Number(row.reserved_tokens || 0) < RESERVE ? 'primary_daily_low'
-      : 'primary_reservation_unavailable'; // Another start or a newer health update claimed the available allowance.
-    if (useGoogle) {
+    let reason = 'primary_credentials_unavailable';
+    for (const slot of [{ id: GROQ_ID, config: { model: primary.model, baseUrl: primary.baseUrl, apiKey: primary.apiKey, reasoningEffort: primary.reasoningEffort || 'low', providerId: GROQ_ID }, budget: appBudget }, ...(secondary ? [{ id: SECONDARY_GROQ_ID, config: secondary, budget: secondaryBudget }] : [])]) {
+      const row = await get('SELECT * FROM inception_provider_health WHERE provider_id=?', slot.id);
+      const fresh = Boolean(row?.daily_observed_at && at - Number(row.daily_observed_at) <= QUOTA_FRESH_MS && at >= Number(row.daily_observed_at) && row.daily_limit != null && row.daily_used != null);
+      const remaining = fresh ? Math.max(0, Number(row.daily_limit) - Number(row.daily_used)) : null;
+      const blocked = Number(row?.blocked_until || 0) > at;
+      const used = row?.app_usage_day === dateKey(at) ? Number(row.app_tokens_today || 0) : 0;
+      const reserved = Number(row?.reserved_tokens || 0);
+      const available = Math.max(0, slot.budget.value - used - reserved);
+      if (!slot.config.apiKey) { reason = slot.id === GROQ_ID ? 'primary_credentials_unavailable' : 'secondary_credentials_unavailable'; continue; }
+      if (blocked) { reason = slot.id === GROQ_ID ? 'primary_cooldown' : 'secondary_cooldown'; continue; }
+      if (available < RESERVE) { reason = `${slot.id === GROQ_ID ? 'primary' : 'secondary'}_application_budget_low`; continue; }
+      if (fresh && remaining - Number(row.app_tokens_after_observation || 0) - reserved < RESERVE) { reason = `${slot.id === GROQ_ID ? 'primary' : 'secondary'}_daily_low`; continue; }
+      const reservationId = await reserveSlot(slot.id, slot.budget, at);
+      if (reservationId) {
+        const { apiKey, ...safeConfig } = slot.config;
+        return { config: { ...safeConfig, capacityReservationId: reservationId }, reason: slot.id === GROQ_ID ? (fresh ? 'primary_daily_available' : 'primary_daily_unknown') : (fresh ? 'secondary_daily_available' : 'secondary_daily_unknown'), checkedAt: at, reservationId };
+      }
+      reason = `${slot.id === GROQ_ID ? 'primary' : 'secondary'}_reservation_unavailable`;
+    }
+    {
       const fallbackHealth = await get('SELECT blocked_until FROM inception_provider_health WHERE provider_id=?', GOOGLE_ID);
       if (!env.GEMINI_API_KEY) {
-        const blockedUntil = Math.max(Number(row?.blocked_until || 0), Number(fallbackHealth?.blocked_until || 0));
+        const health = await all('SELECT blocked_until FROM inception_provider_health WHERE provider_id IN (?,?)', GROQ_ID, SECONDARY_GROQ_ID);
+        const blockedUntil = Math.max(Number(fallbackHealth?.blocked_until || 0), ...health.map(item => Number(item.blocked_until || 0)));
         throw Object.assign(new Error('No Inception model is currently available. Please try again later.'), {
           status: blockedUntil > at ? 429 : 503,
           providerCode: blockedUntil > at ? 'rate_limited' : 'provider_unavailable',
@@ -165,7 +176,6 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
       }
       return { config: { model: GEMINI_MODEL, baseUrl: GEMINI_BASE_URL, providerId: GOOGLE_ID, reasoningEffort: 'low' }, reason, checkedAt: at, reservationId: null };
     }
-    return { config: { model: primary.model, baseUrl: primary.baseUrl, providerId: GROQ_ID, reasoningEffort: primary.reasoningEffort || 'low', capacityReservationId: reservationId }, reason: fresh ? 'primary_daily_available' : 'primary_daily_unknown', checkedAt: at, reservationId };
   }
 
   async function attachReservation(reservationId, roundId) {
@@ -175,8 +185,8 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
   }
 
   async function releaseRoundReservation(roundId) {
-    const reservation = await get('SELECT reservation_id FROM inception_provider_reservations WHERE round_id=?', roundId);
-    if (reservation) return releaseReservation(reservation.reservation_id);
+    const reservations = await all('SELECT reservation_id FROM inception_provider_reservations WHERE round_id=?', roundId);
+    for (const reservation of reservations) await releaseReservation(reservation.reservation_id);
     // The frozen round config is written with the round before the reservation is attached.
     // This fallback makes cleanup/review robust if the attach write itself failed.
     const round = await get('SELECT config FROM rounds WHERE id=?', roundId);
@@ -195,6 +205,10 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
       if (config.baseUrl !== primary.baseUrl || config.model !== primary.model || !primary.apiKey) throw Object.assign(new Error('The saved Inception model connection is unavailable.'), { status: 503, providerCode: 'provider_configuration_changed' });
       return { model: primary.model, baseUrl: primary.baseUrl, apiKey: primary.apiKey, reasoningEffort: primary.reasoningEffort || 'low', providerId: GROQ_ID };
     }
+    if (config.providerId === SECONDARY_GROQ_ID) {
+      if (!secondary || config.baseUrl !== 'https://api.groq.com/openai/v1' || config.model !== secondary.model) throw Object.assign(new Error('The saved Inception model connection is unavailable.'), { status: 503, providerCode: 'provider_configuration_changed' });
+      return { ...secondary };
+    }
     // Legacy Inception rounds only remain routable to the configured primary Groq host.
     if (!config.providerId && config.baseUrl === primary.baseUrl && config.model === primary.model && primary.apiKey) return { ...config, apiKey: primary.apiKey, providerId: GROQ_ID };
     throw Object.assign(new Error('The saved Inception model connection no longer matches its trusted server configuration.'), { status: 503, providerCode: 'provider_configuration_changed' });
@@ -208,21 +222,52 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
     const row = await get('SELECT blocked_until FROM inception_provider_health WHERE provider_id=?', providerId);
     return Math.max(0, Math.ceil((Number(row?.blocked_until || 0) - now()) / 1000));
   }
-  async function fallbackForOngoing() {
-    if (!flagEnabled || !env.GEMINI_API_KEY || await activeCooldown(GOOGLE_ID)) return null;
-    return { providerId: GOOGLE_ID, model: GEMINI_MODEL, baseUrl: GEMINI_BASE_URL, apiKey: env.GEMINI_API_KEY, reasoningEffort: 'low' };
+  async function fallbackForOngoing(currentId, roundId) {
+    if (!flagEnabled) return null;
+    const order = [GROQ_ID, SECONDARY_GROQ_ID, GOOGLE_ID];
+    const start = order.indexOf(currentId);
+    if (start < 0) return null;
+    for (const id of order.slice(start + 1)) {
+      if (await activeCooldown(id)) continue;
+      if (id === SECONDARY_GROQ_ID && secondary) {
+        if (!secondaryBudget.valid) return null;
+        const reservationId = await reserveSlot(id, secondaryBudget, now(), roundId);
+        if (!reservationId) continue;
+        return { ...secondary, capacityReservationId: reservationId };
+      }
+      if (id === GOOGLE_ID && env.GEMINI_API_KEY) return { providerId: GOOGLE_ID, model: GEMINI_MODEL, baseUrl: GEMINI_BASE_URL, apiKey: env.GEMINI_API_KEY, reasoningEffort: 'low' };
+    }
+    return null;
+  }
+
+  async function releaseStaleSlotReservation(roundId, providerId) {
+    const reservation = await get('SELECT reservation_id FROM inception_provider_reservations WHERE round_id=? AND provider_id=?', roundId, providerId);
+    if (reservation) await releaseReservation(reservation.reservation_id);
+  }
+
+  async function reconcileRoundReservations(roundId, providerId, activeReservationId = null) {
+    const reservations = await all('SELECT reservation_id,provider_id FROM inception_provider_reservations WHERE round_id=?', roundId);
+    for (const reservation of reservations) if (reservation.provider_id !== providerId || reservation.reservation_id !== activeReservationId) await releaseReservation(reservation.reservation_id);
   }
 
   async function status() {
     await releaseExpiredReservations();
-    const list = await all('SELECT provider_id, observed_at, last_success_at, blocked_until, last_error_code, daily_limit, daily_used, daily_observed_at, app_tokens_today, app_usage_day, failed_calls_today, failed_calls_day, app_tokens_after_observation, reserved_tokens FROM inception_provider_health WHERE provider_id IN (?,?)', GROQ_ID, GOOGLE_ID);
+    const list = await all('SELECT provider_id, observed_at, last_success_at, blocked_until, last_error_code, daily_limit, daily_used, daily_observed_at, app_tokens_today, app_usage_day, failed_calls_today, failed_calls_day, app_tokens_after_observation, reserved_tokens FROM inception_provider_health WHERE provider_id IN (?,?,?)', GROQ_ID, SECONDARY_GROQ_ID, GOOGLE_ID);
     const at = now(), today = dateKey(at);
     const groq = list.find(row => row.provider_id === GROQ_ID);
     const applicationTokensToday = groq?.app_usage_day === today ? Number(groq.app_tokens_today || 0) : 0;
     const activeReservedTokens = Number(groq?.reserved_tokens || 0);
+    const configuredBudgets = [primary.apiKey ? appBudget : null, secondary ? secondaryBudget : null].filter(item => item?.valid).map(item => item.value);
+    const expectedBudgetCount = Number(Boolean(primary.apiKey)) + Number(Boolean(secondary));
+    const planningBudget = configuredBudgets.reduce((sum, value) => sum + value, 0);
+    const plannedUsage = [GROQ_ID, SECONDARY_GROQ_ID].reduce((sum, id) => {
+      const item = list.find(row => row.provider_id === id);
+      return sum + (item?.app_usage_day === today ? Number(item.app_tokens_today || 0) : 0);
+    }, 0);
+    const plannedReservations = [GROQ_ID, SECONDARY_GROQ_ID].reduce((sum, id) => sum + Number(list.find(row => row.provider_id === id)?.reserved_tokens || 0), 0);
     return {
       featureEnabled: flagEnabled,
-      selectionPolicy: { primary: GROQ_ID, fallback: GOOGLE_ID, providerOrder: [GROQ_ID, GOOGLE_ID], reserveTokens: RESERVE, quotaObservationFreshMs: QUOTA_FRESH_MS, unknownPrimaryHeadroomSelects: GROQ_ID },
+      selectionPolicy: { primary: GROQ_ID, fallback: GOOGLE_ID, providerOrder: routingEnabled ? [GROQ_ID, SECONDARY_GROQ_ID, GOOGLE_ID].filter(id => id !== SECONDARY_GROQ_ID || Boolean(secondary)) : [GROQ_ID], reserveTokens: RESERVE, quotaObservationFreshMs: QUOTA_FRESH_MS, unknownPrimaryHeadroomSelects: GROQ_ID },
       applicationDailyBudget: {
         tokens: appBudget.value,
         source: appBudget.source,
@@ -234,7 +279,8 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
         capacityMeaning: 'application_planning_cap_not_provider_entitlement',
       },
       applicationOperatingTargetTokensPerDay: APPLICATION_OPERATING_TARGET,
-      providers: Object.fromEntries([GROQ_ID, GOOGLE_ID].map(id => {
+      applicationPlanningCapacity: { tokens: configuredBudgets.length === expectedBudgetCount ? planningBudget : null, usageToday: plannedUsage, activeReservedTokens: plannedReservations, availableTokens: configuredBudgets.length === expectedBudgetCount ? Math.max(0, planningBudget - plannedUsage - plannedReservations) : null, meaning: 'sum_of_independent_application_planning_caps_not_provider_entitlement' },
+      providers: Object.fromEntries([GROQ_ID, SECONDARY_GROQ_ID, GOOGLE_ID].map(id => {
         const item = list.find(row => row.provider_id === id);
         const quotaAge = item?.daily_observed_at == null ? null : Math.max(0, at - Number(item.daily_observed_at));
         const dailyFresh = quotaAge !== null && quotaAge <= QUOTA_FRESH_MS && at >= Number(item.daily_observed_at) && item.daily_limit != null && item.daily_used != null;
@@ -242,9 +288,10 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
         const appAfter = dailyFresh ? Number(item.app_tokens_after_observation || 0) : null;
         const reserved = Number(item?.reserved_tokens || 0);
         return [id, {
-          configured: id === GROQ_ID ? Boolean(primary.apiKey) : Boolean(env.GEMINI_API_KEY),
-          model: id === GROQ_ID ? primary.model : GEMINI_MODEL,
-          host: id === GROQ_ID ? new URL(primary.baseUrl).hostname : 'generativelanguage.googleapis.com',
+          configured: id === GROQ_ID ? Boolean(primary.apiKey) : id === SECONDARY_GROQ_ID ? Boolean(secondary) : Boolean(env.GEMINI_API_KEY),
+          model: id === GROQ_ID ? primary.model : id === SECONDARY_GROQ_ID ? secondary?.model || primary.model : GEMINI_MODEL,
+          host: id === GROQ_ID ? new URL(primary.baseUrl).hostname : id === SECONDARY_GROQ_ID ? 'api.groq.com' : 'generativelanguage.googleapis.com',
+          applicationDailyBudget: id === GROQ_ID ? appBudget.value : id === SECONDARY_GROQ_ID ? (secondary ? secondaryBudget.value : null) : null,
           observedAt: item?.observed_at ?? null,
           observationAgeMs: item?.observed_at == null ? null : Math.max(0, at - Number(item.observed_at)),
           lastSuccessAt: item?.last_success_at ?? null,
@@ -266,7 +313,8 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
     };
   }
 
-  return { enabled: flagEnabled, observe, selectForStart, credentialsForFrozen, attachReservation, releaseReservation, releaseRoundReservation, activeCooldown, cooldownRemaining, fallbackForOngoing, status };
+  return { enabled: flagEnabled, observe, selectForStart, credentialsForFrozen, attachReservation, releaseReservation, releaseRoundReservation, releaseStaleSlotReservation, reconcileRoundReservations, activeCooldown, cooldownRemaining, fallbackForOngoing, status };
 }
 
 export const INCEPTION_GOOGLE_ID = GOOGLE_ID;
+export const INCEPTION_SECONDARY_GROQ_ID = SECONDARY_GROQ_ID;

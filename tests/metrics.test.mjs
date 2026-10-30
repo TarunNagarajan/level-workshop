@@ -93,6 +93,9 @@ for (const adapter of ['sqlite','pglite']) test(`${adapter}: workshop completion
     assert.equal(retriedCall.output_tokens,3);
     assert.equal(retriedCall.total_tokens,7);
     assert.equal(retriedCall.transcript_saved,1);
+    await fixture.store.run("UPDATE metrics_model_calls SET provider_slot='groq-secondary' WHERE id=?", retriedCall.id);
+    const slotCallPage=await fixture.request(`/metrics/calls?from=${Date.now()-60000}`,{cookie:ownerCookie});
+    assert.equal(slotCallPage.body.items.find(item=>item.callId===retriedCall.id).providerSlot,'groq-secondary');
     assert.ok(!JSON.stringify(await fixture.store.all('SELECT * FROM metrics_model_calls WHERE round_id=?',started.body.id)).includes('Retry this question'));
     const calls=await fixture.request(`/metrics/calls?from=${Date.now()-60000}`,{cookie:ownerCookie});
     assert.equal(calls.status,200);

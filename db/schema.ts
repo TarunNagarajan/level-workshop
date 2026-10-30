@@ -353,6 +353,7 @@ export const metrics_model_calls = sqliteTable('metrics_model_calls', {
   requested_model: text('requested_model').notNull(),
   returned_model: text('returned_model'),
   provider_host: text('provider_host'),
+  provider_slot: text('provider_slot'),
   status: text('status').notNull(),
   error_category: text('error_category'),
   input_tokens: integer('input_tokens'),
