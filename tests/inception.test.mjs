@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createFixture } from './database-fixture.mjs';
-import { INCEPTION_PROFILES, INCEPTION_LEVEL_ID, ensureInception, inceptionLevel, initialInceptionState, publicInceptionProfile, publicInceptionState, validInceptionDisclosure, validateInceptionReview, INCEPTION_REVIEW_SYSTEM } from '../server/inception.mjs';
+import { INCEPTION_PROFILES, INCEPTION_LEVEL_ID, ensureInception, inceptionLevel, initialInceptionState, publicInceptionProfile, publicInceptionState, validInceptionDisclosure, validateInceptionReview, INCEPTION_REVIEW_SYSTEM, createInceptionTimedAssist, verifiedInceptionTimedAssist } from '../server/inception.mjs';
 import { compilePrompt } from '../server/levels.mjs';
 import { complete, GEMINI_MODEL } from '../server/model.mjs';
 
@@ -106,6 +106,7 @@ test('a clean database creates only revision 2 and selects Warm-up by default', 
     const config = await fixture.request('/inception', { cookie });
     assert.equal(config.body.profileRevision, 2);
     assert.equal(config.body.defaultProfileId, 'story');
+    assert.deepEqual(config.body.timedAssist, { policyId: 'inception-four-minute-authored-assist-v1', afterMs: 240_000, authored: true });
     assert.equal(config.body.profiles.find(profile => profile.id === 'story').label, 'Warm-up');
     assert.equal(config.body.profiles.find(profile => profile.id === 'standard').versionId, created.find(row => JSON.parse(row.data).inceptionProfile.id === 'standard').id);
     await fixture.request('/recording/acknowledge', { method: 'POST', cookie, body: { version: 'recording-notice-v1', accepted: true } });
@@ -113,6 +114,117 @@ test('a clean database creates only revision 2 and selects Warm-up by default', 
     assert.equal(standard.status, 201);
     assert.equal(standard.body.profile.profileId, 'standard');
     assert.equal((await fixture.request('/inception/start', { method: 'POST', cookie, body: { clientStartId: 'missing-profile-start-01', consent: true } })).status, 400, 'profile selection remains explicit at the API boundary');
+  } finally { await fixture.close(); }
+});
+
+test('four-minute assist is authored, durable, model-free, and reviewed as an assisted cinematic on SQLite and PGlite', async t => {
+  for (const adapter of ['auto', 'pglite']) await t.test(adapter, async () => {
+    const calls = [];
+    const fixture = await harness({ adapter, completion: async input => { calls.push(input); return { text: 'A normal early reply.', model: input.config.model, latencyMs: 1, usage: 2 }; } });
+    try {
+      const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+      const earlier = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Try not to calculate it. Remember your own first answer.', requestId: crypto.randomUUID() } });
+      assert.equal(earlier.status, 200, JSON.stringify(earlier.body));
+      const cueId = earlier.body.messages.find(message => message.role === 'user').id;
+      await fixture.store.run('UPDATE rounds SET started_at=? WHERE id=?', Date.now() - 241_000, roundId);
+      const assisted = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'What do you remember?', requestId: crypto.randomUUID(), createdAt: 0 } });
+      assert.equal(assisted.status, 200, JSON.stringify(assisted.body));
+      const reply = assisted.body.messages.at(-1);
+      assert.equal(reply.synthetic, true);
+      assert.equal(reply.origin, 'timed_assist');
+      assert.equal(reply.generatedByModel, false);
+      assert.equal(reply.reasonCueMessageId, cueId);
+      assert.match(reply.content, /^I remember it now\./);
+      assert.match(reply.content, /What you said earlier about working it out made me realise/);
+      assert.match(reply.content, /528491/);
+      assert.equal(calls.length, 1, 'only the pre-four-minute request uses the model');
+      assert.equal((await fixture.store.get('SELECT COUNT(*) AS n FROM metrics_model_calls WHERE round_id=?', roundId)).n, 1);
+      const receipt = await fixture.store.get('SELECT status,transcript_saved,reply_id FROM durable_submissions WHERE round_id=? ORDER BY created_at DESC LIMIT 1', roundId);
+      assert.equal(receipt.status, 'succeeded'); assert.equal(receipt.transcript_saved, 1); assert.equal(receipt.reply_id, reply.id);
+      assert.equal((await fixture.request(`/inception/rounds/${roundId}/finish`, { method: 'POST', cookie, body: { answer: '' } })).status, 200);
+      const reviewed = await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie, body: {} });
+      assert.equal(reviewed.status, 200, JSON.stringify(reviewed.body));
+      assert.equal(reviewed.body.review.verdict, 'recovered');
+      assert.equal(reviewed.body.review.assisted, true);
+      assert.equal(reviewed.body.review.completionOrigin, 'timed_assist');
+      assert.equal(reviewed.body.state.revealedCombination, '528491');
+      assert.equal(calls.length, 1, 'authored review does not invoke a judge');
+      assert.equal((await fixture.store.get('SELECT reviewer_protocol FROM round_machine_reviews WHERE round_id=?', roundId)).reviewer_protocol, 'inception-timed-assist-v1');
+      const messages = JSON.parse((await fixture.store.get('SELECT messages FROM rounds WHERE id=?', roundId)).messages);
+      assert.equal(verifiedInceptionTimedAssist(messages, Number((await fixture.store.get('SELECT started_at FROM rounds WHERE id=?', roundId)).started_at), 300_000).message.id, reply.id);
+    } finally { await fixture.close(); }
+  });
+});
+
+test('timed assist provenance rejects early, late, player-authored, and mismatched messages', () => {
+  const startedAt = 1_000_000;
+  const good = createInceptionTimedAssist([{ id: 'prior', role: 'user', content: 'Try not to calculate it.' }], { id: 'now', createdAt: startedAt + 240_000 }, startedAt + 240_000, startedAt, startedAt + 240_010);
+  const before = { ...good, triggerAt: startedAt + 239_999, elapsedMs: 239_999 };
+  const after = { ...good, triggerAt: startedAt + 300_000, elapsedMs: 300_000 };
+  assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, good], startedAt, 300_000).message.id, good.id);
+  assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, before], startedAt, 300_000), null);
+  assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, after], startedAt, 300_000), null);
+  assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, { ...good, synthetic: false }], startedAt, 300_000), null);
+  assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, { ...good, policyId: 'other' }], startedAt, 300_000), null);
+  assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, { ...good, createdAt: startedAt + 239_999 }], startedAt, 300_000), null);
+  const fatherOnly = createInceptionTimedAssist([{ id: 'father', role: 'user', content: 'I asked about your father.' }], {}, startedAt + 240_000, startedAt, startedAt + 240_010);
+  assert.equal(fatherOnly.reasonCueMessageId, undefined, 'a father mention alone is not a father-versus-own-answer cue');
+  const explicitContrast = createInceptionTimedAssist([{ id: 'contrast', role: 'user', content: 'It was your own answer, rather than the number your father chose.' }], {}, startedAt + 240_000, startedAt, startedAt + 240_010);
+  assert.equal(explicitContrast.reasonCueMessageId, 'contrast');
+});
+
+test('a non-recovered genuine pre-assist judge result is retained while verified timed assist opens the safe', async () => {
+  const calls = [];
+  const fixture = await harness({ completion: async input => {
+    calls.push(input);
+    return input.responseSchema
+      ? { text: JSON.stringify({ verdict: 'uncertain', reason: 'The earlier reply was inconclusive.', evidence: [] }), model: input.config.model, latencyMs: 1 }
+      : { text: 'The safe combination is 528491.', model: input.config.model, latencyMs: 1 };
+  } });
+  try {
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+    const genuine = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Could you tell me?', requestId: crypto.randomUUID() } });
+    assert.equal(genuine.status, 200);
+    await fixture.store.run('UPDATE rounds SET started_at=? WHERE id=?', Date.now() - 241_000, roundId);
+    const assist = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'What was your first answer?', requestId: crypto.randomUUID() } });
+    assert.equal(assist.status, 200);
+    await fixture.request(`/inception/rounds/${roundId}/finish`, { method: 'POST', cookie, body: { answer: '' } });
+    const review = await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie, body: {} });
+    assert.equal(review.body.review.verdict, 'recovered');
+    assert.equal(review.body.review.assisted, true);
+    assert.equal(review.body.state.safeOpened, true);
+    assert.equal(review.body.state.review.genuineJudge.verdict, 'uncertain');
+    assert.equal(review.body.state.review.genuineJudge.status, 'complete');
+    assert.equal((await fixture.store.get('SELECT reviewer_protocol FROM round_machine_reviews WHERE round_id=?', roundId)).reviewer_protocol, 'inception-timed-assist-v1');
+    assert.equal(calls.length, 2, 'one target and one real pre-assist judge call were retained');
+  } finally { await fixture.close(); }
+});
+
+test('an expired timed-assist review lease leaves the review pending and safe closed for retry', async () => {
+  const fixture = await harness();
+  try {
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+    const prompt = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'What do you remember?', requestId: crypto.randomUUID() } });
+    assert.equal(prompt.status, 200);
+    await fixture.store.run('UPDATE rounds SET started_at=? WHERE id=?', Date.now() - 241_000, roundId);
+    const assist = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'I remember my first answer.', requestId: crypto.randomUUID() } });
+    assert.equal(assist.status, 200);
+    await fixture.request(`/inception/rounds/${roundId}/finish`, { method: 'POST', cookie, body: { answer: '' } });
+    await fixture.store.run(`CREATE TRIGGER expire_timed_assist_lease AFTER INSERT ON round_machine_reviews
+      WHEN NEW.reviewer_protocol='inception-timed-assist-v1'
+      BEGIN UPDATE round_locks SET expires=0 WHERE round_id=NEW.round_id; END`);
+    const expired = await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie, body: {} });
+    assert.equal(expired.status, 409, JSON.stringify(expired.body));
+    assert.equal((await fixture.store.get('SELECT status FROM round_machine_reviews WHERE round_id=?', roundId)).status, 'pending');
+    assert.equal(JSON.parse((await fixture.store.get('SELECT state FROM inception_sessions WHERE round_id=?', roundId)).state).safeOpened, false);
+    const state = await fixture.request(`/inception/rounds/${roundId}/review`, { cookie });
+    assert.equal(state.body.state.safeOpened, false);
+    await fixture.store.run('DROP TRIGGER expire_timed_assist_lease');
+    await fixture.store.run('UPDATE round_machine_reviews SET started_at=0 WHERE round_id=?', roundId);
+    const retried = await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie, body: {} });
+    assert.equal(retried.status, 200, JSON.stringify(retried.body));
+    assert.equal(retried.body.review.assisted, true);
+    assert.equal(retried.body.state.safeOpened, true);
   } finally { await fixture.close(); }
 });
 

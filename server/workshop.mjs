@@ -13,7 +13,7 @@ import { createSubmissionJournal, RECORDING_NOTICE_VERSION } from './durable-sub
 import { MACHINE_REVIEW_SYSTEM, MACHINE_REVIEW_PROTOCOL_VERSION, makeReviewPrompt, publicMachineReview, validateMachineReview } from './machine-review.mjs';
 import { RIDDLE_DIARY_LEVEL_ID, RIDDLE_DIARY_SCENARIO_ID, addRiddleDiaryRoutes, diaryPromptContext, isRiddleDiaryData, publicDiaryProfile } from './riddle-diary.mjs';
 import { addMissionArchiveRoutes, isMissionRound } from './mission-archive.mjs';
-import { INCEPTION_ORGANIZER_RECORDING_POLICY, INCEPTION_SCENARIO_ID, addInceptionRoutes, inceptionPromptContext, isInceptionData, publicInceptionProfile } from './inception.mjs';
+import { INCEPTION_ORGANIZER_RECORDING_POLICY, INCEPTION_SCENARIO_ID, addInceptionRoutes, createInceptionTimedAssist, inceptionPromptContext, isInceptionData, publicInceptionProfile } from './inception.mjs';
 import { inceptionProviderCapacity } from './inception-capacity.mjs';
 import { addStatisticsRoutes } from './statistics.mjs';
 const scrypt = promisify(scryptCallback);
@@ -806,7 +806,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (!(await journal.claim(entry.id)).changes) fail(409, 'This request was already received and will not be sent twice.');
         const config = JSON.parse(row.config);
         const collectionSystem = await collectionModels.systemForRound(row);
-        const inceptionConfig = inceptionMode ? inceptionCapacity.credentialsForFrozen(config) : null;
+        let inceptionConfig = null;
         if (!inceptionMode && !collectionSystem && config.baseUrl !== provider.baseUrl)
             fail(409, 'The provider changed since this test started. Start a fresh test.');
             const playerMessage = { id: id(), role: 'user', content, createdAt: Date.now() };
@@ -830,6 +830,22 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
               playerMessage.verifiedContext = verifiedContext;
               await journal.updateContext(entry.id, verifiedContext, []);
             }
+            const requestReceivedAt = Number(entry.created_at) || Date.now();
+            const responseAt = Date.now();
+            const roundElapsed = requestReceivedAt - Number(row.started_at);
+            const roundDuration = Number(data.duration) * 1000;
+            if (inceptionMode && roundElapsed >= 240_000 && roundElapsed < roundDuration) {
+              playerMessage.createdAt = requestReceivedAt;
+              const authored = createInceptionTimedAssist(messages, playerMessage, requestReceivedAt, Number(row.started_at), responseAt);
+              await journal.succeed(entry.id, { reply: authored.content, replyId: authored.id });
+              const next = [...messages, playerMessage, authored];
+              const saved = await collectionModels.finish({ row, lease, messages: next, callId: null, result: null });
+              if (!saved) { const error = Object.assign(new Error('This reply was received, but the conversation could not be updated. Check the saved message receipt.'), { status: 409, submissionId: entry.id }); throw error; }
+              await journal.markTranscriptSaved(entry.id);
+              res.json({ ...publicRound(await get('SELECT * FROM rounds WHERE id = ?', row.id)), submissionId: entry.id });
+              return;
+            }
+            if (inceptionMode) inceptionConfig = inceptionCapacity.credentialsForFrozen(config);
             const system = `${collectionSystem || compilePrompt(data)}${verifiedContext ? `\n\n${verifiedContext}` : ''}`;
             let requested;
             try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user || (inceptionMode ? req.inceptionEntry?.actor : undefined), profileId: diaryProfileId || inceptionProfileId, configOverride: inceptionConfig, roundLockToken: inceptionMode ? lease : null }); }

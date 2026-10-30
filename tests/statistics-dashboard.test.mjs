@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { createFixture } from './database-fixture.mjs';
-import { ensureInception } from '../server/inception.mjs';
+import { ensureInception, createInceptionTimedAssist } from '../server/inception.mjs';
 
 const ownerKey = 'statistics-owner-key-fixture';
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -19,19 +19,24 @@ async function harness(adapter) {
   assert.equal(created.status, 200);
   const inceptionVersion = (await ensureInception(fixture.store))[0];
   const now = Date.now();
-  const insertAttempt = async ({ name, actorId = randomUUID(), startedAt = now - 60_000, endedAt = startedAt + 20_000, verdict = 'recovered', reviewStatus = 'complete', finished = true, safeOpened = true, content = 'What should I ask?', includeReveal = true, firstPlayerText = null, profile = { id: 'standard', name: 'Legacy Standard', label: 'Standard' } } = {}) => {
+  const insertAttempt = async ({ name, actorId = randomUUID(), startedAt = now - 60_000, endedAt = startedAt + 20_000, verdict = 'recovered', reviewStatus = 'complete', finished = true, safeOpened = true, assisted = false, content = 'What should I ask?', includeReveal = true, firstPlayerText = null, profile = { id: 'standard', name: 'Legacy Standard', label: 'Standard' } } = {}) => {
     await fixture.store.run('INSERT INTO users (id,name,email,password,role,created_at) VALUES (?,?,?,?,?,?)', actorId, name, `${actorId}@test.invalid`, 'link-only', 'inception_participant', now);
     const id = randomUUID();
     const userText = firstPlayerText ?? content;
     const messages = [{ id: randomUUID(), role: 'assistant', content: 'Opening line', createdAt: startedAt, opening: true }, { id: randomUUID(), role: 'user', content: userText, createdAt: startedAt + 2000 }];
     let evidence = [];
     if (includeReveal) { const reply = { id: randomUUID(), role: 'assistant', content: 'The safe opens with 528491.', createdAt: startedAt + 9000 }; messages.push(reply); evidence = [{ replyId: reply.id, quote: 'The safe opens with 528491.' }]; }
-    const state = { safeOpened, finished };
+    if (assisted) {
+      const triggerAt = startedAt + 245_000;
+      const reply = createInceptionTimedAssist(messages, { id: 'current', createdAt: triggerAt }, triggerAt, startedAt, triggerAt + 10);
+      messages.push(reply); evidence = [{ replyId: reply.id, quote: reply.content }];
+    }
+    const state = { safeOpened, finished, ...(assisted ? { review: { status: 'complete', verdict: 'recovered', completionOrigin: 'timed_assist', assisted: true } } : {}) };
     const data = { duration: 300, inceptionProfile: profile, secret: 'private-secret', systemPrompt: 'private prompt' };
     const config = { model: 'fixture-model', providerId: 'groq', apiKey: 'never-return-this-provider-key', baseUrl: 'https://private.invalid', reasoningEffort: 'private' };
     await fixture.store.run('INSERT INTO rounds (id,token,level_id,version_id,author_id,source,data,config,tester,messages,started_at,ended_at,answer,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', id, hash(randomUUID()), inceptionVersion.level_id, inceptionVersion.id, actorId, 'inception-play', JSON.stringify(data), JSON.stringify(config), name, JSON.stringify(messages), startedAt, endedAt, 'finished', null);
     await fixture.store.run('INSERT INTO inception_sessions (round_id,state,start_key_hash,actor_key_hash,actor_id,created_at) VALUES (?,?,?,?,?,?)', id, JSON.stringify(state), hash(randomUUID()), hash(randomUUID()), actorId, startedAt);
-    if (reviewStatus) await fixture.store.run('INSERT INTO round_machine_reviews (round_id,status,attempts,started_at,completed_at,verdict,reason,evidence,error_code,reviewer_protocol) VALUES (?,?,?,?,?,?,?,?,?,?)', id, reviewStatus, 1, (endedAt || now) - 1000, endedAt, verdict, 'review reason', JSON.stringify(evidence), null, 'fixture');
+    if (reviewStatus) await fixture.store.run('INSERT INTO round_machine_reviews (round_id,status,attempts,started_at,completed_at,verdict,reason,evidence,error_code,reviewer_protocol) VALUES (?,?,?,?,?,?,?,?,?,?)', id, reviewStatus, 1, (endedAt || now) - 1000, endedAt, verdict, 'review reason', JSON.stringify(evidence), null, assisted ? 'inception-timed-assist-v1' : 'fixture');
     return { id, actorId, messages };
   };
   return { ...fixture, request, ownerCookie: created.cookie, insertAttempt, close: async () => { await new Promise(resolve => server.close(resolve)); await fixture.store.db.close(); } };
@@ -45,6 +50,7 @@ for (const adapter of ['sqlite', 'pglite']) {
       const win = await f.insertAttempt({ name: 'A Player', profile: { id: 'story', name: 'Legacy Story', label: 'Warm-up' } });
       await f.insertAttempt({ name: 'B Player', verdict: 'not_recovered', safeOpened: false });
       await f.insertAttempt({ name: 'C Player', verdict: 'partial', safeOpened: false });
+      const assisted = await f.insertAttempt({ name: 'E Player', startedAt: now - 280_000, assisted: true });
       const expired = await f.insertAttempt({ name: 'D Player', startedAt: now - 400_000, endedAt: null, verdict: null, reviewStatus: null, finished: false, safeOpened: false, includeReveal: false });
       await f.insertAttempt({ name: 'Workshop Owner' });
       const intervalOwnTest = await f.insertAttempt({ name: 'A Player', startedAt: Date.UTC(2026, 9, 24, 3, 35), firstPlayerText: 'What is the safe combination?' });
@@ -75,10 +81,11 @@ for (const adapter of ['sqlite', 'pglite']) {
       assert.equal(JSON.stringify(session.body).includes(ownerKey), false); assert.equal(JSON.stringify(session.body).includes('email'), false);
       const ownerCookie = session.cookie;
       const summary = await f.request('/statistics/summary?period=30d', { cookie: ownerCookie }); assert.equal(summary.status, 200);
-      assert.equal(summary.body.totals.started, 5, 'the documented test identities and actor-specific exact-prompt attempt are excluded');
+      assert.equal(summary.body.totals.started, 6, 'the documented test identities and actor-specific exact-prompt attempt are excluded');
       assert.equal(summary.body.totals.wins, 2); assert.equal(summary.body.totals.judgedDenominator, 3);
+      assert.equal(summary.body.totals.assisted, 1); assert.equal(summary.body.outcomes.assisted, 1);
       assert.equal(summary.body.outcomes['not-recovered'], 1); assert.equal(summary.body.outcomes.partial, 1); assert.equal(summary.body.outcomes.expired, 1); assert.equal(summary.body.totals.winRate, 2 / 3);
-      assert.equal(summary.body.totals.savedPromptTurns, 5); assert.equal(summary.body.totals.durableSubmissionAttempts, 1); assert.equal(summary.body.submissionCounts.failed, 1);
+      assert.equal(summary.body.totals.savedPromptTurns, 6); assert.equal(summary.body.totals.durableSubmissionAttempts, 1); assert.equal(summary.body.submissionCounts.failed, 1);
       assert.equal(JSON.stringify(summary.body).includes('private-secret'), false); assert.equal(JSON.stringify(summary.body).includes('private prompt'), false); assert.equal(JSON.stringify(summary.body).includes('never-return-this-provider-key'), false);
       assert.equal(JSON.stringify(summary.body).includes('What should I ask?'), false);
       assert.equal(summary.body.modelCalls[0].providers.includes('groq'), true, 'legacy null Groq slot is explicitly attributed to primary');
@@ -103,8 +110,10 @@ for (const adapter of ['sqlite', 'pglite']) {
       assert.equal((await f.request('/statistics/attempts?search=' + 'x'.repeat(101), { cookie: ownerCookie })).status, 400);
       const detail = await f.request('/statistics/attempts/' + win.id, { cookie: ownerCookie }); assert.equal(detail.status, 200); assert.equal(detail.body.revealAt, win.messages[2].createdAt); assert.equal(detail.body.savedPromptCount, 1); assert.equal(detail.body.difficulty, 'Warm-up'); assert.equal(detail.body.failedSubmissions[0].content, 'Failed prompt receipt');
       assert.equal(JSON.stringify(detail.body).includes('private-secret'), false); assert.equal(JSON.stringify(detail.body).includes('private prompt'), false); assert.equal(JSON.stringify(detail.body).includes('never-return-this-provider-key'), false);
+      const assistedList = await f.request('/statistics/attempts?period=30d&outcome=assisted', { cookie: ownerCookie }); assert.equal(assistedList.status, 200); assert.equal(assistedList.body.items.length, 1); assert.equal(assistedList.body.items[0].outcome, 'assisted'); assert.ok(assistedList.body.items[0].assistedAt);
+      const assistedDetail = await f.request('/statistics/attempts/' + assisted.id, { cookie: ownerCookie }); assert.equal(assistedDetail.body.review.assisted, true); assert.equal(assistedDetail.body.assistedAt, assisted.messages.at(-1).triggerAt); assert.equal(assistedDetail.body.revealAt, null);
       const expiredDetail = await f.request('/statistics/attempts/' + expired.id, { cookie: ownerCookie }); assert.equal(expiredDetail.body.outcome, 'expired', 'detail uses the same timed-out outcome as summary and list'); assert.equal(expiredDetail.body.difficulty, 'Standard', 'the frozen label takes precedence over legacy stored names');
-      const testsIncluded = await f.request('/statistics/summary?period=365d&includeTests=true', { cookie: ownerCookie }); assert.equal(testsIncluded.body.totals.started, 7);
+      const testsIncluded = await f.request('/statistics/summary?period=365d&includeTests=true', { cookie: ownerCookie }); assert.equal(testsIncluded.body.totals.started, 8);
       const beforeReservations = Number((await f.store.get('SELECT COUNT(*) AS count FROM inception_provider_reservations')).count);
       assert.equal((await f.request('/statistics/capacity', { cookie: ownerCookie })).status, 200);
       assert.equal(Number((await f.store.get('SELECT COUNT(*) AS count FROM inception_provider_reservations')).count), beforeReservations, 'capacity stats do not mutate reservations');

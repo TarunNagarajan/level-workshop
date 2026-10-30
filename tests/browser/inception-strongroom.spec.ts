@@ -94,6 +94,16 @@ async function startFreshAttempt(page: import('@playwright/test').Page, skipAppr
   if (skipApproach) await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/);
 }
 
+async function readTimedAssistTargetCalls(page: import('@playwright/test').Page): Promise<number> {
+  return page.evaluate(async () => {
+    const response = await fetch('/api/__test/inception/target-calls');
+    if (!response.ok) throw new Error(`Timed-assist target-call fixture returned HTTP ${response.status}.`);
+    const result = await response.json();
+    if (!Number.isSafeInteger(result.count)) throw new Error('Timed-assist target-call fixture returned an invalid count.');
+    return result.count as number;
+  });
+}
+
 async function expectComposerStatusesHidden(page: import('@playwright/test').Page) {
   await expect(page.locator('.inception-composer .inception-send-status')).toHaveCount(0);
 }
@@ -743,6 +753,69 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByText('The dream gives way. The safe stays locked.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Return to main menu' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Start a new attempt' })).toHaveCount(0);
+  });
+
+  test('a timed assist clears provider cooldown at four minutes and opens the existing success ending', async ({ page }) => {
+    test.setTimeout(90000);
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await startFreshAttempt(page);
+    const roundId = await page.evaluate(() => JSON.parse(sessionStorage.getItem('workshop-inception-session') || '{}').id as string);
+    const targetCallsBefore = await readTimedAssistTargetCalls(page);
+    const requestIds: string[] = [];
+    let firstRequest = true;
+    await page.route('**/api/rounds/*/messages', async route => {
+      if (route.request().method() === 'POST') {
+        requestIds.push(route.request().postDataJSON().requestId);
+        if (firstRequest) {
+          firstRequest = false;
+          await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: 'The fixture quota is unavailable.', receiptConfirmed: true, submissionId: 'fixture-terminal-receipt', submissionStatus: 'failed', failureCode: 'rate_limited', rateLimitScope: 'tokens_daily', retryAfterSeconds: 3600 }) });
+          return;
+        }
+      }
+      await route.continue();
+    });
+    const composer = page.getByLabel('Speak to Fischer');
+    await composer.fill('An ordinary question before my quota ran out.');
+    await composer.press('Enter');
+    await expect(page.getByText('The fixture quota is unavailable.')).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Retry in 60:00$/ })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible();
+    const shifted = await page.evaluate(async id => {
+      const response = await fetch('/api/__test/inception/shift-start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roundId: id }) });
+      return { status: response.status, body: await response.json() };
+    }, roundId);
+    expect(shifted.status).toBe(200);
+    expect(shifted.body.startedAt).toEqual(expect.any(Number));
+    expect(shifted.body.startedAt).toBeLessThan(Date.now() - 240_000);
+    await page.reload();
+    await page.getByRole('button', { name: 'Click to continue' }).click();
+    await expect(composer).toBeVisible();
+    await expect(composer).toBeEnabled();
+    await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/);
+    await expect(page.locator('.inception-root')).not.toHaveAttribute('inert', '');
+    await expect(composer).toHaveValue('An ordinary question before my quota ran out.');
+    await expect(page.getByRole('button', { name: 'Start a new attempt' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
+    await composer.fill('What was your first answer?');
+    await expect(composer).toHaveValue('What was your first answer?');
+    const assistedPost = page.waitForRequest(request => request.method() === 'POST' && request.url().endsWith(`/api/rounds/${roundId}/messages`));
+    await composer.press('Enter');
+    const sentRequest = await assistedPost;
+    expect(sentRequest.postDataJSON().content).toBe('What was your first answer?');
+    await expect(page.getByText(/I remember it now\./)).toBeVisible();
+    expect(requestIds).toHaveLength(2);
+    expect(requestIds[0]).not.toBe(requestIds[1]);
+    await expect.poll(() => readTimedAssistTargetCalls(page)).toBe(targetCallsBefore);
+    const transcript = await page.evaluate(async id => (await fetch(`/api/attempts/${id}/inception`)).json(), roundId);
+    expect(transcript.messages.at(-1)).toMatchObject({ synthetic: true, origin: 'timed_assist', generatedByModel: false });
+    await page.getByRole('button', { name: 'Finish and review' }).click();
+    await expect(page.locator('.inception-success-ending')).toBeVisible({ timeout: 15000 });
+    expect(await readTimedAssistTargetCalls(page)).toBe(targetCallsBefore);
+    const saved = await page.evaluate(async id => (await fetch(`/api/attempts/${id}/inception`)).json(), roundId);
+    expect(saved.state.safeOpened).toBe(true);
+    expect(saved.state.revealedCombination).toBeTruthy();
+    expect(saved.review).toMatchObject({ status: 'complete', verdict: 'recovered', reviewer_protocol: 'inception-timed-assist-v1' });
   });
 
   test('an accepted but unresolved receipt has bounded recovery and retries with the same ID', async ({ page }) => {
