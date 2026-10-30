@@ -15,6 +15,7 @@ import { RIDDLE_DIARY_LEVEL_ID, RIDDLE_DIARY_SCENARIO_ID, addRiddleDiaryRoutes, 
 import { addMissionArchiveRoutes, isMissionRound } from './mission-archive.mjs';
 import { INCEPTION_ORGANIZER_RECORDING_POLICY, INCEPTION_SCENARIO_ID, addInceptionRoutes, inceptionPromptContext, isInceptionData, publicInceptionProfile } from './inception.mjs';
 import { inceptionProviderCapacity } from './inception-capacity.mjs';
+import { addStatisticsRoutes } from './statistics.mjs';
 const scrypt = promisify(scryptCallback);
 const id = () => randomUUID();
 const token = () => randomBytes(32).toString('base64url');
@@ -235,13 +236,14 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     const versionRow = async (versionId) => { const row = await get('SELECT * FROM versions WHERE id = ?', versionId); if (!row)
         fail(404, 'Version not found.'); return row; };
     const safeConfig = () => ({ model: provider.model, baseUrl: provider.baseUrl, reasoningEffort: provider.reasoningEffort || 'low' });
-    const enter = async (res, user, accessId = null) => {
+    const enter = async (res, user, accessId = null, { includeEmail = true } = {}) => {
         const raw = token();
         await batch([
           ['INSERT INTO auth (token, user_id, expires) VALUES (?, ?, ?)', hash(raw), user.id, Date.now() + cookieOptions.maxAge],
           ...(accessId ? [['INSERT INTO link_sessions VALUES (?, ?)', hash(raw), accessId]] : []),
         ]);
-        res.cookie('workshop', raw, cookieOptions).json({ user: publicUser(user) });
+        const sessionUser = includeEmail ? publicUser(user) : { id: user.id, name: user.name, role: user.role };
+        res.cookie('workshop', raw, cookieOptions).json({ user: sessionUser });
     };
     const authThrottle = (req, res, next) => {
         const key = req.ip;
@@ -397,6 +399,12 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (!user || !user.password.includes(':') || !await verifyPassword(input.password, user.password))
             fail(401, 'The email or password is incorrect.');
         await enter(res, user);
+    });
+    app.post('/api/statistics/account-session', authThrottle, async (req, res) => {
+        const input = z.object({ email: z.string().trim().max(200), password: z.string().max(200) }).strict().parse(req.body);
+        const user = await get("SELECT * FROM users WHERE email = ? AND role='admin'", input.email.toLowerCase());
+        if (!user || !user.password.includes(':') || !await verifyPassword(input.password, user.password)) fail(401, 'The owner email or password is incorrect.');
+        await enter(res, user, null, { includeEmail: false });
     });
     app.post('/api/logout', async (req, res) => {
         if (req.cookies.workshop)
@@ -757,6 +765,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         finally { await run('DELETE FROM round_locks WHERE round_id = ? AND token = ?', initial.id, lease); }
     };
     addInceptionRoutes(app, { store, member, inceptionMember, provider, capacity: inceptionCapacity, createRound, accessRound, withRoundLock, publicRound, requireRecording, recordingNoticeRequired, reviewEnabled: Boolean(passportReviewEnabled), completion: inceptionCompletion, markCompletionSaved: metrics.markSaved });
+    addStatisticsRoutes(app, { store, admin, authThrottle, checkOwnerKey, enter: (res, user) => enter(res, user, null, { includeEmail: false }), capacity: inceptionCapacity, cursorKey: hash(`statistics-cursor-v1:${ownerKey || env.WORKSHOP_STATISTICS_CURSOR_KEY || publicOrigin || 'local-statistics-cursor'}`) });
     const collectionModels = createCollectionModelServices({ store, provider, completion: inceptionCompletion, metrics });
     app.post('/api/rounds/:id/messages', async (req, res) => {
       const authorized = await accessRound(req), content = z.string().trim().min(1).max(4000).parse(req.body.content);

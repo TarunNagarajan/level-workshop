@@ -16,6 +16,7 @@ import { RecordingNotice } from './RecordingNotice';
 import { RiddleDiary } from './RiddleDiary';
 import { MissionLevel } from './MissionLevel';
 import { InceptionLevel } from './InceptionLevel';
+import { Statistics } from './Statistics';
 import { navigateMetrics, syncMetricsIdentity } from './telemetry';
 
 let historyIndex = 0;
@@ -44,9 +45,10 @@ export function App() {
   const [dark, setDark] = useState(localStorage.getItem('workshop-theme') === 'dark');
   const [tourOpen, setTourOpen] = useState(false); const [tourUser, setTourUser] = useState('');
   const standaloneCollection = path.startsWith('/collect/');
+  const isStatisticsRoute = /^\/stats\/?$/.test(path);
   const isInceptionRoute = /^\/inception\/?$/.test(path);
   const inceptionDestination = isInceptionRoute ? `${path}${window.location.search}` : path;
-  const inWorkspace = !/^\/(play|enter|owner|join|collect)\//.test(path) && !path.startsWith('/reference/play/') && !path.startsWith('/diary/play/') && path !== '/reference/research/preview' && !isInceptionRoute;
+  const inWorkspace = !/^\/(play|enter|owner|join|collect)\//.test(path) && !path.startsWith('/reference/play/') && !path.startsWith('/diary/play/') && path !== '/reference/research/preview' && !isInceptionRoute && !isStatisticsRoute;
   const requiresStandaloneConsent = path.startsWith('/collect/') || path.startsWith('/play/') || path.startsWith('/reference/play/') || path.startsWith('/diary/play/');
   const recordingPermitted = Boolean(bootstrap) && (isInceptionRoute ? bootstrap?.recordingAccepted === true : bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true);
   useEffect(() => { if (bootstrap?.user && recordingPermitted && path === '/' && tourUser !== bootstrap.user.id) { setTourUser(bootstrap.user.id); if (!bootstrap.tutorialDone) setTourOpen(true); } }, [bootstrap, recordingPermitted, path, tourUser]);
@@ -75,9 +77,9 @@ export function App() {
     return () => window.removeEventListener('popstate', listener);
   }, []);
   const reload = () => api<Bootstrap>('/bootstrap').then(setBootstrap).catch(e => setError(e.message));
-  useEffect(() => { if (!standaloneCollection && !isInceptionRoute) void reload(); }, [standaloneCollection, isInceptionRoute]);
-  useEffect(() => { if (isInceptionRoute) return; const allowed = !requiresStandaloneConsent && Boolean(bootstrap) && (bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true); setRecordingAcknowledged(allowed); navigateMetrics(path); }, [path, bootstrap, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired, requiresStandaloneConsent, isInceptionRoute]);
-  useEffect(() => { if (isInceptionRoute) return; syncMetricsIdentity(bootstrap?.user?.id || null); }, [path, bootstrap?.user?.id, bootstrap?.needsSetup, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired, isInceptionRoute]);
+  useEffect(() => { if (!standaloneCollection && !isInceptionRoute && !isStatisticsRoute) void reload(); }, [standaloneCollection, isInceptionRoute, isStatisticsRoute]);
+  useEffect(() => { if (isInceptionRoute || isStatisticsRoute) { setRecordingAcknowledged(false); return; } const allowed = !requiresStandaloneConsent && Boolean(bootstrap) && (bootstrap?.recordingAccepted === true || bootstrap?.recordingNoticeRequired !== true); setRecordingAcknowledged(allowed); navigateMetrics(path); }, [path, bootstrap, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired, requiresStandaloneConsent, isInceptionRoute, isStatisticsRoute]);
+  useEffect(() => { if (isInceptionRoute || isStatisticsRoute) return; syncMetricsIdentity(bootstrap?.user?.id || null); }, [path, bootstrap?.user?.id, bootstrap?.needsSetup, bootstrap?.recordingAccepted, bootstrap?.recordingNoticeRequired, isInceptionRoute, isStatisticsRoute]);
   useEffect(() => {
     const listener = (event: MessageEvent) => {
       const frame = document.querySelector<HTMLIFrameElement>('.mission-host iframe');
@@ -91,7 +93,8 @@ export function App() {
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4500); return () => clearTimeout(timer); }, [toast]);
   const notify = (message: string) => setToast(message);
   let content: ReactNode;
-  if (isInceptionRoute) content = <DirectInceptionEntry />;
+  if (isStatisticsRoute) content = <Statistics />;
+  else if (isInceptionRoute) content = <DirectInceptionEntry />;
   else if (path === '/reference/research/preview') content = <PassportReference researchPreview />;
   else if (path.startsWith('/reference/play/')) content = <PassportReference blindToken={path.split('/')[3]} />;
   else if (path.startsWith('/diary/play/')) content = <RiddleDiary blindToken={path.split('/')[3]} />;
@@ -111,7 +114,7 @@ export function App() {
       <aside className="sidebar">
         <div className="sidebar-top"><Mark /><span className="tiny">PRIVATE WORKSPACE</span></div>
         <nav aria-label="Main navigation">
-          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/diary', "Riddle's diary", BookOpen, 'diary'], ['/mission', 'Mission: Impossible', Network, 'mission'], ['/inception', 'Inception', BookOpen, 'inception'], ['/reference', 'Reference', BookOpen, 'reference'], ['/collections', 'Collections', Layers3, 'collections'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team'], ...(user.role === 'admin' ? [['/metrics', 'Metrics', ChartNoAxesCombined, 'metrics']] : [])].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
+          {[['/', 'Levels', PanelsTopLeft, 'levels'], ['/diary', "Riddle's diary", BookOpen, 'diary'], ['/mission', 'Mission: Impossible', Network, 'mission'], ['/inception', 'Inception', BookOpen, 'inception'], ['/reference', 'Reference', BookOpen, 'reference'], ['/collections', 'Collections', Layers3, 'collections'], ['/attempts', 'Tests', FlaskConical, 'attempts'], ['/orchestration', 'Orchestration', Network, 'orchestration'], ['/team', 'Team', Users, 'team'], ...(user.role === 'admin' ? [['/metrics', 'Metrics', ChartNoAxesCombined, 'metrics'], ['/stats', 'Statistics', ChartNoAxesCombined, 'statistics']] : [])].map(([url, label, Icon, key]) => { const C = Icon as typeof PanelsTopLeft; return <button aria-label={String(label)} data-tour={`nav-${key}`} key={String(url)} className={`nav-item ${page === key || (key === 'levels' && page === 'editor') ? 'active' : ''}`} onClick={() => navigate(String(url))}><C size={17} strokeWidth={1.5} />{String(label)}</button>; })}
         </nav>
         <div className="sidebar-bottom">
           <button className="nav-item" aria-label="Quick tour" onClick={() => { if (path !== '/') navigate('/'); setTourOpen(true); }}><CircleHelp size={17} strokeWidth={1.5} />Quick tour</button>
