@@ -111,11 +111,13 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
       const initialChainLength = chainShape(originalProviderId).length;
       const threeSlotRoute = initialChainLength >= 3;
       const routingBudgetMs = initialChainLength >= 3 ? 25_000 : initialChainLength === 2 ? 31_000 : 33_000;
-      const attemptTimeout = (providerId, fallbackAttempt = false) => {
+      const attemptCap = (providerId, fallbackAttempt = false) => {
         const chainLength = chainShape(providerId).length;
-        const cap = threeSlotRoute ? 8_000 : chainLength === 2 || fallbackAttempt ? 15_000 : 30_000;
+        return threeSlotRoute ? 8_000 : chainLength === 2 || fallbackAttempt ? 15_000 : 30_000;
+      };
+      const attemptTimeout = (providerId, fallbackAttempt = false) => {
         const routeRemaining = routingBudgetMs - (performance.now() - routeStarted) - 1_500;
-        return routeRemaining < 1_000 ? null : Math.floor(Math.min(cap, routeRemaining));
+        return routeRemaining < 1_000 ? null : Math.floor(Math.min(attemptCap(providerId, fallbackAttempt), routeRemaining));
       };
       const invoke = async (config, fallbackAttempt = false) => {
         if (!lease || !roundId) throw Object.assign(new Error('The strongroom request lease expired. Retry this saved request.'), { status: 503, providerCode: 'round_lease_lost', providerAttempted: false });
@@ -136,7 +138,14 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         const leaseRemaining = Number(leaseRow.expires) - Date.now() - 1_500;
         const timeoutMs = inceptionCapacity.enabled ? routeTimeout === null || leaseRemaining < 1_000 ? null : Math.floor(Math.min(routeTimeout, leaseRemaining)) : completionInput.timeoutMs;
         if (inceptionCapacity.enabled && timeoutMs === null) throw Object.assign(new Error('The model request exceeded its safe routing window. Retry the saved request.'), { status: 504, providerCode: 'timeout', providerAttempted: false });
-        return instrumentedCompletion({ ...completionInput, config, ...(timeoutMs ? { timeoutMs } : {}) });
+        const beforeProviderCall = inceptionCapacity.enabled ? async () => {
+          const routeRemaining = routingBudgetMs - (performance.now() - routeStarted) - 1_500;
+          const currentLeaseRemaining = Number(leaseRow.expires) - Date.now() - 1_500;
+          const dispatchTimeout = Math.floor(Math.min(attemptCap(config.providerId || 'groq', fallbackAttempt), routeRemaining, currentLeaseRemaining));
+          if (dispatchTimeout < 1_000) throw Object.assign(new Error('The model request exceeded its safe routing window. Retry the saved request.'), { status: 504, providerCode: 'timeout', providerAttempted: false });
+          return { timeoutMs: dispatchTimeout };
+        } : undefined;
+        return instrumentedCompletion({ ...completionInput, config, ...(timeoutMs ? { timeoutMs, beforeProviderCall } : {}) });
       };
       const switchProvider = async reason => {
         if (!inceptionCapacity.enabled || !roundId || !lease) return null;

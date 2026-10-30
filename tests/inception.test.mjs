@@ -227,7 +227,10 @@ test('three-slot routing keeps provider and database overhead inside the total b
     throw Object.assign(new Error('unavailable'), { providerCode: 'provider_unavailable', status: 503 });
   } });
   try {
-    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie);
+    assert.equal(started.status, 201, JSON.stringify(started.body));
+    const roundId = started.body.round.id;
+    assert.equal(JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config).providerId, 'groq');
     Object.defineProperty(performance, 'now', { configurable: true, value: () => { clock += 75; return clock; } });
     const response = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Remember?', requestId: crypto.randomUUID() } });
     assert.notEqual(response.status, 200);
@@ -242,11 +245,25 @@ test('three-slot routing keeps provider and database overhead inside the total b
 
 test('near-budget fractional timing is floored before the actual provider adapter', async () => {
   const priorFetch = globalThis.fetch, priorTimeout = AbortSignal.timeout, priorNow = performance.now;
-  const durations = [], requests = [];
+  const durations = [], requests = [], adapterTimeouts = [];
+  const dbPreflight = { enabled: false };
+  const routeEnv = { INCEPTION_AUTO_PROVIDER: 'true' };
   let clock = 100;
-  const fixture = await harness({ env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-primary-key' }, completion: complete });
+  const fixture = await harness({ wrapStore: store => {
+    const run = store.run.bind(store);
+    return { ...store, run: (sql, ...args) => {
+      const result = run(sql, ...args);
+      if (dbPreflight.enabled && sql.includes('INSERT INTO metrics_model_calls')) clock += 250.25;
+      return result;
+    } };
+  }, env: routeEnv, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-primary-key' }, completion: async input => { adapterTimeouts.push(input.timeoutMs); return complete(input); } });
   try {
-    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie);
+    assert.equal(started.status, 201, JSON.stringify(started.body));
+    const roundId = started.body.round.id;
+    assert.equal(JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config).providerId, 'groq');
+    routeEnv.GEMINI_API_KEY = 'fixture-gemini-key';
+    dbPreflight.enabled = true;
     Object.defineProperty(performance, 'now', { configurable: true, value: () => clock });
     AbortSignal.timeout = milliseconds => { durations.push(milliseconds); return priorTimeout(milliseconds); };
     globalThis.fetch = async (url, options) => {
@@ -260,13 +277,48 @@ test('near-budget fractional timing is floored before the actual provider adapte
     };
     const response = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Remember?', requestId: crypto.randomUUID() } });
     assert.equal(response.status, 200, JSON.stringify(response.body));
-    assert.deepEqual(durations, [15_000, 14_499]);
+    assert.equal(adapterTimeouts[0], 15_000, JSON.stringify({ adapterTimeouts, requests, statuses: await fixture.store.all('SELECT context_kind,source,provider_slot,status FROM metrics_model_calls WHERE round_id=?', roundId) }));
+    assert.ok(Number.isInteger(adapterTimeouts[1]) && adapterTimeouts[1] < 15_000, `fallback adapter timeout ${adapterTimeouts[1]}ms must include metrics preflight overhead`);
     assert.deepEqual(requests.map(item => item.authorization), ['Bearer fixture-primary-key', undefined]);
     assert.ok(durations.every(Number.isInteger));
   } finally {
     await fixture.close();
     globalThis.fetch = priorFetch;
     AbortSignal.timeout = priorTimeout;
+    Object.defineProperty(performance, 'now', { configurable: true, value: priorNow });
+  }
+});
+
+test('metrics preflight that exhausts the route budget marks the call undispatched and performs no fetch', async () => {
+  const priorFetch = globalThis.fetch, priorNow = performance.now;
+  const dbPreflight = { enabled: false }, networkRequests = [];
+  let clock = 50;
+  const fixture = await harness({ wrapStore: store => {
+    const run = store.run.bind(store);
+    return { ...store, run: (sql, ...args) => {
+      const result = run(sql, ...args);
+      if (dbPreflight.enabled && sql.includes('INSERT INTO metrics_model_calls')) clock += 40_000;
+      return result;
+    } };
+  }, env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-primary-key' }, completion: complete });
+  try {
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+    dbPreflight.enabled = true;
+    Object.defineProperty(performance, 'now', { configurable: true, value: () => clock });
+    globalThis.fetch = async (url, options) => {
+      if (String(url).startsWith('http://127.0.0.1:')) return priorFetch(url, options);
+      networkRequests.push(String(url));
+      return Response.json({ error: { message: 'Unexpected provider dispatch.' } }, { status: 503 });
+    };
+    const response = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'No network after deadline.', requestId: crypto.randomUUID() } });
+    assert.notEqual(response.status, 200);
+    assert.deepEqual(networkRequests, []);
+    const metric = await fixture.store.get('SELECT status,error_category FROM metrics_model_calls WHERE round_id=? ORDER BY started_at DESC LIMIT 1', roundId);
+    assert.deepEqual([metric.status, metric.error_category], ['interrupted', 'interrupted']);
+    assert.equal((await fixture.store.get('SELECT failed_calls_today FROM inception_provider_health WHERE provider_id=?', 'groq')).failed_calls_today || 0, 0);
+  } finally {
+    await fixture.close();
+    globalThis.fetch = priorFetch;
     Object.defineProperty(performance, 'now', { configurable: true, value: priorNow });
   }
 });

@@ -19,8 +19,13 @@ export function createMetricsService({ store, enabled = false }) {
   const { get, all, run, batch } = store;
 
   async function recordCompletion(completion, input) {
-    const { metricsContext = {}, ...providerInput } = input;
-    if (!enabled) return completion(providerInput);
+    const { metricsContext = {}, beforeProviderCall, ...providerInput } = input;
+    const guardedInput = async () => {
+      if (typeof beforeProviderCall !== 'function') return providerInput;
+      const boundary = await beforeProviderCall(providerInput);
+      return Number.isInteger(boundary?.timeoutMs) ? { ...providerInput, timeoutMs: boundary.timeoutMs } : providerInput;
+    };
+    if (!enabled) return completion(await guardedInput());
     const config = providerInput.config || {};
     let body;
     try { body = config.providerId === 'google-gemini' ? buildGeminiCompletionBody(providerInput) : buildCompletionBody(providerInput); } catch { body = null; }
@@ -41,7 +46,7 @@ export function createMetricsService({ store, enabled = false }) {
     } catch { /* Metrics must never prevent a provider call. */ }
     const perfStart = performance.now();
     try {
-      const result = await completion(providerInput);
+      const result = await completion(await guardedInput());
       const completedAt = now(), latencyMs = roundMs(performance.now() - perfStart), text = typeof result?.text === 'string' ? result.text : '';
       const usage = result?.usageDetails || {};
       try {
@@ -50,7 +55,9 @@ export function createMetricsService({ store, enabled = false }) {
       } catch { /* Best effort. */ }
       return { ...result, metricsCallId: callId };
     } catch (error) {
-      try { await run("UPDATE metrics_model_calls SET completed_at=?, latency_ms=?, status='failed', error_category=? WHERE id=? AND status='started'", now(), roundMs(performance.now() - perfStart), ERROR_MAP[error?.providerCode] || 'transport_or_provider', callId); } catch { /* Best effort. */ }
+      const status = error?.providerAttempted === false ? 'interrupted' : 'failed';
+      const category = error?.providerAttempted === false ? 'interrupted' : ERROR_MAP[error?.providerCode] || 'transport_or_provider';
+      try { await run("UPDATE metrics_model_calls SET completed_at=?, latency_ms=?, status=?, error_category=? WHERE id=? AND status='started'", now(), roundMs(performance.now() - perfStart), status, category, callId); } catch { /* Best effort. */ }
       throw error;
     }
   }
