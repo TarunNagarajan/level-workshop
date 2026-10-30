@@ -167,6 +167,10 @@ test('timed assist provenance rejects early, late, player-authored, and mismatch
   assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, { ...good, synthetic: false }], startedAt, 300_000), null);
   assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, { ...good, policyId: 'other' }], startedAt, 300_000), null);
   assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, { ...good, createdAt: startedAt + 239_999 }], startedAt, 300_000), null);
+  const fatherOnly = createInceptionTimedAssist([{ id: 'father', role: 'user', content: 'I asked about your father.' }], {}, startedAt + 240_000, startedAt, startedAt + 240_010);
+  assert.equal(fatherOnly.reasonCueMessageId, undefined, 'a father mention alone is not a father-versus-own-answer cue');
+  const explicitContrast = createInceptionTimedAssist([{ id: 'contrast', role: 'user', content: 'It was your own answer, rather than the number your father chose.' }], {}, startedAt + 240_000, startedAt, startedAt + 240_010);
+  assert.equal(explicitContrast.reasonCueMessageId, 'contrast');
 });
 
 test('a non-recovered genuine pre-assist judge result is retained while verified timed assist opens the safe', async () => {

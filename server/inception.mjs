@@ -184,7 +184,9 @@ export const inceptionReviewProtocol = `inception-${MACHINE_REVIEW_PROTOCOL_VERS
 const timedAssistCue = content => {
   const text = String(content || '').toLowerCase();
   if (/\b(?:calculate|calculating|math|mathematical|work(?:ing)? it out|figure(?:d)? it out|overthink|overthinking|think too much|not calculate|without calculating)\b/.test(text)) return 'What you said earlier about working it out made me realise I was trying to calculate a memory.';
-  if (/\b(?:my own (?:answer|number)|your own (?:answer|number)|first answer (?:was )?mine|not (?:your|my) father|instead of (?:your|my) father|mine rather than my father(?:'s|’s))\b/.test(text)) return 'What you said earlier about my own answer, rather than my father’s, helped.';
+  const ownAnswer = /\b(?:my own (?:answer|number)|your own (?:answer|number)|first answer (?:was )?mine|mine)\b/.test(text);
+  const explicitFatherContrast = /\b(?:rather than|instead of|not)\b/.test(text) && /\b(?:my|your) father(?:'s|’s)?\b/.test(text);
+  if (ownAnswer && explicitFatherContrast) return 'What you said earlier about my own answer, rather than my father’s, helped.';
   if (/\b(?:first answer|first number|earlier answer|before (?:you )?(?:thought|calculated)|spontaneous|without thinking|instinct|initial answer)\b/.test(text)) return 'What you said earlier about my first answer brought it back.';
   if (/\b(?:earlier question(?:ing)?|questioned (?:me )?before|asked (?:me )?before|back to when|return to the (?:earlier|first) question)\b/.test(text)) return 'Going back to that earlier question, as you suggested, brought it back.';
   return null;
