@@ -117,7 +117,7 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
       actorId: row.actor_id, startedAt: start, endedAt: end, outcome,
       savedPromptCount: Number(row.saved_prompt_count ?? (json(row.messages) || []).filter(message => message.role === 'user').length),
       durationMs: end == null ? null : Math.max(0, end - start), revealAt: reveal?.at ?? null,
-      difficulty: json(row.data)?.inceptionProfile?.name || json(row.data)?.inceptionProfile?.id || 'Inception',
+      difficulty: json(row.data)?.inceptionProfile?.label || json(row.data)?.inceptionProfile?.name || json(row.data)?.inceptionProfile?.id || 'Inception',
       model, review: { status: row.review_status || (outcome === 'unreviewed' ? 'unreviewed' : null), verdict: row.verdict || null, reason: row.reason || null, evidence: json(row.evidence) || [], errorCode: row.error_code || null, startedAt: row.review_started_at || null, completedAt: row.review_completed_at || null },
       ...(detail ? { messages: json(row.messages) || [], revealReplyId: reveal?.replyId ?? null, revealPromptId: reveal?.promptId ?? null, failedSubmissions: [] } : {}),
     };

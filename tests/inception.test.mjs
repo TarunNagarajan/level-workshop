@@ -95,7 +95,7 @@ test('revision 3 uses the secret-extraction framework while r1 and r2 retain the
   ]);
 });
 
-test('a clean database creates only revision 2 and selects Standard by default', async () => {
+test('a clean database creates only revision 2 and selects Warm-up by default', async () => {
   const fixture = await harness();
   try {
     const cookie = await setupOwner(fixture.request);
@@ -105,9 +105,14 @@ test('a clean database creates only revision 2 and selects Standard by default',
     assert.equal(Boolean(await fixture.store.get('SELECT id FROM versions WHERE level_id=? AND data LIKE ?', INCEPTION_LEVEL_ID, '%"revision":1%')), false);
     const config = await fixture.request('/inception', { cookie });
     assert.equal(config.body.profileRevision, 2);
-    assert.equal(config.body.defaultProfileId, 'standard');
+    assert.equal(config.body.defaultProfileId, 'story');
     assert.equal(config.body.profiles.find(profile => profile.id === 'story').label, 'Warm-up');
     assert.equal(config.body.profiles.find(profile => profile.id === 'standard').versionId, created.find(row => JSON.parse(row.data).inceptionProfile.id === 'standard').id);
+    await fixture.request('/recording/acknowledge', { method: 'POST', cookie, body: { version: 'recording-notice-v1', accepted: true } });
+    const standard = await fixture.request('/inception/start', { method: 'POST', cookie, body: { profileId: 'standard', clientStartId: 'explicit-standard-start-01', consent: true } });
+    assert.equal(standard.status, 201);
+    assert.equal(standard.body.profile.profileId, 'standard');
+    assert.equal((await fixture.request('/inception/start', { method: 'POST', cookie, body: { clientStartId: 'missing-profile-start-01', consent: true } })).status, 400, 'profile selection remains explicit at the API boundary');
   } finally { await fixture.close(); }
 });
 

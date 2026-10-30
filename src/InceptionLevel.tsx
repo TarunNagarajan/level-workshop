@@ -7,6 +7,7 @@ import type { Message, Round } from './types';
 import { Button } from './ui';
 import { InceptionAudio } from './inception-audio';
 import { recordMetricsInteraction, recordMetricsReply, setMetricsPhase } from './telemetry';
+import { resolveNewInceptionProfileId } from './inception-profile';
 import './inception.css';
 
 type Profile = { id: string; profileId?: string; label: string; description: string; versionId?: string; scenarioId?: string; profileRevision?: number; promptHash?: string; snapshotHash?: string };
@@ -97,7 +98,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
   const actorScopeRef = useRef<string | null>(null);
   const [manifest, setManifest] = useState<MediaManifest>({});
   const [session, setSession] = useState<Session | null>(null);
-  const [selectedProfile, setSelectedProfile] = useState('standard');
+  const [selectedProfile, setSelectedProfile] = useState('story');
   const [consented, setConsented] = useState(false);
   const [pendingStart, setPendingStart] = useState<{ profileId: string; clientStartId: string } | null>(null);
   const [intro, setIntro] = useState(false);
@@ -527,6 +528,10 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     return () => window.clearTimeout(timer);
   }, [cinematicHandoff, handoffInteractive, reducedMotion]);
 
+  const preferredNewProfile = () => config
+    ? resolveNewInceptionProfileId(new URLSearchParams(window.location.search).get('profile'), config.defaultProfileId, config.profiles)
+    : 'story';
+
   const fetchSession = useCallback(async (id: string, acknowledgement?: CompletedRoundAcknowledgement | null, parkAtEntry = false) => {
     const generation = lifecycle.current, previousRoundToken = roundGeneration.current;
     const value = await api<Session>(`/inception/rounds/${id}`, { timeoutMs: 5000 });
@@ -591,12 +596,11 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
       if (directEntry) { setRecordingAcknowledged(false); setInceptionRecordingAuthorization(nextConfig.recordingAuthorized === true); }
       else { setInceptionRecordingAuthorization(false); setRecordingAcknowledged(Boolean(nextConfig.recordingAccepted)); }
       const linkedProfile = new URLSearchParams(window.location.search).get('profile');
-      const allowlistedProfile = linkedProfile && ['story', 'standard', 'guarded', 'sealed'].includes(linkedProfile) && nextConfig.profiles.some(profile => profile.id === linkedProfile) ? linkedProfile : null;
-      setSelectedProfile(allowlistedProfile || nextConfig.defaultProfileId || 'standard');
+      const preferredNewProfile = resolveNewInceptionProfileId(linkedProfile, nextConfig.defaultProfileId, nextConfig.profiles);
+      setSelectedProfile(preferredNewProfile);
       const intentKey = startStorageFor(nextConfig.actorScope), intentText = localStorage.getItem(intentKey);
       const completedAcknowledgement = readCompletedRoundAcknowledgement(nextConfig.actorScope);
       if (completedAcknowledgement?.outcome === 'failed') setEntryPrompt('continue');
-      if (!allowlistedProfile && completedAcknowledgement && nextConfig.profiles.some(profile => profile.id === completedAcknowledgement.profileId)) setSelectedProfile(completedAcknowledgement.profileId);
       if (intentText) {
         try { const intent = JSON.parse(intentText) as { profileId: string; clientStartId: string }; setSelectedProfile(intent.profileId); setPendingStart(intent); setEntryPrompt('continue'); }
         catch { if (active) setError('The saved start receipt could not be checked. Retry with the same start key.'); }
@@ -751,7 +755,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
       await poster.decode().catch(() => undefined);
     }
     setBusy(false);
-    setImmersive(false); setEntryTransition(false); setEntryReturning(false); setEntryPrompt(archiveToMenu ? 'begin' : directEntry || confirmedFailure || Boolean(pendingStart) || Boolean(session && !session.round.endedAt) ? 'continue' : 'begin'); if (sessionProfileId) setSelectedProfile(sessionProfileId); setIntro(false); setFilmEnded(false); setCinematicPhase(null); setEndingCardPhase(null); setSuccessEnding(null); setActiveModal(null);
+    setImmersive(false); setEntryTransition(false); setEntryReturning(false); setEntryPrompt(archiveToMenu ? 'begin' : directEntry || confirmedFailure || Boolean(pendingStart) || Boolean(session && !session.round.endedAt) ? 'continue' : 'begin'); setSelectedProfile(session && !wasCompleted ? sessionProfileId || preferredNewProfile() : pendingStart?.profileId || preferredNewProfile()); setIntro(false); setFilmEnded(false); setCinematicPhase(null); setEndingCardPhase(null); setSuccessEnding(null); setActiveModal(null);
     if (wasCompleted) { setSession(null); setReview(null); setMessageText(''); setPendingSend(null); setSendStatus(''); }
     else if (session?.round.id) setEntryPrompt('continue');
     setEntryVisible(true);
@@ -796,7 +800,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
         if (!session.round.endedAt) startAmbient();
       } else if (!manifest.introVideo) {
         setError('');
-        void startRound(selectedProfile, pendingStart ? { clientStartId: pendingStart.clientStartId } : undefined);
+        void startRound(pendingStart?.profileId || preferredNewProfile(), pendingStart ? { clientStartId: pendingStart.clientStartId } : undefined);
       } else {
         setError(''); setIntroMediaIssue(''); introProgressRef.current = { at: Date.now(), time: 0 }; introStartRequested.current = false;
         sessionStorage.setItem('workshop-inception-intro-at', String(Date.now()));
@@ -818,7 +822,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
       introStartRequested.current = true;
       introVideoRef.current?.pause();
       setFilmEnded(true);
-      void startRound(pendingStart?.profileId || selectedProfile, pendingStart ? { clientStartId: pendingStart.clientStartId } : undefined);
+      void startRound(pendingStart?.profileId || preferredNewProfile(), pendingStart ? { clientStartId: pendingStart.clientStartId } : undefined);
     }
   };
 
@@ -835,14 +839,14 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     video.load();
     const completedRoundId = session?.round.id;
     if (completedRoundId && config) {
-      const profileId = session.profile.profileRevision === 1 ? 'standard' : session.profile.profileId || selectedProfile;
+      const profileId = session.profile.profileRevision === 1 ? 'standard' : session.profile.profileId || preferredNewProfile();
       localStorage.setItem(completedRoundStorageFor(config.actorScope), JSON.stringify({ roundId: completedRoundId, profileId } satisfies CompletedRoundAcknowledgement));
       sessionStorage.removeItem(sessionStorageKey);
       sessionStorage.removeItem(`workshop-inception-send:${completedRoundId}`);
     }
     sessionStorage.removeItem('workshop-inception-intro-at');
     endingWasShownRef.current = false;
-    setSelectedProfile(session?.profile.profileRevision === 1 ? 'standard' : session?.profile.profileId || selectedProfile);
+    setSelectedProfile(preferredNewProfile());
     setEntryPrompt(directEntry ? 'continue' : 'begin'); setEntryReturning(false);
     setActiveModal(null); setIntro(false); setFilmEnded(false); setCinematicHandoff(false); setHandoffInteractive(true); setCinematicPhase(null); setEndingCardPhase(null);
     if (document.fullscreenElement) await document.exitFullscreen().catch(() => undefined);
@@ -900,7 +904,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     endingSkipAnimationRef.current = window.requestAnimationFrame(fade);
   }, [finishSuccessCoda, manifest.successFinalBlackDurationSeconds, reducedMotion, successEnding]);
 
-  useEffect(() => { if (intro && introTimeLeft <= 0 && (!manifest.introVideo || filmEnded) && !introStartRequested.current) { introStartRequested.current = true; void startRound(pendingStart?.profileId || selectedProfile, pendingStart ? { clientStartId: pendingStart.clientStartId } : undefined); } }, [introTimeLeft, intro, filmEnded, selectedProfile, pendingStart, startRound, manifest.introVideo]);
+  useEffect(() => { if (intro && introTimeLeft <= 0 && (!manifest.introVideo || filmEnded) && !introStartRequested.current) { introStartRequested.current = true; void startRound(pendingStart?.profileId || preferredNewProfile(), pendingStart ? { clientStartId: pendingStart.clientStartId } : undefined); } }, [introTimeLeft, intro, filmEnded, selectedProfile, pendingStart, startRound, manifest.introVideo]);
 
   const inspect = async (type: 'inspect_safe' | 'inspect_room' | 'present_safe') => {
     if (!session || busy || actionOperation.current || closed || session.state.safeOpened) return;
@@ -1047,7 +1051,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
     composerFocusIntent.current = null;
     roundGeneration.current++;
     setSession(null); setReview(null); setMessageText(''); setPendingSend(null); sessionStorage.removeItem(sessionStorageKey); setError('');
-    setSelectedProfile(session?.profile.profileRevision === 1 ? 'standard' : session?.profile.profileId || selectedProfile); beginIntro(true);
+    setSelectedProfile(preferredNewProfile()); beginIntro(true);
     if (!sound.muted) startAmbient(undefined, true);
   };
   const archiveOldAndStartCurrent = async () => {
@@ -1060,8 +1064,9 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
         if (lifecycle.current !== generation || roundGeneration.current !== roundToken) return;
         setSession(current => current?.round.id === oldRoundId ? { ...current, round: result.round, state: result.state } : current);
       }
-      setSelectedProfile('standard');
-      await startRound('standard');
+      const profileId = preferredNewProfile();
+      setSelectedProfile(profileId);
+      await startRound(profileId);
     } catch (cause) {
       if (lifecycle.current === generation && roundGeneration.current === roundToken) setError((cause as Error).message || 'The earlier attempt could not be finished.');
     } finally { if (lifecycle.current === generation && roundGeneration.current === roundToken) setBusy(false); }
@@ -1112,7 +1117,7 @@ export function InceptionLevel({ directEntry = false }: { directEntry?: boolean 
           <div ref={conversationRef} className="inception-conversation" role="log" aria-label="Conversation transcript" aria-live="polite" aria-relevant="additions" aria-atomic="false" tabIndex={0} onScroll={event => { const element = event.currentTarget; followConversationRef.current = element.scrollHeight - element.clientHeight - element.scrollTop < 72; }}>
             {session.round.messages.filter(item => item.role === 'user' || item.role === 'assistant').map((item: Message) => <article key={item.id} className={item.role === 'user' ? 'from-player' : 'from-fischer'}><img src={item.role === 'user' ? manifest.portraits?.eames : manifest.portraits?.fischer} alt={item.role === 'user' ? 'Eames' : 'Fischer'} /><p>{item.content}</p></article>)}
           </div>
-          {session.profile.profileRevision === 1 && (!session.round.endedAt || checkingEndedRound) && <div className="inception-old-version"><p>This conversation uses an earlier version. Its prompts are preserved.</p><Button className="inception-secondary" disabled={busy || Boolean(pendingSend) || review?.status === 'pending' || checkingEndedRound} onClick={() => void archiveOldAndStartCurrent()}>Finish this version and start Standard</Button></div>}
+          {session.profile.profileRevision === 1 && (!session.round.endedAt || checkingEndedRound) && <div className="inception-old-version"><p>This conversation uses an earlier version. Its prompts are preserved.</p><Button className="inception-secondary" disabled={busy || Boolean(pendingSend) || review?.status === 'pending' || checkingEndedRound} onClick={() => void archiveOldAndStartCurrent()}>Finish this version and start {config.profiles.find(profile => profile.id === preferredNewProfile())?.label || 'Warm-up'}</Button></div>}
           {(expired && !session.round.endedAt || retainExpiredFinishControl) && <div className="inception-expired-controls" role="group" aria-label="Finish the expired conversation"><p>Time is up. Your saved conversation can still be reviewed.</p>{pendingSend && <><p role="status">Retry checks the same saved message receipt.</p><Button className="inception-secondary" disabled={busy} onClick={() => void send(true)}>Retry saved message</Button></>}{!pendingSend && <Button className="inception-primary" disabled={busy || checkingEndedRound} onClick={() => void finish()}>{busy ? 'Saving conversation…' : 'Finish and review'}</Button>}{error && <p role="alert" className="inception-inline-error">{error}</p>}</div>}
           {!session.round.endedAt || checkingEndedRound ? <div ref={composerRef} className="inception-composer" style={checkingEndedRound && checkingComposerHeight.current ? { minHeight: `${checkingComposerHeight.current}px` } : undefined}>
             <label htmlFor="inception-message" className="visually-hidden">Speak to Fischer</label>

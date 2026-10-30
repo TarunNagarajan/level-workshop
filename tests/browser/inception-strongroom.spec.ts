@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { signInOwner } from './auth';
 
-async function finishApproachForTest(page: import('@playwright/test').Page) {
+async function finishApproachForTest(page: import('@playwright/test').Page, waitForPlay = true) {
   const video = page.locator('video.inception-intro-video').first();
   await expect(video).toBeVisible();
   await video.evaluate(element => {
@@ -12,7 +12,9 @@ async function finishApproachForTest(page: import('@playwright/test').Page) {
     if (Number.isFinite(media.duration) && media.duration > 0) media.currentTime = media.duration;
     media.dispatchEvent(new Event('ended', { bubbles: true }));
   });
-  await expect(page.locator('.inception-play')).toBeVisible();
+  if (waitForPlay) await expect(page.locator('.inception-play')).toBeVisible();
+  else await expect(page.getByRole('button', { name: 'Retry start' })).toBeVisible();
+  if (!waitForPlay) return;
   await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/);
   await expect(page.locator('.inception-root')).not.toHaveAttribute('inert', '');
 }
@@ -1332,21 +1334,23 @@ test.describe('Inception strongroom', () => {
 
   test('a lost intro start receipt retries the same request key and reuses the created round', async ({ page }) => {
     await signInOwner(page.request);
-    await page.goto('/inception');
+    await page.goto('/inception?profile=standard');
     await expect(page.locator('.inception-root')).toBeVisible();
     await startFreshAttempt(page, false);
     await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
     let firstRoundId = '';
     const requestKeys: string[] = [];
+    const profileIds: string[] = [];
     await page.route('**/api/inception/start', async route => {
       if (route.request().method() !== 'POST') { await route.continue(); return; }
       requestKeys.push(route.request().postDataJSON().clientStartId);
+      profileIds.push(route.request().postDataJSON().profileId);
       const response = await route.fetch();
       const session = await response.json();
       if (requestKeys.length === 1) { firstRoundId = session.round.id; await route.abort(); }
       else await route.fulfill({ response, json: session });
     });
-    await finishApproachForTest(page);
+    await finishApproachForTest(page, false);
     await expect(page.getByRole('button', { name: 'Retry start' })).toBeVisible();
     const firstRequestId = requestKeys[0];
     await page.keyboard.press('Escape');
@@ -1358,7 +1362,67 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
     expect(requestKeys).toHaveLength(2);
     expect(requestKeys[1]).toBe(firstRequestId);
+    expect(profileIds).toEqual(['standard', 'standard']);
     expect(firstRoundId).not.toBe('');
     await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('workshop-inception-session') || '{}').id)).toBe(firstRoundId);
+  });
+
+  test('a fresh Inception attempt uses the configured Warm-up default', async ({ page }) => {
+    await signInOwner(page.request);
+    await page.goto('/inception');
+    await expect(page.locator('.inception-root')).toBeVisible();
+    await startFreshAttempt(page, false);
+    await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+    let profileId = '';
+    await page.route('**/api/inception/start', async route => {
+      if (route.request().method() === 'POST') profileId = route.request().postDataJSON().profileId;
+      await route.continue();
+    });
+    await finishApproachForTest(page);
+    expect(profileId).toBe('story');
+    await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
+  });
+
+  test('a failed Standard acknowledgement does not select Standard for the next retry', async ({ page }) => {
+    await signInOwner(page.request);
+    const config = await (await page.request.get('/api/inception')).json() as { actorScope: string };
+    await page.goto('/inception');
+    await page.evaluate(actorScope => localStorage.setItem(`workshop-inception-completed-round:${actorScope}`, JSON.stringify({ roundId: 'completed-standard-fixture', profileId: 'standard', outcome: 'failed' })), config.actorScope);
+    await page.reload();
+    await expect(page.locator('.inception-root')).toBeVisible();
+    await startFreshAttempt(page, false);
+    await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+    let profileId = '';
+    await page.route('**/api/inception/start', async route => {
+      if (route.request().method() === 'POST') profileId = route.request().postDataJSON().profileId;
+      await route.continue();
+    });
+    await finishApproachForTest(page);
+    expect(profileId).toBe('story');
+    await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
+  });
+
+  test('leaving and continuing an active Standard round resumes its same round without a new start', async ({ page }) => {
+    await signInOwner(page.request);
+    await page.goto('/inception?profile=standard');
+    await acceptInceptionRecordingNotice(page);
+    await expect(page.locator('.inception-root')).toBeVisible();
+    await startFreshAttempt(page, false);
+    await expect(page.getByRole('region', { name: 'Strongroom approach' })).toBeVisible();
+    const startProfiles: string[] = [];
+    await page.route('**/api/inception/start', async route => {
+      if (route.request().method() === 'POST') startProfiles.push(route.request().postDataJSON().profileId);
+      await route.continue();
+    });
+    await finishApproachForTest(page);
+    await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
+    const roundId = await page.evaluate(() => JSON.parse(sessionStorage.getItem('workshop-inception-session') || '{}').id as string);
+    expect(startProfiles).toEqual(['standard']);
+    await page.getByRole('button', { name: 'Leave strongroom' }).click();
+    await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible();
+    await page.getByRole('button', { name: 'Click to continue' }).click();
+    await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
+    expect(startProfiles).toEqual(['standard']);
+    await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('workshop-inception-session') || '{}').id)).toBe(roundId);
   });
 });
