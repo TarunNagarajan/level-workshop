@@ -200,6 +200,19 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
     throw Object.assign(new Error('The saved Inception model connection no longer matches its trusted server configuration.'), { status: 503, providerCode: 'provider_configuration_changed' });
   }
 
+  async function activeCooldown(providerId) {
+    const row = await get('SELECT blocked_until FROM inception_provider_health WHERE provider_id=?', providerId);
+    return Number(row?.blocked_until || 0) > now();
+  }
+  async function cooldownRemaining(providerId) {
+    const row = await get('SELECT blocked_until FROM inception_provider_health WHERE provider_id=?', providerId);
+    return Math.max(0, Math.ceil((Number(row?.blocked_until || 0) - now()) / 1000));
+  }
+  async function fallbackForOngoing() {
+    if (!flagEnabled || !env.GEMINI_API_KEY || await activeCooldown(GOOGLE_ID)) return null;
+    return { providerId: GOOGLE_ID, model: GEMINI_MODEL, baseUrl: GEMINI_BASE_URL, apiKey: env.GEMINI_API_KEY, reasoningEffort: 'low' };
+  }
+
   async function status() {
     await releaseExpiredReservations();
     const list = await all('SELECT provider_id, observed_at, last_success_at, blocked_until, last_error_code, daily_limit, daily_used, daily_observed_at, app_tokens_today, app_usage_day, failed_calls_today, failed_calls_day, app_tokens_after_observation, reserved_tokens FROM inception_provider_health WHERE provider_id IN (?,?)', GROQ_ID, GOOGLE_ID);
@@ -253,7 +266,7 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
     };
   }
 
-  return { enabled: flagEnabled, observe, selectForStart, credentialsForFrozen, attachReservation, releaseReservation, releaseRoundReservation, status };
+  return { enabled: flagEnabled, observe, selectForStart, credentialsForFrozen, attachReservation, releaseReservation, releaseRoundReservation, activeCooldown, cooldownRemaining, fallbackForOngoing, status };
 }
 
 export const INCEPTION_GOOGLE_ID = GOOGLE_ID;

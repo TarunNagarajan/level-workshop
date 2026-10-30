@@ -56,6 +56,9 @@ test('provider adapter classifies timeout, unavailable, rate limit, and credenti
     await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'provider_auth');
     globalThis.fetch = async () => ({ ok: false, status: 503 });
     await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'provider_unavailable');
+    globalThis.fetch = async () => ({ ok: true, json: async () => { throw Object.assign(new Error('body deadline'), { name: 'TimeoutError' }); } });
+    await assert.rejects(complete({ ...input, timeoutMs: 15000 }), error => error.status === 502 && error.providerCode === 'timeout');
+    await assert.rejects(complete({ ...input, timeoutMs: 31000 }), error => error.providerCode === 'provider_configuration_changed');
   } finally { globalThis.fetch = priorFetch; }
 });
 

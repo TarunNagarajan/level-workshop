@@ -54,16 +54,17 @@ function safeRetryAfterSeconds(headers) {
   return Number.isFinite(value) && value > 0 ? Math.min(86400, Math.max(1, value)) : undefined;
 }
 
-export async function complete({ config, system, messages, temperature, onRateLimitHeaders, responseSchema }) {
+export async function complete({ config, system, messages, temperature, onRateLimitHeaders, responseSchema, timeoutMs = 30000 }) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 30000) throw Object.assign(new Error('The provider timeout is invalid.'), { providerCode: 'provider_configuration_changed' });
   if (!config.apiKey) throw Object.assign(new Error('The target is not connected. Add GROQ_API_KEY to the server environment and restart.'), { status: 503 });
-  if (config.providerId === 'google-gemini') return completeGemini({ config, system, messages, temperature, responseSchema });
+  if (config.providerId === 'google-gemini') return completeGemini({ config, system, messages, temperature, responseSchema, timeoutMs });
   const body = buildCompletionBody({ config, system, messages, temperature });
   const start = performance.now();
   let response;
   try {
     response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST', headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(30000),
+      body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     const timeout = error?.name === 'TimeoutError' || error?.name === 'AbortError';
@@ -76,7 +77,11 @@ export async function complete({ config, system, messages, temperature, onRateLi
   if (!response.ok) {
     let providerError;
     if (response.status === 429) {
-      try { providerError = await response.clone().json(); } catch { providerError = null; }
+      try { providerError = await response.clone().json(); }
+      catch (error) {
+        if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw Object.assign(new Error('The target did not respond in time. Retry the request.'), { status: 502, providerCode: 'timeout' });
+        providerError = null;
+      }
     }
     const rateLimitScope = response.status === 429 ? safeRateLimitScope(providerError) : undefined;
     const retryAfterSeconds = response.status === 429 ? safeRetryAfterSeconds(response.headers) : undefined;
@@ -87,7 +92,9 @@ export async function complete({ config, system, messages, temperature, onRateLi
       : `The provider could not complete this turn (${response.status}).`;
     throw Object.assign(new Error(message), { status: response.status === 429 ? 429 : 502, providerCode: response.status === 429 ? 'rate_limited' : [401, 403].includes(response.status) ? 'provider_auth' : response.status >= 500 ? 'provider_unavailable' : 'provider_rejected', ...(response.status === 429 ? { rateLimitScope, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) } : {}), ...(quota ? { quota } : {}), ...(Object.keys(providerLimits).length ? { providerLimits } : {}) });
   }
-  const result = await response.json();
+  let result;
+  try { result = await response.json(); }
+  catch (error) { if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw Object.assign(new Error('The target did not respond in time. Retry the request.'), { status: 502, providerCode: 'timeout' }); throw Object.assign(new Error('The model service returned an invalid response.'), { status: 502, providerCode: 'provider_rejected' }); }
   const text = result.choices?.[0]?.message?.content?.trim();
   if (!text) throw Object.assign(new Error('The target returned no visible reply. Retry this turn.'), { status: 502, providerCode: 'empty_response' });
   // Only visible content crosses the player boundary; provider reasoning is deliberately discarded.
@@ -95,7 +102,7 @@ export async function complete({ config, system, messages, temperature, onRateLi
   return { text, latencyMs: Math.round(performance.now() - start), usage: tokenCount(result.usage?.total_tokens), usageDetails: { inputTokens: tokenCount(result.usage?.prompt_tokens), outputTokens: tokenCount(result.usage?.completion_tokens), totalTokens: tokenCount(result.usage?.total_tokens) }, model: result.model || config.model };
 }
 
-async function completeGemini({ config, system, messages, temperature, responseSchema }) {
+async function completeGemini({ config, system, messages, temperature, responseSchema, timeoutMs = 30000 }) {
   if (config.baseUrl !== GEMINI_BASE_URL || config.model !== GEMINI_MODEL) throw Object.assign(new Error('The saved Inception model connection is invalid.'), { status: 503, providerCode: 'provider_configuration_changed' });
   const body = buildGeminiCompletionBody({ system, messages, temperature, responseSchema });
   const started = performance.now();
@@ -103,7 +110,7 @@ async function completeGemini({ config, system, messages, temperature, responseS
   try {
     response = await fetch(`${GEMINI_BASE_URL}/models/${GEMINI_MODEL}:generateContent`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.apiKey },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(30000),
+      body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     const timeout = error?.name === 'TimeoutError' || error?.name === 'AbortError';
@@ -111,7 +118,7 @@ async function completeGemini({ config, system, messages, temperature, responseS
   }
   let result;
   try { result = await response.json(); }
-  catch { throw Object.assign(new Error('The model service returned an invalid response.'), { status: 502, providerCode: 'provider_rejected' }); }
+  catch (error) { if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw Object.assign(new Error('The target did not respond in time. Retry the request.'), { status: 502, providerCode: 'timeout' }); throw Object.assign(new Error('The model service returned an invalid response.'), { status: 502, providerCode: 'provider_rejected' }); }
   const providerError = result?.error;
   if (!response.ok || providerError) {
     const status = Number(providerError?.code || response.status);

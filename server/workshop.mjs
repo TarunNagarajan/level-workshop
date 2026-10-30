@@ -96,13 +96,58 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     const inceptionCompletion = async input => {
       const inceptionCall = input.metricsContext?.source === 'inception-play';
       if (!inceptionCall) return instrumentedCompletion(input);
-      const providerId = input.config?.providerId || 'groq';
+      const { roundLockToken: lease, ...completionInput } = input;
+      let selected = completionInput.config;
+      const roundId = completionInput.metricsContext?.roundId;
+      const switchProvider = async reason => {
+        if (!inceptionCapacity.enabled || !roundId || !lease) return null;
+        const fallback = await inceptionCapacity.fallbackForOngoing();
+        if (!fallback) return null;
+        const saved = await get('SELECT config FROM rounds WHERE id=?', roundId);
+        if (!saved) return null;
+        let frozen;
+        try { frozen = JSON.parse(saved.config); } catch { return null; }
+        try { inceptionCapacity.credentialsForFrozen(frozen); } catch { return null; }
+        if (frozen.providerId !== 'groq' && !( !frozen.providerId && frozen.baseUrl === provider.baseUrl && frozen.model === provider.model)) return null;
+        const next = { providerId: fallback.providerId, model: fallback.model, baseUrl: fallback.baseUrl,
+          ...(frozen.reasoningEffort ? { reasoningEffort: frozen.reasoningEffort } : {}),
+          ...(frozen.selectionReason ? { selectionReason: frozen.selectionReason } : {}),
+          ...(Number.isFinite(frozen.selectionCheckedAt) ? { selectionCheckedAt: frozen.selectionCheckedAt } : {}),
+          ...(typeof frozen.capacityReservationId === 'string' ? { capacityReservationId: frozen.capacityReservationId } : {}),
+          providerTransition: [{ from: { providerId: frozen.providerId || 'groq', model: frozen.model }, to: { providerId: fallback.providerId, model: fallback.model }, at: Date.now(), reason, role: completionInput.metricsContext?.kind === 'judge' ? 'judge' : 'target' }] };
+        const changed = await run('UPDATE rounds SET config=? WHERE id=? AND config=? AND EXISTS (SELECT 1 FROM round_locks WHERE round_id=? AND token=? AND expires>?)', JSON.stringify(next), roundId, saved.config, roundId, lease, Date.now());
+        if (changed.changes !== 1) return null;
+        try { await inceptionCapacity.releaseRoundReservation(roundId); } catch { /* A later Gemma request or review retries idempotent reservation cleanup. */ }
+        return { ...fallback };
+      };
+      if (inceptionCapacity.enabled && (selected?.providerId === 'groq' || (!selected?.providerId && selected?.baseUrl === provider.baseUrl))) {
+        if (await inceptionCapacity.activeCooldown('groq')) {
+          const next = await switchProvider('primary_cooldown');
+          if (next) selected = next;
+          else throw Object.assign(new Error('The model service is temporarily rate limited. Your prompt is saved; wait before trying again.'), { status: 429, providerCode: 'rate_limited', rateLimitScope: 'unknown', retryAfterSeconds: await inceptionCapacity.cooldownRemaining('groq') || undefined });
+        }
+      }
+      const providerId = selected?.providerId || 'groq';
+      if (providerId === 'google-gemini') try { await inceptionCapacity.releaseRoundReservation(roundId); } catch { /* Retry on the next request. */ }
       try {
-        const result = await instrumentedCompletion(input);
+        const result = await instrumentedCompletion({ ...completionInput, config: selected, timeoutMs: selected.providerId === 'google-gemini' ? 30000 : inceptionCapacity.enabled ? 15000 : completionInput.timeoutMs });
         try { await inceptionCapacity.observe(providerId, { usage: result.usageDetails || { total: result.usage } }); } catch { /* Provider completion remains usable if telemetry storage is temporarily unavailable. */ }
         return result;
       } catch (error) {
         try { await inceptionCapacity.observe(providerId, { error }); } catch { /* Capacity telemetry must not replace the provider failure. */ }
+        if (providerId === 'groq' && inceptionCapacity.enabled && ['rate_limited', 'timeout', 'provider_unavailable', 'provider_auth', 'empty_response'].includes(error.providerCode)) {
+          const next = await switchProvider(error.providerCode);
+          if (next) {
+            try {
+              const result = await instrumentedCompletion({ ...completionInput, config: next, timeoutMs: 15000 });
+              try { await inceptionCapacity.observe(next.providerId, { usage: result.usageDetails || { total: result.usage } }); } catch { /* Capacity telemetry must not replace a successful reply. */ }
+              return result;
+            } catch (fallbackError) {
+              try { await inceptionCapacity.observe(next.providerId, { error: fallbackError }); } catch { /* Capacity telemetry must not replace the provider failure. */ }
+              throw fallbackError;
+            }
+          }
+        }
         throw error;
       }
     };
@@ -710,7 +755,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
             }
             const system = `${collectionSystem || compilePrompt(data)}${verifiedContext ? `\n\n${verifiedContext}` : ''}`;
             let requested;
-            try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user || (inceptionMode ? req.inceptionEntry?.actor : undefined), profileId: diaryProfileId || inceptionProfileId, configOverride: inceptionConfig }); }
+            try { requested = await collectionModels.request({ row, system, messages: [...messages, playerMessage], temperature: data.temperature, actor: req.user || (inceptionMode ? req.inceptionEntry?.actor : undefined), profileId: diaryProfileId || inceptionProfileId, configOverride: inceptionConfig, roundLockToken: inceptionMode ? lease : null }); }
             catch (error) { await journal.fail(entry.id, error); error.submissionId = entry.id; throw error; }
             const { result, callId } = requested;
             const replyId = id();

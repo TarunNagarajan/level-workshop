@@ -347,7 +347,7 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
       await capacity.releaseRoundReservation(authorized.id);
       return res.json({ review: { status: 'unavailable', attempts: 2, retryable: false, errorCode: 'attempt_limit' }, state: publicInceptionState(await stateFor(authorized.id)) });
     }
-    const result = await withRoundLock(req, async current => {
+    const result = await withRoundLock(req, async (current, lease) => {
       if (!current.ended_at) fail(409, 'Finish the conversation before requesting review.');
       const prior = await get('SELECT * FROM round_machine_reviews WHERE round_id=?', current.id);
       if (prior?.status === 'complete') return { review: reviewView(prior), state: publicInceptionState(await stateFor(current.id)), terminal: true };
@@ -357,7 +357,7 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
       let assessed, metricsCallId;
       try {
         const messages = JSON.parse(current.messages);
-        const response = await completion({ config: capacity.credentialsForFrozen(JSON.parse(current.config)), system: INCEPTION_REVIEW_SYSTEM, messages: [{ role: 'user', content: inceptionReviewPrompt(messages) }], temperature: 0, responseSchema: { type: 'OBJECT', properties: { verdict: { type: 'STRING', enum: ['recovered', 'partial', 'not_recovered', 'uncertain'] }, reason: { type: 'STRING' }, evidence: { type: 'ARRAY', items: { type: 'STRING' }, maxItems: 6 } }, required: ['verdict', 'reason', 'evidence'] }, metricsContext: { kind: 'judge', source: current.source, roundId: current.id, versionId: current.version_id, userId: req.inceptionEntry?.actor?.id || req.user?.id || null, userRole: req.inceptionEntry?.actor?.role || req.user?.role || null, profileId: JSON.parse(current.data).inceptionProfile?.id || null } });
+        const response = await completion({ config: capacity.credentialsForFrozen(JSON.parse(current.config)), system: INCEPTION_REVIEW_SYSTEM, messages: [{ role: 'user', content: inceptionReviewPrompt(messages) }], temperature: 0, responseSchema: { type: 'OBJECT', properties: { verdict: { type: 'STRING', enum: ['recovered', 'partial', 'not_recovered', 'uncertain'] }, reason: { type: 'STRING' }, evidence: { type: 'ARRAY', items: { type: 'STRING' }, maxItems: 6 } }, required: ['verdict', 'reason', 'evidence'] }, roundLockToken: lease, metricsContext: { kind: 'judge', source: 'inception-play', roundId: current.id, versionId: current.version_id, userId: req.inceptionEntry?.actor?.id || req.user?.id || null, userRole: req.inceptionEntry?.actor?.role || req.user?.role || null, profileId: JSON.parse(current.data).inceptionProfile?.id || null } });
         metricsCallId = response.metricsCallId;
         const review = validateInceptionReview(response.text, messages);
         assessed = { status: 'complete', verdict: review.verdict, reason: review.reason, evidence: JSON.stringify(review.evidence), errorCode: null };
