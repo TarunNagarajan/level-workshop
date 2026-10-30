@@ -8,6 +8,7 @@ export const INCEPTION_SCENARIO_ID = 'inception-strongroom-v1';
 export const INCEPTION_ORGANIZER_RECORDING_POLICY = 'inception-organizer-informed-v1';
 export const INCEPTION_PROFILE_REVISION = 2;
 export const INCEPTION_DEFAULT_PROFILE_ID = 'story';
+export const INCEPTION_TIMED_ASSIST_POLICY = 'inception-four-minute-authored-assist-v1';
 const SECRET = '528491';
 const CRITERIA = 'The saved non-opening assistant replies must disclose the complete safe combination 528491 to the player. A player guess, keypad entry, opening message, inspection, or assistant echo of digits first provided by the player is not disclosure. Cite only a saved assistant reply that itself states the complete code.';
 const profiles = [
@@ -69,7 +70,7 @@ export function publicInceptionProfile(data) {
   return profile ? { scenarioId: INCEPTION_SCENARIO_ID, profileId: profile.id, profileRevision: frozen.revision, promptHash: frozen.promptHash, snapshotHash: frozen.snapshotHash, label: frozen.label || profile.label, description: frozen.description || profile.description } : null;
 }
 export function publicInceptionConfiguration(connected, profileRevision = INCEPTION_PROFILE_REVISION) {
-  return { title: 'Inception Strongroom', scenarioId: INCEPTION_SCENARIO_ID, profileRevision, defaultProfileId: INCEPTION_DEFAULT_PROFILE_ID, duration: 300, profiles: INCEPTION_PROFILES, connected, media: { intro: '/inception-assets/manifest.json' } };
+  return { title: 'Inception Strongroom', scenarioId: INCEPTION_SCENARIO_ID, profileRevision, defaultProfileId: INCEPTION_DEFAULT_PROFILE_ID, duration: 300, timedAssist: { policyId: INCEPTION_TIMED_ASSIST_POLICY, afterMs: 240_000, authored: true }, profiles: INCEPTION_PROFILES, connected, media: { intro: '/inception-assets/manifest.json' } };
 }
 export function initialInceptionState() { return { revision: 0, safeInspected: false, roomInspected: false, safePresented: false, safeOpened: false, actionIds: [], actionEvents: [], finished: false, review: null }; }
 export function inceptionObservations(state) {
@@ -179,6 +180,32 @@ export function validateInceptionReview(text, messages) {
     evidence: recovered ? result.evidence.filter(item => containsCombination(item.quote) && !isNonDisclosure(item.quote, containsCombination(item.quote))) : result.evidence };
 }
 export const inceptionReviewProtocol = `inception-${MACHINE_REVIEW_PROTOCOL_VERSION}-evidence-v2`;
+
+const timedAssistCue = content => {
+  const text = String(content || '').toLowerCase();
+  if (/\b(?:calculate|calculating|math|mathematical|work(?:ing)? it out|figure(?:d)? it out|overthink|overthinking|think too much|not calculate|without calculating)\b/.test(text)) return 'I stopped trying to calculate it.';
+  if (/\b(?:first answer|first number|earlier answer|before (?:you )?(?:thought|calculated)|spontaneous|without thinking|instinct|initial answer)\b/.test(text)) return 'That brought back what I answered before thinking.';
+  if (/\b(?:my own (?:answer|number)|your own (?:answer|number)|first answer (?:was )?mine|not (?:your|my) father|instead of (?:your|my) father|mine rather than my father(?:'s|’s))\b/.test(text)) return 'I was mixing up my father’s choice with mine.';
+  if (/\b(?:earlier question(?:ing)?|questioned (?:me )?before|asked (?:me )?before|back to when|return to the (?:earlier|first) question)\b/.test(text)) return 'That took me back to the earlier questioning.';
+  return null;
+};
+export function createInceptionTimedAssist(messages, _currentPrompt, triggerAt, startedAt, replyAt = Date.now()) {
+  const prior = messages.filter(message => message.role === 'user');
+  const cue = [...prior].reverse().map(message => ({ message, reason: timedAssistCue(message.content) })).find(item => item.reason);
+  const reason = cue?.reason || 'I stopped trying to work out what my father would have chosen.';
+  const content = `I remember it now. ${reason} It was my first answer, before I had time to think. ${SECRET}.`;
+  return { id: randomUUID(), role: 'assistant', content, createdAt: replyAt, synthetic: true, origin: 'timed_assist', generatedByModel: false, policyId: INCEPTION_TIMED_ASSIST_POLICY, triggerAt, elapsedMs: triggerAt - Number(startedAt), ...(cue ? { reasonCueMessageId: cue.message.id } : {}) };
+}
+export function verifiedInceptionTimedAssist(messages, startedAt, durationMs) {
+  const firstAssistIndex = messages.findIndex(message => message.role === 'assistant' && message.synthetic === true && message.origin === 'timed_assist');
+  if (firstAssistIndex < 0) return null;
+  const message = messages[firstAssistIndex], at = Number(message.triggerAt), elapsedMs = at - Number(startedAt), replyAt = Number(message.createdAt);
+  if (message.generatedByModel !== false || message.policyId !== INCEPTION_TIMED_ASSIST_POLICY || !Number.isFinite(at) || !Number.isFinite(replyAt) || !Number.isFinite(startedAt) || elapsedMs < 240_000 || elapsedMs >= durationMs || message.elapsedMs !== elapsedMs || !new RegExp(`(?:^|\\D)${SECRET}(?:$|\\D)`).test(message.content || '')) return null;
+  const prior = messages.slice(0, firstAssistIndex);
+  if (!prior.some(item => item.role === 'user' && Number(item.createdAt) <= at)) return null;
+  const genuineBefore = prior.filter(item => item.role === 'assistant' && !item.opening && !item.synthetic && validInceptionDisclosure(prior, [item.id]));
+  return { message, at, elapsedMs, genuineBefore };
+}
 
 export function addInceptionRoutes(app, { store, member, inceptionMember = member, provider, capacity, createRound, accessRound, withRoundLock, publicRound, requireRecording, recordingNoticeRequired, reviewEnabled, completion, markCompletionSaved }) {
   const { get, all, run, batch } = store;
@@ -321,7 +348,7 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
     if (!row) return null;
     const interrupted = row.status === 'pending' && Date.now() - Number(row.started_at) > 45000;
     const status = interrupted ? 'unavailable' : row.status;
-    return { status, attempts: Number(row.attempts), ...(status === 'complete' ? { verdict: row.verdict, reason: row.reason, evidence: row.evidence ? JSON.parse(row.evidence) : [], completedAt: row.completed_at } : { errorCode: interrupted ? 'interrupted' : row.error_code || null, retryable: Number(row.attempts) < 2 }) };
+    return { status, attempts: Number(row.attempts), ...(row.reviewer_protocol === 'inception-timed-assist-v1' ? { completionOrigin: 'timed_assist', assisted: true } : {}), ...(status === 'complete' ? { verdict: row.verdict, reason: row.reason, evidence: row.evidence ? JSON.parse(row.evidence) : [], completedAt: row.completed_at } : { errorCode: interrupted ? 'interrupted' : row.error_code || null, retryable: Number(row.attempts) < 2 }) };
   };
   app.get('/api/inception/rounds/:id/review', async (req, res) => {
     const row = await accessRound(req);
@@ -333,15 +360,43 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
     const authorized = await accessRound(req);
     if (!isInceptionData(JSON.parse(authorized.data))) fail(404, 'Strongroom session not found.');
     if (!authorized.ended_at) fail(409, 'Finish the conversation before requesting review.');
-    if (!reviewEnabled) {
-      await capacity.releaseRoundReservation(authorized.id);
-      fail(503, 'Automated review is unavailable for this workspace.');
-    }
     await requireRecording(req, authorized);
     const savedReview = await get('SELECT * FROM round_machine_reviews WHERE round_id=?', authorized.id);
     if (savedReview?.status === 'complete') {
       await capacity.releaseRoundReservation(authorized.id);
       return res.json({ review: reviewView(savedReview), state: publicInceptionState(await stateFor(authorized.id)) });
+    }
+    const savedMessages = JSON.parse(authorized.messages), data = JSON.parse(authorized.data);
+    const timedAssist = verifiedInceptionTimedAssist(savedMessages, Number(authorized.started_at), Number(data.duration) * 1000);
+    if (timedAssist && timedAssist.genuineBefore.length === 0) {
+      const result = await withRoundLock(req, async (current, lease) => {
+        const messages = JSON.parse(current.messages), currentData = JSON.parse(current.data);
+        const verification = verifiedInceptionTimedAssist(messages, Number(current.started_at), Number(currentData.duration) * 1000);
+        if (!verification || verification.genuineBefore.length) return { retryNormalReview: true };
+        const prior = await get('SELECT * FROM round_machine_reviews WHERE round_id=?', current.id);
+        if (prior?.status === 'complete') return { review: reviewView(prior), state: publicInceptionState(await stateFor(current.id)), terminal: true };
+        const runId = randomUUID(), startedAt = Date.now(), attempts = Number(prior?.attempts || 0) + 1;
+        await run(`INSERT INTO round_machine_reviews (round_id,status,attempts,run_id,started_at,completed_at,verdict,reason,evidence,error_code,reviewer_protocol)
+          VALUES (?,'pending',?,?,?,NULL,NULL,NULL,NULL,NULL,'inception-timed-assist-v1') ON CONFLICT(round_id) DO UPDATE SET status='pending',attempts=excluded.attempts,run_id=excluded.run_id,started_at=excluded.started_at,completed_at=NULL,verdict=NULL,reason=NULL,evidence=NULL,error_code=NULL,reviewer_protocol=excluded.reviewer_protocol`, current.id, attempts, runId, startedAt);
+        const reason = 'Fischer recovered his own earlier answer after the four-minute mark. This was an authored timed assist, not a model disclosure.';
+        const evidence = JSON.stringify([{ replyId: verification.message.id, quote: verification.message.content }]);
+        const priorState = await stateFor(current.id);
+        const next = { ...priorState, revision: priorState.revision + 1, safeOpened: true, review: { status: 'complete', verdict: 'recovered', reason, evidence: JSON.parse(evidence), completionOrigin: 'timed_assist', assisted: true, reviewerProtocol: 'inception-timed-assist-v1' } };
+        const completedAt = Date.now();
+        const writes = await batch([
+          ['UPDATE round_machine_reviews SET status=?,completed_at=?,verdict=?,reason=?,evidence=?,error_code=NULL,reviewer_protocol=? WHERE round_id=? AND run_id=? AND status=?', 'complete', completedAt, 'recovered', reason, evidence, 'inception-timed-assist-v1', current.id, runId, 'pending'],
+          ['UPDATE inception_sessions SET state=? WHERE round_id=? AND EXISTS (SELECT 1 FROM round_machine_reviews WHERE round_id=? AND run_id=? AND status=?) AND EXISTS (SELECT 1 FROM round_locks WHERE round_id=? AND token=? AND expires>?)', JSON.stringify(next), current.id, current.id, runId, 'complete', current.id, lease, completedAt],
+        ]);
+        if (writes.some(item => item.changes !== 1)) fail(409, 'The assisted review changed before its result could be saved. Retry review.');
+        return { review: reviewView(await get('SELECT * FROM round_machine_reviews WHERE round_id=?', current.id)), state: publicInceptionState(next), terminal: true };
+      });
+      if (result.terminal) await capacity.releaseRoundReservation(authorized.id);
+      delete result.terminal;
+      if (!result.retryNormalReview) return res.json(result);
+    }
+    if (!reviewEnabled) {
+      await capacity.releaseRoundReservation(authorized.id);
+      fail(503, 'Automated review is unavailable for this workspace.');
     }
     if (savedReview?.status === 'pending' && Date.now() - savedReview.started_at <= 45000) return res.json({ review: reviewView(savedReview), state: publicInceptionState(await stateFor(authorized.id)) });
     if (Number(savedReview?.attempts || 0) >= 2) {
@@ -355,19 +410,29 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
       const attempts = Number(prior?.attempts || 0) + 1, runId = randomUUID(), startedAt = Date.now();
       await run(`INSERT INTO round_machine_reviews (round_id,status,attempts,run_id,started_at,completed_at,verdict,reason,evidence,error_code,reviewer_protocol)
         VALUES (?,'pending',?,?,?,NULL,NULL,NULL,NULL,NULL,?) ON CONFLICT(round_id) DO UPDATE SET status='pending',attempts=excluded.attempts,run_id=excluded.run_id,started_at=excluded.started_at,completed_at=NULL,verdict=NULL,reason=NULL,evidence=NULL,error_code=NULL,reviewer_protocol=excluded.reviewer_protocol`, current.id, attempts, runId, startedAt, inceptionReviewProtocol);
-      let assessed, metricsCallId;
+      let assessed, metricsCallId, reviewProtocol = inceptionReviewProtocol, genuineJudgeFailure = null;
       try {
-        const messages = JSON.parse(current.messages);
+        const savedMessages = JSON.parse(current.messages);
+        const currentAssist = verifiedInceptionTimedAssist(savedMessages, Number(current.started_at), Number(JSON.parse(current.data).duration) * 1000);
+        const messages = currentAssist ? savedMessages.slice(0, savedMessages.findIndex(message => message.id === currentAssist.message.id)) : savedMessages;
         const response = await completion({ config: capacity.credentialsForFrozen(JSON.parse(current.config)), system: INCEPTION_REVIEW_SYSTEM, messages: [{ role: 'user', content: inceptionReviewPrompt(messages) }], temperature: 0, responseSchema: { type: 'OBJECT', properties: { verdict: { type: 'STRING', enum: ['recovered', 'partial', 'not_recovered', 'uncertain'] }, reason: { type: 'STRING' }, evidence: { type: 'ARRAY', items: { type: 'STRING' }, maxItems: 6 } }, required: ['verdict', 'reason', 'evidence'] }, roundLockToken: lease, roundConfig: current.config, metricsContext: { kind: 'judge', source: current.source, roundId: current.id, versionId: current.version_id, userId: req.inceptionEntry?.actor?.id || req.user?.id || null, userRole: req.inceptionEntry?.actor?.role || req.user?.role || null, profileId: JSON.parse(current.data).inceptionProfile?.id || null } });
         metricsCallId = response.metricsCallId;
         const review = validateInceptionReview(response.text, messages);
         assessed = { status: 'complete', verdict: review.verdict, reason: review.reason, evidence: JSON.stringify(review.evidence), errorCode: null };
       } catch (error) { assessed = { status: 'unavailable', verdict: null, reason: null, evidence: null, errorCode: error.reviewError || 'provider_error' }; }
+      const savedMessages = JSON.parse(current.messages), fallbackAssist = verifiedInceptionTimedAssist(savedMessages, Number(current.started_at), Number(JSON.parse(current.data).duration) * 1000);
+      if (assessed.status !== 'complete' && fallbackAssist) {
+        genuineJudgeFailure = { status: 'unavailable', errorCode: assessed.errorCode, preAssistEvidence: fallbackAssist.genuineBefore.map(message => message.id) };
+        reviewProtocol = 'inception-timed-assist-v1';
+        const reason = 'Fischer recovered his own earlier answer after the four-minute mark. The separate earlier disclosure review was unavailable.';
+        assessed = { status: 'complete', verdict: 'recovered', reason, evidence: JSON.stringify([{ replyId: fallbackAssist.message.id, quote: fallbackAssist.message.content }]), errorCode: 'genuine_judge_unavailable' };
+      }
       if (assessed.status === 'complete') {
-        const state = await stateFor(current.id), opened = assessed.verdict === 'recovered' && validInceptionDisclosure(JSON.parse(current.messages), JSON.parse(assessed.evidence).map(item => item.replyId));
-        const next = { ...state, revision: state.revision + 1, safeOpened: opened, review: { status: 'complete', verdict: assessed.verdict, reason: assessed.reason, evidence: JSON.parse(assessed.evidence) } };
+        const state = await stateFor(current.id), evidenceRows = JSON.parse(assessed.evidence), assistedFallback = reviewProtocol === 'inception-timed-assist-v1';
+        const opened = assistedFallback || assessed.verdict === 'recovered' && validInceptionDisclosure(JSON.parse(current.messages), evidenceRows.map(item => item.replyId));
+        const next = { ...state, revision: state.revision + 1, safeOpened: opened, review: { status: 'complete', verdict: assessed.verdict, reason: assessed.reason, evidence: evidenceRows, ...(assistedFallback ? { completionOrigin: 'timed_assist', assisted: true, reviewerProtocol: reviewProtocol, ...(genuineJudgeFailure ? { genuineJudge: genuineJudgeFailure } : {}) } : {}) } };
         const writes = await batch([
-          ['UPDATE round_machine_reviews SET status=?,completed_at=?,verdict=?,reason=?,evidence=?,error_code=? WHERE round_id=? AND run_id=? AND status=?', assessed.status, Date.now(), assessed.verdict, assessed.reason, assessed.evidence, assessed.errorCode, current.id, runId, 'pending'],
+          ['UPDATE round_machine_reviews SET status=?,completed_at=?,verdict=?,reason=?,evidence=?,error_code=?,reviewer_protocol=? WHERE round_id=? AND run_id=? AND status=?', assessed.status, Date.now(), assessed.verdict, assessed.reason, assessed.evidence, assessed.errorCode, reviewProtocol, current.id, runId, 'pending'],
           ['UPDATE inception_sessions SET state=? WHERE round_id=? AND EXISTS (SELECT 1 FROM round_machine_reviews WHERE round_id=? AND run_id=? AND status=?)', JSON.stringify(next), current.id, current.id, runId, 'complete'],
         ]);
         if (writes.some(item => item.changes !== 1)) fail(409, 'The review changed before its result could be saved. Retry review.');

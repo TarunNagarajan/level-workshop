@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { validInceptionDisclosure } from './inception.mjs';
+import { validInceptionDisclosure, verifiedInceptionTimedAssist } from './inception.mjs';
 
 const TEST_ACTORS = new Set(['c8b7e446-8277-49c7-9e45-e65301eea3ec', '0a97f20c-9353-4470-8048-cc7c22744b0c']);
 const TEST_NAMES = new Set(['tarun', 'tawun', 'owner', 'workshop owner']);
@@ -45,7 +45,7 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
     const search = typeof query.search === 'string' ? query.search.trim() : '';
     if (search.length > 100) throw Object.assign(new Error('Search must be 100 characters or fewer.'), { status: 400 });
     const outcome = query.outcome || 'all';
-    if (typeof outcome !== 'string' || !['all', 'won', 'not-recovered', 'unfinished', 'review-error'].includes(outcome)) throw Object.assign(new Error('Choose a valid outcome filter.'), { status: 400 });
+    if (typeof outcome !== 'string' || !['all', 'won', 'assisted', 'not-recovered', 'unfinished', 'review-error'].includes(outcome)) throw Object.assign(new Error('Choose a valid outcome filter.'), { status: 400 });
     if (query.includeTests !== undefined && !['true', 'false'].includes(query.includeTests)) throw Object.assign(new Error('includeTests must be true or false.'), { status: 400 });
     return { period, start, cutoff, pinnedWindow: query.from !== undefined || query.to !== undefined, search, outcome, includeTests: query.includeTests === 'true' };
   };
@@ -54,8 +54,8 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
     const searchId = /^[0-9a-f-]{8,100}$/i.test(f.search) ? f.search : '';
     const durationProjection = store.dialect === 'postgres' ? "CAST(r.data::jsonb->>'duration' AS INTEGER)" : "CAST(json_extract(r.data,'$.duration') AS INTEGER)";
     const promptProjection = store.dialect === 'postgres' ? "(SELECT COUNT(*) FROM jsonb_array_elements(r.messages::jsonb) AS messages(value) WHERE value->>'role'='user')" : "(SELECT COUNT(*) FROM json_each(r.messages) WHERE json_extract(value,'$.role')='user')";
-    const rows = await all(`SELECT r.id,r.author_id,r.tester,r.started_at,r.ended_at,${durationProjection} AS duration_seconds,${promptProjection} AS saved_prompt_count,
-      i.actor_id,i.state,u.name AS actor_name,m.status AS review_status,m.verdict,m.reason,m.evidence,m.error_code,m.started_at AS review_started_at,m.completed_at AS review_completed_at
+    const rows = await all(`SELECT r.id,r.author_id,r.tester,r.started_at,r.ended_at,r.messages,${durationProjection} AS duration_seconds,${promptProjection} AS saved_prompt_count,
+      i.actor_id,i.state,u.name AS actor_name,m.status AS review_status,m.verdict,m.reason,m.evidence,m.error_code,m.reviewer_protocol,m.started_at AS review_started_at,m.completed_at AS review_completed_at
       FROM rounds r JOIN inception_sessions i ON i.round_id=r.id LEFT JOIN users u ON u.id=i.actor_id LEFT JOIN round_machine_reviews m ON m.round_id=r.id
       WHERE r.source='inception-play' AND r.started_at>=? AND r.started_at<? AND (?='' OR lower(COALESCE(u.name,'')) LIKE ? OR r.id LIKE ?)
       ORDER BY r.started_at DESC,r.id DESC`, f.start, f.cutoff, f.search, `%${f.search.toLowerCase()}%`, `%${searchId || f.search}%`);
@@ -72,6 +72,8 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
   };
   const outcomeFor = (row, now = Date.now()) => {
     const state = json(row.state) || {};
+    const assist = verifiedInceptionTimedAssist(json(row.messages) || [], Number(row.started_at), Number(row.duration_seconds || 0) * 1000);
+    if (assist && row.reviewer_protocol === 'inception-timed-assist-v1' && state.safeOpened === true && state.review?.completionOrigin === 'timed_assist') return 'assisted';
     if (row.review_status === 'complete' && row.verdict === 'recovered') return state.safeOpened === true ? 'won' : 'unknown';
     if (row.review_status === 'complete' && row.verdict === 'not_recovered') return 'not-recovered';
     if (row.review_status === 'complete' && row.verdict === 'partial') return 'partial';
@@ -86,6 +88,7 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
     if (filter === 'all') return true;
     const o = outcomeFor(row);
     if (filter === 'won') return o === 'won';
+    if (filter === 'assisted') return o === 'assisted';
     if (filter === 'not-recovered') return o === 'not-recovered';
     if (filter === 'review-error') return o === 'review-error';
     return ['active', 'expired', 'unreviewed', 'review-pending', 'unknown', 'partial', 'uncertain'].includes(o);
@@ -111,14 +114,15 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
     const state = json(row.state) || {};
     const outcome = outcomeFor(row);
     const start = Number(row.started_at), end = row.ended_at == null ? null : Number(row.ended_at);
-    const model = safeModel(row), reveal = revealFor(row);
+    const model = safeModel(row), reveal = revealFor(row), assist = verifiedInceptionTimedAssist(json(row.messages) || [], start, Number(row.duration_seconds || 0) * 1000);
     return {
       id: row.id, player: String(row.actor_name || '').trim() || `Anonymous ${String(row.actor_id || row.id).slice(0, 8)}`,
       actorId: row.actor_id, startedAt: start, endedAt: end, outcome,
       savedPromptCount: Number(row.saved_prompt_count ?? (json(row.messages) || []).filter(message => message.role === 'user').length),
       durationMs: end == null ? null : Math.max(0, end - start), revealAt: reveal?.at ?? null,
+      assistedAt: assist?.at ?? null, assistElapsedMs: assist?.elapsedMs ?? null,
       difficulty: json(row.data)?.inceptionProfile?.label || json(row.data)?.inceptionProfile?.name || json(row.data)?.inceptionProfile?.id || 'Inception',
-      model, review: { status: row.review_status || (outcome === 'unreviewed' ? 'unreviewed' : null), verdict: row.verdict || null, reason: row.reason || null, evidence: json(row.evidence) || [], errorCode: row.error_code || null, startedAt: row.review_started_at || null, completedAt: row.review_completed_at || null },
+      model, review: { status: row.review_status || (outcome === 'unreviewed' ? 'unreviewed' : null), verdict: row.verdict || null, reason: row.reason || null, evidence: json(row.evidence) || [], errorCode: row.error_code || null, startedAt: row.review_started_at || null, completedAt: row.review_completed_at || null, ...(outcome === 'assisted' ? { completionOrigin: 'timed_assist', assisted: true } : {}) },
       ...(detail ? { messages: json(row.messages) || [], revealReplyId: reveal?.replyId ?? null, revealPromptId: reveal?.promptId ?? null, failedSubmissions: [] } : {}),
     };
   };
@@ -138,7 +142,7 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
     const f = req.statisticsFilters;
     const rows = (await selectRows(f)).filter(row => matchesOutcome(row, f.outcome));
     const now = Date.now();
-    const outcomes = { won: 0, 'not-recovered': 0, partial: 0, uncertain: 0, active: 0, expired: 0, unreviewed: 0, 'review-pending': 0, 'review-error': 0, unknown: 0 };
+    const outcomes = { won: 0, assisted: 0, 'not-recovered': 0, partial: 0, uncertain: 0, active: 0, expired: 0, unreviewed: 0, 'review-pending': 0, 'review-error': 0, unknown: 0 };
     const dayMap = new Map(); let durationCount = 0, savedPromptTurns = 0;
     const attemptsByActor = new Set();
     for (const row of rows) {
@@ -177,7 +181,7 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
       models.set(name, group);
     }
     const percentile = (values, p) => values.length ? values.slice().sort((a, b) => a - b)[Math.min(values.length - 1, Math.ceil(values.length * p) - 1)] : null;
-    res.json({ generatedAt: now, timezone: 'Asia/Kolkata (UTC+05:30)', period: f.period, window: { from: f.start, to: f.cutoff }, filters: { search: f.search, outcome: f.outcome, includeTests: f.includeTests }, totals: { started: rows.length, identities: attemptsByActor.size, wins: outcomes.won, judgedDenominator: judged, winRate: judged ? outcomes.won / judged : null, savedPromptTurns, durableSubmissionAttempts: Object.values(submissionCounts).reduce((sum, value) => sum + value, 0), medianFinishDurationMs: durationCount ? percentile(rows.filter(r => r.ended_at != null).map(r => Math.max(0, r.ended_at - r.started_at)), .5) : null, active: outcomes.active, expired: outcomes.expired, reviewIssues: outcomes['review-error'] }, submissionCounts, browser, outcomes, daily: [...dayMap.values()].sort((a, b) => a.date.localeCompare(b.date)), modelCalls: [...models.values()].map(group => ({ model: group.model, providers: [...group.providers], targetCalls: group.targetCalls, judgeCalls: group.judgeCalls, succeeded: group.succeeded, failed: group.failed, interrupted: group.interrupted, inFlight: group.inFlight, errors: group.errors, latency: { p50Ms: percentile(group.latencies, .5), p95Ms: percentile(group.latencies, .95) }, tokens: { input: { sum: group.inputCovered ? group.inputTokens : null, covered: group.inputCovered, missing: group.targetCalls + group.judgeCalls - group.inputCovered }, output: { sum: group.outputCovered ? group.outputTokens : null, covered: group.outputCovered, missing: group.targetCalls + group.judgeCalls - group.outputCovered }, total: { sum: group.totalCovered ? group.totalTokens : null, covered: group.totalCovered, missing: group.targetCalls + group.judgeCalls - group.totalCovered } } })) });
+    res.json({ generatedAt: now, timezone: 'Asia/Kolkata (UTC+05:30)', period: f.period, window: { from: f.start, to: f.cutoff }, filters: { search: f.search, outcome: f.outcome, includeTests: f.includeTests }, totals: { started: rows.length, identities: attemptsByActor.size, wins: outcomes.won, assisted: outcomes.assisted, judgedDenominator: judged, winRate: judged ? outcomes.won / judged : null, savedPromptTurns, durableSubmissionAttempts: Object.values(submissionCounts).reduce((sum, value) => sum + value, 0), medianFinishDurationMs: durationCount ? percentile(rows.filter(r => r.ended_at != null).map(r => Math.max(0, r.ended_at - r.started_at)), .5) : null, active: outcomes.active, expired: outcomes.expired, reviewIssues: outcomes['review-error'] }, submissionCounts, browser, outcomes, daily: [...dayMap.values()].sort((a, b) => a.date.localeCompare(b.date)), modelCalls: [...models.values()].map(group => ({ model: group.model, providers: [...group.providers], targetCalls: group.targetCalls, judgeCalls: group.judgeCalls, succeeded: group.succeeded, failed: group.failed, interrupted: group.interrupted, inFlight: group.inFlight, errors: group.errors, latency: { p50Ms: percentile(group.latencies, .5), p95Ms: percentile(group.latencies, .95) }, tokens: { input: { sum: group.inputCovered ? group.inputTokens : null, covered: group.inputCovered, missing: group.targetCalls + group.judgeCalls - group.inputCovered }, output: { sum: group.outputCovered ? group.outputTokens : null, covered: group.outputCovered, missing: group.targetCalls + group.judgeCalls - group.outputCovered }, total: { sum: group.totalCovered ? group.totalTokens : null, covered: group.totalCovered, missing: group.targetCalls + group.judgeCalls - group.totalCovered } } })) });
   });
   app.get('/api/statistics/attempts', admin, filterQuery, async (req, res) => {
     const f = req.statisticsFilters;
@@ -197,7 +201,7 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
   app.get('/api/statistics/attempts/:id', admin, async (req, res) => {
     if (req.params.id.length > 100) return res.status(404).json({ error: 'Attempt not found.' });
     const durationProjection = store.dialect === 'postgres' ? "CAST(r.data::jsonb->>'duration' AS INTEGER)" : "CAST(json_extract(r.data,'$.duration') AS INTEGER)";
-    const row = await get(`SELECT r.id,r.author_id,r.tester,r.started_at,r.ended_at,r.answer,r.messages,r.config,r.data,${durationProjection} AS duration_seconds,i.actor_id,i.state,u.name AS actor_name,m.status AS review_status,m.verdict,m.reason,m.evidence,m.error_code,m.started_at AS review_started_at,m.completed_at AS review_completed_at FROM rounds r JOIN inception_sessions i ON i.round_id=r.id LEFT JOIN users u ON u.id=i.actor_id LEFT JOIN round_machine_reviews m ON m.round_id=r.id WHERE r.id=? AND r.source='inception-play'`, req.params.id);
+    const row = await get(`SELECT r.id,r.author_id,r.tester,r.started_at,r.ended_at,r.answer,r.messages,r.config,r.data,${durationProjection} AS duration_seconds,i.actor_id,i.state,u.name AS actor_name,m.status AS review_status,m.verdict,m.reason,m.evidence,m.error_code,m.reviewer_protocol,m.started_at AS review_started_at,m.completed_at AS review_completed_at FROM rounds r JOIN inception_sessions i ON i.round_id=r.id LEFT JOIN users u ON u.id=i.actor_id LEFT JOIN round_machine_reviews m ON m.round_id=r.id WHERE r.id=? AND r.source='inception-play'`, req.params.id);
     if (!row) return res.status(404).json({ error: 'Attempt not found.' });
     const submissions = await all(`SELECT id,content,created_at,started_at,completed_at,status,error_code,reply,reply_id,transcript_saved FROM durable_submissions WHERE round_id=? AND status IN ('failed','interrupted','rejected','accepted','running') ORDER BY created_at,id`, row.id);
     const calls = await all(`SELECT id,context_kind,started_at,completed_at,latency_ms,requested_model,returned_model,provider_host,provider_slot,status,error_category,input_tokens,output_tokens,total_tokens FROM metrics_model_calls WHERE round_id=? AND source='inception-play' ORDER BY started_at,id`, row.id);
