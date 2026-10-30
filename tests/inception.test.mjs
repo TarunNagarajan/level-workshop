@@ -166,6 +166,7 @@ test('timed assist provenance rejects early, late, player-authored, and mismatch
   assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, after], startedAt, 300_000), null);
   assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, { ...good, synthetic: false }], startedAt, 300_000), null);
   assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, { ...good, policyId: 'other' }], startedAt, 300_000), null);
+  assert.equal(verifiedInceptionTimedAssist([{ id: 'u', role: 'user', createdAt: startedAt + 240_000 }, { ...good, createdAt: startedAt + 239_999 }], startedAt, 300_000), null);
 });
 
 test('an ongoing Inception target transparently switches from Groq to Gemma and saves one idempotent turn', async t => {

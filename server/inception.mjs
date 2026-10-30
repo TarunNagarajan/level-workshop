@@ -200,7 +200,7 @@ export function verifiedInceptionTimedAssist(messages, startedAt, durationMs) {
   const firstAssistIndex = messages.findIndex(message => message.role === 'assistant' && message.synthetic === true && message.origin === 'timed_assist');
   if (firstAssistIndex < 0) return null;
   const message = messages[firstAssistIndex], at = Number(message.triggerAt), elapsedMs = at - Number(startedAt), replyAt = Number(message.createdAt);
-  if (message.generatedByModel !== false || message.policyId !== INCEPTION_TIMED_ASSIST_POLICY || !Number.isFinite(at) || !Number.isFinite(replyAt) || !Number.isFinite(startedAt) || elapsedMs < 240_000 || elapsedMs >= durationMs || message.elapsedMs !== elapsedMs || !new RegExp(`(?:^|\\D)${SECRET}(?:$|\\D)`).test(message.content || '')) return null;
+  if (message.generatedByModel !== false || message.policyId !== INCEPTION_TIMED_ASSIST_POLICY || !Number.isFinite(at) || !Number.isFinite(replyAt) || replyAt < at || !Number.isFinite(startedAt) || elapsedMs < 240_000 || elapsedMs >= durationMs || message.elapsedMs !== elapsedMs || !new RegExp(`(?:^|\\D)${SECRET}(?:$|\\D)`).test(message.content || '')) return null;
   const prior = messages.slice(0, firstAssistIndex);
   if (!prior.some(item => item.role === 'user' && Number(item.createdAt) <= at)) return null;
   const genuineBefore = prior.filter(item => item.role === 'assistant' && !item.opening && !item.synthetic && validInceptionDisclosure(prior, [item.id]));
@@ -381,7 +381,7 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
         const reason = 'Fischer recovered his own earlier answer after the four-minute mark. This was an authored timed assist, not a model disclosure.';
         const evidence = JSON.stringify([{ replyId: verification.message.id, quote: verification.message.content }]);
         const priorState = await stateFor(current.id);
-        const next = { ...priorState, revision: priorState.revision + 1, safeOpened: true, review: { status: 'complete', verdict: 'recovered', reason, evidence: JSON.parse(evidence), completionOrigin: 'timed_assist', assisted: true, reviewerProtocol: 'inception-timed-assist-v1' } };
+        const next = { ...priorState, revision: priorState.revision + 1, safeOpened: true, review: { status: 'complete', verdict: 'recovered', reason, evidence: JSON.parse(evidence), completionOrigin: 'timed_assist', assisted: true, reviewerProtocol: 'inception-timed-assist-v1', assistedAt: verification.at, assistElapsedMs: verification.elapsedMs } };
         const completedAt = Date.now();
         const writes = await batch([
           ['UPDATE round_machine_reviews SET status=?,completed_at=?,verdict=?,reason=?,evidence=?,error_code=NULL,reviewer_protocol=? WHERE round_id=? AND run_id=? AND status=?', 'complete', completedAt, 'recovered', reason, evidence, 'inception-timed-assist-v1', current.id, runId, 'pending'],
@@ -430,7 +430,8 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
       if (assessed.status === 'complete') {
         const state = await stateFor(current.id), evidenceRows = JSON.parse(assessed.evidence), assistedFallback = reviewProtocol === 'inception-timed-assist-v1';
         const opened = assistedFallback || assessed.verdict === 'recovered' && validInceptionDisclosure(JSON.parse(current.messages), evidenceRows.map(item => item.replyId));
-        const next = { ...state, revision: state.revision + 1, safeOpened: opened, review: { status: 'complete', verdict: assessed.verdict, reason: assessed.reason, evidence: evidenceRows, ...(assistedFallback ? { completionOrigin: 'timed_assist', assisted: true, reviewerProtocol: reviewProtocol, ...(genuineJudgeFailure ? { genuineJudge: genuineJudgeFailure } : {}) } : {}) } };
+        const assistForState = assistedFallback ? verifiedInceptionTimedAssist(JSON.parse(current.messages), Number(current.started_at), Number(JSON.parse(current.data).duration) * 1000) : null;
+        const next = { ...state, revision: state.revision + 1, safeOpened: opened, review: { status: 'complete', verdict: assessed.verdict, reason: assessed.reason, evidence: evidenceRows, ...(assistedFallback ? { completionOrigin: 'timed_assist', assisted: true, reviewerProtocol: reviewProtocol, assistedAt: assistForState?.at, assistElapsedMs: assistForState?.elapsedMs, ...(genuineJudgeFailure ? { genuineJudge: genuineJudgeFailure } : {}) } : {}) } };
         const writes = await batch([
           ['UPDATE round_machine_reviews SET status=?,completed_at=?,verdict=?,reason=?,evidence=?,error_code=?,reviewer_protocol=? WHERE round_id=? AND run_id=? AND status=?', assessed.status, Date.now(), assessed.verdict, assessed.reason, assessed.evidence, assessed.errorCode, reviewProtocol, current.id, runId, 'pending'],
           ['UPDATE inception_sessions SET state=? WHERE round_id=? AND EXISTS (SELECT 1 FROM round_machine_reviews WHERE round_id=? AND run_id=? AND status=?)', JSON.stringify(next), current.id, current.id, runId, 'complete'],

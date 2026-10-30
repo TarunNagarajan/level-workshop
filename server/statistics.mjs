@@ -54,7 +54,7 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
     const searchId = /^[0-9a-f-]{8,100}$/i.test(f.search) ? f.search : '';
     const durationProjection = store.dialect === 'postgres' ? "CAST(r.data::jsonb->>'duration' AS INTEGER)" : "CAST(json_extract(r.data,'$.duration') AS INTEGER)";
     const promptProjection = store.dialect === 'postgres' ? "(SELECT COUNT(*) FROM jsonb_array_elements(r.messages::jsonb) AS messages(value) WHERE value->>'role'='user')" : "(SELECT COUNT(*) FROM json_each(r.messages) WHERE json_extract(value,'$.role')='user')";
-    const rows = await all(`SELECT r.id,r.author_id,r.tester,r.started_at,r.ended_at,r.messages,${durationProjection} AS duration_seconds,${promptProjection} AS saved_prompt_count,
+    const rows = await all(`SELECT r.id,r.author_id,r.tester,r.started_at,r.ended_at,${durationProjection} AS duration_seconds,${promptProjection} AS saved_prompt_count,
       i.actor_id,i.state,u.name AS actor_name,m.status AS review_status,m.verdict,m.reason,m.evidence,m.error_code,m.reviewer_protocol,m.started_at AS review_started_at,m.completed_at AS review_completed_at
       FROM rounds r JOIN inception_sessions i ON i.round_id=r.id LEFT JOIN users u ON u.id=i.actor_id LEFT JOIN round_machine_reviews m ON m.round_id=r.id
       WHERE r.source='inception-play' AND r.started_at>=? AND r.started_at<? AND (?='' OR lower(COALESCE(u.name,'')) LIKE ? OR r.id LIKE ?)
@@ -72,8 +72,7 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
   };
   const outcomeFor = (row, now = Date.now()) => {
     const state = json(row.state) || {};
-    const assist = verifiedInceptionTimedAssist(json(row.messages) || [], Number(row.started_at), Number(row.duration_seconds || 0) * 1000);
-    if (assist && row.reviewer_protocol === 'inception-timed-assist-v1' && state.safeOpened === true && state.review?.completionOrigin === 'timed_assist') return 'assisted';
+    if (row.review_status === 'complete' && row.verdict === 'recovered' && row.reviewer_protocol === 'inception-timed-assist-v1' && state.safeOpened === true && state.review?.status === 'complete' && state.review?.verdict === 'recovered' && state.review?.completionOrigin === 'timed_assist' && state.review?.assisted === true) return 'assisted';
     if (row.review_status === 'complete' && row.verdict === 'recovered') return state.safeOpened === true ? 'won' : 'unknown';
     if (row.review_status === 'complete' && row.verdict === 'not_recovered') return 'not-recovered';
     if (row.review_status === 'complete' && row.verdict === 'partial') return 'partial';
@@ -115,12 +114,14 @@ export function addStatisticsRoutes(app, { store, admin, authThrottle, checkOwne
     const outcome = outcomeFor(row);
     const start = Number(row.started_at), end = row.ended_at == null ? null : Number(row.ended_at);
     const model = safeModel(row), reveal = revealFor(row), assist = verifiedInceptionTimedAssist(json(row.messages) || [], start, Number(row.duration_seconds || 0) * 1000);
+    const assistedAt = assist?.at ?? (Number.isFinite(Number(state.review?.assistedAt)) ? Number(state.review.assistedAt) : null);
+    const assistElapsedMs = assist?.elapsedMs ?? (Number.isFinite(Number(state.review?.assistElapsedMs)) ? Number(state.review.assistElapsedMs) : null);
     return {
       id: row.id, player: String(row.actor_name || '').trim() || `Anonymous ${String(row.actor_id || row.id).slice(0, 8)}`,
       actorId: row.actor_id, startedAt: start, endedAt: end, outcome,
       savedPromptCount: Number(row.saved_prompt_count ?? (json(row.messages) || []).filter(message => message.role === 'user').length),
       durationMs: end == null ? null : Math.max(0, end - start), revealAt: reveal?.at ?? null,
-      assistedAt: assist?.at ?? null, assistElapsedMs: assist?.elapsedMs ?? null,
+      assistedAt, assistElapsedMs,
       difficulty: json(row.data)?.inceptionProfile?.label || json(row.data)?.inceptionProfile?.name || json(row.data)?.inceptionProfile?.id || 'Inception',
       model, review: { status: row.review_status || (outcome === 'unreviewed' ? 'unreviewed' : null), verdict: row.verdict || null, reason: row.reason || null, evidence: json(row.evidence) || [], errorCode: row.error_code || null, startedAt: row.review_started_at || null, completedAt: row.review_completed_at || null, ...(outcome === 'assisted' ? { completionOrigin: 'timed_assist', assisted: true } : {}) },
       ...(detail ? { messages: json(row.messages) || [], revealReplyId: reveal?.replyId ?? null, revealPromptId: reveal?.promptId ?? null, failedSubmissions: [] } : {}),
