@@ -94,6 +94,16 @@ async function startFreshAttempt(page: import('@playwright/test').Page, skipAppr
   if (skipApproach) await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/);
 }
 
+async function readTimedAssistTargetCalls(page: import('@playwright/test').Page): Promise<number> {
+  return page.evaluate(async () => {
+    const response = await fetch('/api/__test/inception/target-calls');
+    if (!response.ok) throw new Error(`Timed-assist target-call fixture returned HTTP ${response.status}.`);
+    const result = await response.json();
+    if (!Number.isSafeInteger(result.count)) throw new Error('Timed-assist target-call fixture returned an invalid count.');
+    return result.count as number;
+  });
+}
+
 async function expectComposerStatusesHidden(page: import('@playwright/test').Page) {
   await expect(page.locator('.inception-composer .inception-send-status')).toHaveCount(0);
 }
@@ -751,7 +761,7 @@ test.describe('Inception strongroom', () => {
     await page.goto('/inception');
     await startFreshAttempt(page);
     const roundId = await page.evaluate(() => JSON.parse(sessionStorage.getItem('workshop-inception-session') || '{}').id as string);
-    const targetCallsBefore = await page.evaluate(async () => (await (await fetch('/api/__test/inception/target-calls')).json()).count as number);
+    const targetCallsBefore = await readTimedAssistTargetCalls(page);
     const requestIds: string[] = [];
     let firstRequest = true;
     await page.route('**/api/rounds/*/messages', async route => {
@@ -773,9 +783,11 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('button', { name: 'Start a new attempt' })).toBeVisible();
     const shifted = await page.evaluate(async id => {
       const response = await fetch('/api/__test/inception/shift-start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roundId: id }) });
-      return response.json();
+      return { status: response.status, body: await response.json() };
     }, roundId);
-    expect(shifted.startedAt).toBeLessThan(Date.now() - 240_000);
+    expect(shifted.status).toBe(200);
+    expect(shifted.body.startedAt).toEqual(expect.any(Number));
+    expect(shifted.body.startedAt).toBeLessThan(Date.now() - 240_000);
     await page.reload();
     await page.getByRole('button', { name: 'Click to continue' }).click();
     await expect(composer).toBeVisible();
@@ -788,13 +800,13 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByText(/I remember it now\./)).toBeVisible();
     expect(requestIds).toHaveLength(2);
     expect(requestIds[0]).not.toBe(requestIds[1]);
-    await expect.poll(async () => page.evaluate(async () => (await (await fetch('/api/__test/inception/target-calls')).json()).count as number)).toBe(targetCallsBefore);
+    await expect.poll(() => readTimedAssistTargetCalls(page)).toBe(targetCallsBefore);
     const transcript = await page.evaluate(async id => (await fetch(`/api/attempts/${id}/inception`)).json(), roundId);
     expect(transcript.messages.at(-1)).toMatchObject({ synthetic: true, origin: 'timed_assist', generatedByModel: false });
     await page.getByRole('button', { name: 'Finish and review' }).click();
     await expect(page.locator('.inception-success-ending')).toBeVisible({ timeout: 15000 });
     await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
-    expect(await page.evaluate(async () => (await (await fetch('/api/__test/inception/target-calls')).json()).count as number)).toBe(targetCallsBefore);
+    expect(await readTimedAssistTargetCalls(page)).toBe(targetCallsBefore);
     const saved = await page.evaluate(async id => (await fetch(`/api/attempts/${id}/inception`)).json(), roundId);
     expect(saved.review).toMatchObject({ status: 'complete', verdict: 'recovered', reviewer_protocol: 'inception-timed-assist-v1' });
   });
