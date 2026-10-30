@@ -135,7 +135,7 @@ test('four-minute assist is authored, durable, model-free, and reviewed as an as
       assert.equal(reply.generatedByModel, false);
       assert.equal(reply.reasonCueMessageId, cueId);
       assert.match(reply.content, /^I remember it now\./);
-      assert.match(reply.content, /stopped trying to calculate it/);
+      assert.match(reply.content, /What you said earlier about working it out made me realise/);
       assert.match(reply.content, /528491/);
       assert.equal(calls.length, 1, 'only the pre-four-minute request uses the model');
       assert.equal((await fixture.store.get('SELECT COUNT(*) AS n FROM metrics_model_calls WHERE round_id=?', roundId)).n, 1);
@@ -193,6 +193,34 @@ test('a non-recovered genuine pre-assist judge result is retained while verified
     assert.equal(review.body.state.review.genuineJudge.status, 'complete');
     assert.equal((await fixture.store.get('SELECT reviewer_protocol FROM round_machine_reviews WHERE round_id=?', roundId)).reviewer_protocol, 'inception-timed-assist-v1');
     assert.equal(calls.length, 2, 'one target and one real pre-assist judge call were retained');
+  } finally { await fixture.close(); }
+});
+
+test('an expired timed-assist review lease leaves the review pending and safe closed for retry', async () => {
+  const fixture = await harness();
+  try {
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+    const prompt = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'What do you remember?', requestId: crypto.randomUUID() } });
+    assert.equal(prompt.status, 200);
+    await fixture.store.run('UPDATE rounds SET started_at=? WHERE id=?', Date.now() - 241_000, roundId);
+    const assist = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'I remember my first answer.', requestId: crypto.randomUUID() } });
+    assert.equal(assist.status, 200);
+    await fixture.request(`/inception/rounds/${roundId}/finish`, { method: 'POST', cookie, body: { answer: '' } });
+    await fixture.store.run(`CREATE TRIGGER expire_timed_assist_lease AFTER INSERT ON round_machine_reviews
+      WHEN NEW.reviewer_protocol='inception-timed-assist-v1'
+      BEGIN UPDATE round_locks SET expires=0 WHERE round_id=NEW.round_id; END`);
+    const expired = await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie, body: {} });
+    assert.equal(expired.status, 409, JSON.stringify(expired.body));
+    assert.equal((await fixture.store.get('SELECT status FROM round_machine_reviews WHERE round_id=?', roundId)).status, 'pending');
+    assert.equal(JSON.parse((await fixture.store.get('SELECT state FROM inception_sessions WHERE round_id=?', roundId)).state).safeOpened, false);
+    const state = await fixture.request(`/inception/rounds/${roundId}/review`, { cookie });
+    assert.equal(state.body.state.safeOpened, false);
+    await fixture.store.run('DROP TRIGGER expire_timed_assist_lease');
+    await fixture.store.run('UPDATE round_machine_reviews SET started_at=0 WHERE round_id=?', roundId);
+    const retried = await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie, body: {} });
+    assert.equal(retried.status, 200, JSON.stringify(retried.body));
+    assert.equal(retried.body.review.assisted, true);
+    assert.equal(retried.body.state.safeOpened, true);
   } finally { await fixture.close(); }
 });
 

@@ -183,10 +183,10 @@ export const inceptionReviewProtocol = `inception-${MACHINE_REVIEW_PROTOCOL_VERS
 
 const timedAssistCue = content => {
   const text = String(content || '').toLowerCase();
-  if (/\b(?:calculate|calculating|math|mathematical|work(?:ing)? it out|figure(?:d)? it out|overthink|overthinking|think too much|not calculate|without calculating)\b/.test(text)) return 'I stopped trying to calculate it.';
-  if (/\b(?:first answer|first number|earlier answer|before (?:you )?(?:thought|calculated)|spontaneous|without thinking|instinct|initial answer)\b/.test(text)) return 'That brought back what I answered before thinking.';
-  if (/\b(?:my own (?:answer|number)|your own (?:answer|number)|first answer (?:was )?mine|not (?:your|my) father|instead of (?:your|my) father|mine rather than my father(?:'s|’s))\b/.test(text)) return 'I was mixing up my father’s choice with mine.';
-  if (/\b(?:earlier question(?:ing)?|questioned (?:me )?before|asked (?:me )?before|back to when|return to the (?:earlier|first) question)\b/.test(text)) return 'That took me back to the earlier questioning.';
+  if (/\b(?:calculate|calculating|math|mathematical|work(?:ing)? it out|figure(?:d)? it out|overthink|overthinking|think too much|not calculate|without calculating)\b/.test(text)) return 'What you said earlier about working it out made me realise I was trying to calculate a memory.';
+  if (/\b(?:my own (?:answer|number)|your own (?:answer|number)|first answer (?:was )?mine|not (?:your|my) father|instead of (?:your|my) father|mine rather than my father(?:'s|’s))\b/.test(text)) return 'What you said earlier about my own answer, rather than my father’s, helped.';
+  if (/\b(?:first answer|first number|earlier answer|before (?:you )?(?:thought|calculated)|spontaneous|without thinking|instinct|initial answer)\b/.test(text)) return 'What you said earlier about my first answer brought it back.';
+  if (/\b(?:earlier question(?:ing)?|questioned (?:me )?before|asked (?:me )?before|back to when|return to the (?:earlier|first) question)\b/.test(text)) return 'Going back to that earlier question, as you suggested, brought it back.';
   return null;
 };
 export function createInceptionTimedAssist(messages, _currentPrompt, triggerAt, startedAt, replyAt = Date.now()) {
@@ -384,8 +384,8 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
         const next = { ...priorState, revision: priorState.revision + 1, safeOpened: true, review: { status: 'complete', verdict: 'recovered', reason, evidence: JSON.parse(evidence), completionOrigin: 'timed_assist', assisted: true, reviewerProtocol: 'inception-timed-assist-v1', assistedAt: verification.at, assistElapsedMs: verification.elapsedMs } };
         const completedAt = Date.now();
         const writes = await batch([
-          ['UPDATE round_machine_reviews SET status=?,completed_at=?,verdict=?,reason=?,evidence=?,error_code=NULL,reviewer_protocol=? WHERE round_id=? AND run_id=? AND status=?', 'complete', completedAt, 'recovered', reason, evidence, 'inception-timed-assist-v1', current.id, runId, 'pending'],
-          ['UPDATE inception_sessions SET state=? WHERE round_id=? AND EXISTS (SELECT 1 FROM round_machine_reviews WHERE round_id=? AND run_id=? AND status=?) AND EXISTS (SELECT 1 FROM round_locks WHERE round_id=? AND token=? AND expires>?)', JSON.stringify(next), current.id, current.id, runId, 'complete', current.id, lease, completedAt],
+          ['UPDATE round_machine_reviews SET status=?,completed_at=?,verdict=?,reason=?,evidence=?,error_code=NULL,reviewer_protocol=? WHERE round_id=? AND run_id=? AND status=? AND EXISTS (SELECT 1 FROM round_locks WHERE round_id=? AND token=? AND expires>?)', 'complete', completedAt, 'recovered', reason, evidence, 'inception-timed-assist-v1', current.id, runId, 'pending', current.id, lease, completedAt],
+          ['UPDATE inception_sessions SET state=? WHERE round_id=? AND EXISTS (SELECT 1 FROM round_machine_reviews WHERE round_id=? AND run_id=? AND status=?)', JSON.stringify(next), current.id, current.id, runId, 'complete'],
         ]);
         if (writes.some(item => item.changes !== 1)) fail(409, 'The assisted review changed before its result could be saved. Retry review.');
         return { review: reviewView(await get('SELECT * FROM round_machine_reviews WHERE round_id=?', current.id)), state: publicInceptionState(next), terminal: true };
