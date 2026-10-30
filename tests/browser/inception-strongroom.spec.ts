@@ -792,11 +792,17 @@ test.describe('Inception strongroom', () => {
     await page.getByRole('button', { name: 'Click to continue' }).click();
     await expect(composer).toBeVisible();
     await expect(composer).toBeEnabled();
+    await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/);
+    await expect(page.locator('.inception-root')).not.toHaveAttribute('inert', '');
     await expect(composer).toHaveValue('An ordinary question before my quota ran out.');
     await expect(page.getByRole('button', { name: 'Start a new attempt' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
     await composer.fill('What was your first answer?');
+    await expect(composer).toHaveValue('What was your first answer?');
+    const assistedPost = page.waitForRequest(request => request.method() === 'POST' && request.url().endsWith(`/api/rounds/${roundId}/messages`));
     await composer.press('Enter');
+    const sentRequest = await assistedPost;
+    expect(sentRequest.postDataJSON().content).toBe('What was your first answer?');
     await expect(page.getByText(/I remember it now\./)).toBeVisible();
     expect(requestIds).toHaveLength(2);
     expect(requestIds[0]).not.toBe(requestIds[1]);
