@@ -92,14 +92,15 @@ export function createCollectionModelServices({ store, provider, completion, met
       const assignment = await get('SELECT profile_snapshot FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
       return assignment ? JSON.parse(assignment.profile_snapshot).compiledPrompt : null;
     },
-    async request({ row, system, messages, temperature, actor = null, profileId = null, configOverride = null }) {
+    async request({ row, system, messages, temperature, actor = null, profileId = null, configOverride = null, roundLockToken = null }) {
       const assignment = await get('SELECT collection_id, profile_id, source FROM difficulty_collection_assignments WHERE round_id = ?', row.id);
       const config = JSON.parse(row.config);
       const round = await get('SELECT source, author_id FROM rounds WHERE id = ?', row.id);
       const rawSource = assignment?.source || round?.source;
       const source = ({ 'collection-participant':'participant','collection-preview':'preview','reference-research-preview':'preview','reference-research':'participant','reference-blind':'participant','blind':'participant' })[rawSource] || rawSource || null;
       const metricsContext = { kind: 'round', roundId: row.id, userId: actor?.id || null, userRole: actor?.role || null, source, versionId: row.version_id, collectionId: assignment?.collection_id || null, profileId: assignment?.profile_id || profileId || null };
-      if (!assignment) return { result: await completion({ config: configOverride || { ...config, apiKey: provider.apiKey }, system, messages, temperature, metricsContext }), callId: null };
+      const lockContext = roundLockToken ? { roundLockToken, roundConfig: row.config } : {};
+      if (!assignment) return { result: await completion({ config: configOverride || { ...config, apiKey: provider.apiKey }, system, messages, temperature, metricsContext, ...lockContext }), callId: null };
       const callId = id(), startedAt = Date.now();
       const context = { baseUrl: safeBaseUrl(config.baseUrl), body: buildCompletionBody({ config, system, messages, temperature }) };
       await run('INSERT INTO difficulty_provider_calls (id, collection_id, round_id, status, started_at, request_context) VALUES (?, ?, ?, ?, ?, ?)', callId, assignment.collection_id, row.id, 'started', startedAt, JSON.stringify(context));
@@ -108,7 +109,7 @@ export function createCollectionModelServices({ store, provider, completion, met
         fail(503, 'The server connection no longer matches this frozen collection. Create a new collection with the current model settings.');
       }
       try {
-        const result = await completion({ config: { ...config, apiKey: provider.apiKey }, system, messages, temperature, metricsContext });
+        const result = await completion({ config: { ...config, apiKey: provider.apiKey }, system, messages, temperature, metricsContext, ...lockContext });
         return { result, callId };
       } catch (error) {
         await run('UPDATE difficulty_provider_calls SET status = ?, completed_at = ?, error_code = ? WHERE id = ?', 'failed', Date.now(), safeErrorCode(error), callId);

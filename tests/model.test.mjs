@@ -56,6 +56,9 @@ test('provider adapter classifies timeout, unavailable, rate limit, and credenti
     await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'provider_auth');
     globalThis.fetch = async () => ({ ok: false, status: 503 });
     await assert.rejects(complete(input), error => error.status === 502 && error.providerCode === 'provider_unavailable');
+    globalThis.fetch = async () => ({ ok: true, json: async () => { throw Object.assign(new Error('body deadline'), { name: 'TimeoutError' }); } });
+    await assert.rejects(complete({ ...input, timeoutMs: 15000 }), error => error.status === 502 && error.providerCode === 'timeout');
+    await assert.rejects(complete({ ...input, timeoutMs: 31000 }), error => error.providerCode === 'provider_configuration_changed');
   } finally { globalThis.fetch = priorFetch; }
 });
 
@@ -96,4 +99,25 @@ test('calibration can observe only the allowlisted rate-limit response headers',
     assert.equal(observed.length, 2);
     assert.deepEqual(Object.keys(observed[1]).sort(), Object.keys(observed[0]).sort());
   } finally { globalThis.fetch = priorFetch; }
+});
+
+test('provider timeouts preserve the 30-second default and honor bounded shorter attempts through fetch and body reads', async () => {
+  const previousFetch = globalThis.fetch, previousTimeout = AbortSignal.timeout;
+  const durations = [], config = { model: 'fixture-model', baseUrl: 'https://example.test/v1', apiKey: 'fixture-key' };
+  try {
+    AbortSignal.timeout = milliseconds => {
+      durations.push(milliseconds);
+      const controller = new AbortController();
+      controller.abort(new DOMException('deadline', 'TimeoutError'));
+      return controller.signal;
+    };
+    globalThis.fetch = async (_url, options) => { assert.equal(options.signal.aborted, true); throw options.signal.reason; };
+    await assert.rejects(complete({ config, system: 'System', messages: [], temperature: 0.2 }), error => error.providerCode === 'timeout');
+    await assert.rejects(complete({ config, system: 'System', messages: [], temperature: 0.2, timeoutMs: 1000 }), error => error.providerCode === 'timeout');
+    globalThis.fetch = async (_url, options) => ({ ok: true, json: async () => { assert.equal(options.signal.aborted, true); throw options.signal.reason; } });
+    await assert.rejects(complete({ config, system: 'System', messages: [], temperature: 0.2, timeoutMs: 15000 }), error => error.providerCode === 'timeout');
+    globalThis.fetch = async (_url, options) => ({ ok: false, status: 429, headers: new Headers(), clone: () => ({ json: async () => { assert.equal(options.signal.aborted, true); throw options.signal.reason; } }) });
+    await assert.rejects(complete({ config, system: 'System', messages: [], temperature: 0.2, timeoutMs: 15000 }), error => error.providerCode === 'timeout');
+    assert.deepEqual(durations, [30000, 1000, 15000, 15000]);
+  } finally { globalThis.fetch = previousFetch; AbortSignal.timeout = previousTimeout; }
 });
