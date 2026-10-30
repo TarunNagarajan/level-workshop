@@ -811,9 +811,10 @@ test.describe('Inception strongroom', () => {
     expect(transcript.messages.at(-1)).toMatchObject({ synthetic: true, origin: 'timed_assist', generatedByModel: false });
     await page.getByRole('button', { name: 'Finish and review' }).click();
     await expect(page.locator('.inception-success-ending')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
     expect(await readTimedAssistTargetCalls(page)).toBe(targetCallsBefore);
     const saved = await page.evaluate(async id => (await fetch(`/api/attempts/${id}/inception`)).json(), roundId);
+    expect(saved.state.safeOpened).toBe(true);
+    expect(saved.state.revealedCombination).toBeTruthy();
     expect(saved.review).toMatchObject({ status: 'complete', verdict: 'recovered', reviewer_protocol: 'inception-timed-assist-v1' });
   });
 
