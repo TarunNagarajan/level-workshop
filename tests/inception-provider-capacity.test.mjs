@@ -176,7 +176,7 @@ test('invalid budget configuration and two unavailable providers reject before r
 
 test('feature flag off preserves the configured Groq selection even when fallback credentials exist', async () => {
   const store = openStore(':memory:');
-  const capacity = inceptionProviderCapacity({ store, primary, env: { GEMINI_API_KEY: 'gemini-secret' } });
+  const capacity = inceptionProviderCapacity({ store, primary, env: { GEMINI_API_KEY: 'gemini-secret', GROQ_SECONDARY_API_KEY: 'secondary-fixture-key' } });
   try {
     const selection = await capacity.selectForStart();
     assert.equal(capacity.enabled, false);
@@ -184,6 +184,9 @@ test('feature flag off preserves the configured Groq selection even when fallbac
     assert.equal(selection.config.model, primary.model);
     assert.equal(selection.reason, 'feature_disabled');
     assert.equal(selection.reservationId, null);
+    assert.equal((await capacity.status()).providers['groq-secondary'].configured, true);
+    assert.equal((await capacity.status()).selectionPolicy.providerOrder.includes('groq-secondary'), false);
+    assert.equal(capacity.enabled, false, 'configured secondary credentials do not enable auto-routing without the feature flag');
     assert.equal(await store.get('SELECT reserved_tokens FROM inception_provider_health WHERE provider_id=?', 'groq'), undefined);
   } finally { store.db.close(); }
 });
@@ -218,6 +221,44 @@ test('duplicate secondary credentials are not represented as an extra capacity s
     assert.equal((await capacity.status()).providers['groq-secondary'].configured, false);
     assert.equal((await capacity.status()).selectionPolicy.providerOrder.includes('groq-secondary'), false);
   } finally { store.db.close(); }
+});
+
+test('a secondary cooldown does not block primary starts and a known blocked secondary is skipped', async () => {
+  const store = openStore(':memory:'), at = Date.now();
+  const env = { INCEPTION_AUTO_PROVIDER: 'true', GROQ_SECONDARY_API_KEY: 'secondary-fixture-key', GEMINI_API_KEY: 'gemini-secret' };
+  const capacity = inceptionProviderCapacity({ store, primary, env, now: () => at });
+  try {
+    await capacity.observe('groq-secondary', { error: Object.assign(new Error('secondary throttle'), { providerCode: 'rate_limited', rateLimitScope: 'requests_minute', retryAfterSeconds: 60 }), at });
+    const primaryStart = await capacity.selectForStart();
+    assert.equal(primaryStart.config.providerId, 'groq');
+    await capacity.releaseReservation(primaryStart.reservationId);
+    await store.run('INSERT INTO inception_provider_health (provider_id,observed_at,blocked_until) VALUES (?,?,?) ON CONFLICT(provider_id) DO UPDATE SET blocked_until=excluded.blocked_until', 'groq', at, at + 60_000);
+    const googleStart = await capacity.selectForStart();
+    assert.equal(googleStart.config.providerId, 'google-gemini');
+  } finally { store.db.close(); }
+});
+
+test('PGlite independently reserves both Groq budgets and reconciles stale same-slot reservations after restart', async () => {
+  const fixture = await createFixture({ adapter: 'pglite' });
+  const at = Date.now(), env = { INCEPTION_AUTO_PROVIDER: 'true', GROQ_SECONDARY_API_KEY: 'secondary-fixture-key', INCEPTION_GROQ_DAILY_TOKEN_BUDGET: '10000', INCEPTION_GROQ_SECONDARY_DAILY_TOKEN_BUDGET: '10000' };
+  const capacity = inceptionProviderCapacity({ store: fixture.store, primary, env, now: () => at });
+  try {
+    const selections = await Promise.all([capacity.selectForStart(), capacity.selectForStart()]);
+    assert.deepEqual(selections.map(item => item.config.providerId).sort(), ['groq', 'groq-secondary']);
+    assert.equal((await fixture.store.get('SELECT reserved_tokens FROM inception_provider_health WHERE provider_id=?', 'groq')).reserved_tokens, 10_000);
+    assert.equal((await fixture.store.get('SELECT reserved_tokens FROM inception_provider_health WHERE provider_id=?', 'groq-secondary')).reserved_tokens, 10_000);
+    const roundId = randomUUID(), activeId = randomUUID(), staleId = randomUUID();
+    await fixture.store.run('INSERT INTO rounds (id,token,source,data,config,tester,messages,started_at) VALUES (?,?,?,?,?,?,?,?)', roundId, randomUUID(), 'inception-play', '{}', '{}', 'fixture', '[]', at);
+    await fixture.store.run('INSERT INTO inception_provider_reservations (reservation_id,provider_id,tokens,created_at,expires_at,round_id) VALUES (?,?,?,?,?,?)', activeId, 'groq-secondary', 10_000, at, at + 60_000, roundId);
+    await fixture.store.run('INSERT INTO inception_provider_reservations (reservation_id,provider_id,tokens,created_at,expires_at,round_id) VALUES (?,?,?,?,?,?)', staleId, 'groq-secondary', 10_000, at, at + 60_000, roundId);
+    await fixture.store.run('UPDATE inception_provider_health SET reserved_tokens=reserved_tokens+20000 WHERE provider_id=?', 'groq-secondary');
+    const restarted = inceptionProviderCapacity({ store: fixture.store, primary, env, now: () => at });
+    await restarted.reconcileRoundReservations(roundId, 'groq-secondary', activeId);
+    assert.equal((await fixture.store.get('SELECT COUNT(*) AS n FROM inception_provider_reservations WHERE round_id=?', roundId)).n, 1);
+    assert.equal((await fixture.store.get('SELECT reservation_id FROM inception_provider_reservations WHERE round_id=?', roundId)).reservation_id, activeId);
+    for (const item of selections) await restarted.releaseReservation(item.reservationId);
+    await restarted.releaseRoundReservation(roundId);
+  } finally { await fixture.store.db.close(); }
 });
 
 test('concurrent starts reserve Groq capacity once and account for usage after the observed snapshot', async () => {

@@ -109,19 +109,32 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
       };
       const originalProviderId = selected?.providerId || 'groq';
       const initialChainLength = chainShape(originalProviderId).length;
+      const threeSlotRoute = initialChainLength >= 3;
       const routingBudgetMs = initialChainLength >= 3 ? 25_000 : initialChainLength === 2 ? 31_000 : 33_000;
       const attemptTimeout = (providerId, fallbackAttempt = false) => {
         const chainLength = chainShape(providerId).length;
-        const cap = chainLength >= 3 ? 8_000 : chainLength === 2 || fallbackAttempt ? 15_000 : 30_000;
-        const remaining = routingBudgetMs - (performance.now() - routeStarted) - 1_500;
-        return remaining < 1_000 ? null : Math.min(cap, remaining);
+        const cap = threeSlotRoute ? 8_000 : chainLength === 2 || fallbackAttempt ? 15_000 : 30_000;
+        const routeRemaining = routingBudgetMs - (performance.now() - routeStarted) - 1_500;
+        return routeRemaining < 1_000 ? null : Math.floor(Math.min(cap, routeRemaining));
       };
       const invoke = async (config, fallbackAttempt = false) => {
         if (!lease || !roundId) throw Object.assign(new Error('The strongroom request lease expired. Retry this saved request.'), { status: 503, providerCode: 'round_lease_lost', providerAttempted: false });
-        const leaseRow = await get('SELECT token FROM round_locks WHERE round_id=? AND token=? AND expires>? ', roundId, lease, Date.now());
-        const configRow = await get('SELECT config FROM rounds WHERE id=?', roundId);
-        if (!leaseRow || !configRow || (typeof expectedConfig === 'string' && configRow.config !== expectedConfig)) throw Object.assign(new Error('The strongroom request lease expired. Retry this saved request.'), { status: 503, providerCode: 'round_lease_lost', providerAttempted: false });
-        const timeoutMs = inceptionCapacity.enabled ? attemptTimeout(config.providerId || 'groq', fallbackAttempt) : completionInput.timeoutMs;
+        let leaseRow;
+        try {
+          const configRow = await get('SELECT config FROM rounds WHERE id=?', roundId);
+          if (!configRow || (typeof expectedConfig === 'string' && configRow.config !== expectedConfig)) throw Object.assign(new Error('The strongroom request lease expired. Retry this saved request.'), { status: 503, providerCode: 'round_lease_lost', providerAttempted: false });
+          let activeReservationId = null;
+          try { activeReservationId = JSON.parse(configRow.config).capacityReservationId || null; } catch { /* The saved config is validated below. */ }
+          try { await inceptionCapacity.reconcileRoundReservations(roundId, config.providerId || 'groq', activeReservationId); } catch { /* Cleanup is retried on the next request or at review; it must not block a routed call. */ }
+          leaseRow = await get('SELECT token,expires FROM round_locks WHERE round_id=? AND token=? AND expires>? ', roundId, lease, Date.now());
+          if (!leaseRow) throw Object.assign(new Error('The strongroom request lease expired. Retry this saved request.'), { status: 503, providerCode: 'round_lease_lost', providerAttempted: false });
+        } catch (error) {
+          if (error.providerAttempted === false) throw error;
+          throw Object.assign(new Error('Strongroom request state could not be verified. Retry the saved request.'), { status: 503, providerCode: 'request_state_unavailable', providerAttempted: false });
+        }
+        const routeTimeout = inceptionCapacity.enabled ? attemptTimeout(config.providerId || 'groq', fallbackAttempt) : completionInput.timeoutMs;
+        const leaseRemaining = Number(leaseRow.expires) - Date.now() - 1_500;
+        const timeoutMs = inceptionCapacity.enabled ? routeTimeout === null || leaseRemaining < 1_000 ? null : Math.floor(Math.min(routeTimeout, leaseRemaining)) : completionInput.timeoutMs;
         if (inceptionCapacity.enabled && timeoutMs === null) throw Object.assign(new Error('The model request exceeded its safe routing window. Retry the saved request.'), { status: 504, providerCode: 'timeout', providerAttempted: false });
         return instrumentedCompletion({ ...completionInput, config, ...(timeoutMs ? { timeoutMs } : {}) });
       };
@@ -161,7 +174,6 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         }
       }
       const providerId = selected?.providerId || 'groq';
-      try { await inceptionCapacity.reconcileRoundReservations(roundId, providerId); } catch { /* The frozen slot remains authoritative; review/expiry retries cleanup. */ }
       if (providerId === 'google-gemini') try { await inceptionCapacity.releaseRoundReservation(roundId); } catch { /* Retry on the next request. */ }
       try {
         const result = await invoke(selected);

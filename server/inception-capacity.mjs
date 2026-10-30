@@ -245,9 +245,9 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
     if (reservation) await releaseReservation(reservation.reservation_id);
   }
 
-  async function reconcileRoundReservations(roundId, providerId) {
+  async function reconcileRoundReservations(roundId, providerId, activeReservationId = null) {
     const reservations = await all('SELECT reservation_id,provider_id FROM inception_provider_reservations WHERE round_id=?', roundId);
-    for (const reservation of reservations) if (reservation.provider_id !== providerId) await releaseReservation(reservation.reservation_id);
+    for (const reservation of reservations) if (reservation.provider_id !== providerId || reservation.reservation_id !== activeReservationId) await releaseReservation(reservation.reservation_id);
   }
 
   async function status() {
@@ -267,7 +267,7 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
     const plannedReservations = [GROQ_ID, SECONDARY_GROQ_ID].reduce((sum, id) => sum + Number(list.find(row => row.provider_id === id)?.reserved_tokens || 0), 0);
     return {
       featureEnabled: flagEnabled,
-      selectionPolicy: { primary: GROQ_ID, fallback: GOOGLE_ID, providerOrder: [GROQ_ID, SECONDARY_GROQ_ID, GOOGLE_ID].filter(id => id !== SECONDARY_GROQ_ID || Boolean(secondary)), reserveTokens: RESERVE, quotaObservationFreshMs: QUOTA_FRESH_MS, unknownPrimaryHeadroomSelects: GROQ_ID },
+      selectionPolicy: { primary: GROQ_ID, fallback: GOOGLE_ID, providerOrder: routingEnabled ? [GROQ_ID, SECONDARY_GROQ_ID, GOOGLE_ID].filter(id => id !== SECONDARY_GROQ_ID || Boolean(secondary)) : [GROQ_ID], reserveTokens: RESERVE, quotaObservationFreshMs: QUOTA_FRESH_MS, unknownPrimaryHeadroomSelects: GROQ_ID },
       applicationDailyBudget: {
         tokens: appBudget.value,
         source: appBudget.source,
