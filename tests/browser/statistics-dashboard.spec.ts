@@ -104,3 +104,73 @@ test('unauthorized deep link displays sign-in and does not request statistics re
   await expect(page.getByLabel('Owner key')).toBeVisible();
   expect(statsRequests).toEqual([]);
 });
+
+test('signing out during an export resets export state after signing back in', async ({ page }) => {
+  await page.goto('/stats');
+  await page.getByLabel('Owner key').fill('browser-statistics-fixture-key');
+  await page.getByRole('button', { name: 'Open statistics' }).click();
+  await expect(page.getByRole('button', { name: 'Export all' })).toBeEnabled();
+
+  let releaseExportPage!: () => void;
+  let reachedExportPage!: () => void;
+  const exportPageStarted = new Promise<void>(resolveStart => { reachedExportPage = resolveStart; });
+  await page.route('**/api/statistics/attempts?*cursor=*', async route => {
+    reachedExportPage();
+    await new Promise<void>(resolveDelay => { releaseExportPage = resolveDelay; });
+    try { await route.continue(); } catch { /* Signing out aborts the export request. */ }
+  });
+  await page.getByRole('button', { name: 'Export all' }).click();
+  await exportPageStarted;
+  await expect(page.getByRole('button', { name: '25 records' })).toBeVisible();
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page.getByLabel('Owner key')).toBeVisible();
+  releaseExportPage();
+  await page.unroute('**/api/statistics/attempts?*cursor=*');
+
+  await page.getByLabel('Owner key').fill('browser-statistics-fixture-key');
+  await page.getByRole('button', { name: 'Open statistics' }).click();
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export all' }).click();
+  expect((await download).suggestedFilename()).toContain('inception-attempts-');
+});
+
+test('export authorization failure expires the owner session without downloading or an unhandled rejection', async ({ page }) => {
+  const pageErrors: string[] = [];
+  let downloaded = false;
+  page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('download', () => { downloaded = true; });
+  await page.goto('/stats');
+  await page.getByLabel('Owner key').fill('browser-statistics-fixture-key');
+  await page.getByRole('button', { name: 'Open statistics' }).click();
+  await expect(page.getByText('Started attempts', { exact: true })).toBeVisible();
+  await page.route('**/api/statistics/attempts?*', route => route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Forbidden' }) }));
+  await page.getByRole('button', { name: 'Export all' }).click();
+  await expect(page.getByLabel('Owner key')).toBeVisible();
+  await expect(page.getByText('Your owner session expired. Sign in again to continue.')).toBeVisible();
+  await page.waitForTimeout(100);
+  expect(downloaded).toBe(false);
+  expect(pageErrors).toEqual([]);
+  await page.unroute('**/api/statistics/attempts?*');
+  await page.getByLabel('Owner key').fill('browser-statistics-fixture-key');
+  await page.getByRole('button', { name: 'Open statistics' }).click();
+  await expect(page.getByText('Started attempts', { exact: true })).toBeVisible();
+});
+
+test('logout failure keeps private data hidden, blocks sign in and offers a retry', async ({ page }) => {
+  await page.goto('/stats');
+  await page.getByLabel('Owner key').fill('browser-statistics-fixture-key');
+  await page.getByRole('button', { name: 'Open statistics' }).click();
+  await expect(page.getByText('Started attempts', { exact: true })).toBeVisible();
+  await page.route('**/api/logout', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Unavailable' }) }));
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page.getByLabel('Owner key')).toBeVisible();
+  await expect(page.getByText('Sign out could not be confirmed. Your browser may still have an owner session. Retry sign out before signing in.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open statistics' })).toBeDisabled();
+  await expect(page.getByText('Started attempts', { exact: true })).toHaveCount(0);
+  await page.unroute('**/api/logout');
+  await page.getByRole('button', { name: 'Retry sign out' }).click();
+  await expect(page.getByRole('button', { name: 'Open statistics' })).toBeEnabled();
+  await page.getByLabel('Owner key').fill('browser-statistics-fixture-key');
+  await page.getByRole('button', { name: 'Open statistics' }).click();
+  await expect(page.getByText('Started attempts', { exact: true })).toBeVisible();
+});
