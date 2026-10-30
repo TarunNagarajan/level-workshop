@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { signInOwner } from './auth';
 
-async function finishApproachForTest(page: import('@playwright/test').Page) {
+async function finishApproachForTest(page: import('@playwright/test').Page, waitForPlay = true) {
   const video = page.locator('video.inception-intro-video').first();
   await expect(video).toBeVisible();
   await video.evaluate(element => {
@@ -12,7 +12,9 @@ async function finishApproachForTest(page: import('@playwright/test').Page) {
     if (Number.isFinite(media.duration) && media.duration > 0) media.currentTime = media.duration;
     media.dispatchEvent(new Event('ended', { bubbles: true }));
   });
-  await expect(page.locator('.inception-play')).toBeVisible();
+  if (waitForPlay) await expect(page.locator('.inception-play')).toBeVisible();
+  else await expect(page.getByRole('button', { name: 'Retry start' })).toBeVisible();
+  if (!waitForPlay) return;
   await expect(page.locator('.inception-play')).not.toHaveClass(/is-handoff-locked/);
   await expect(page.locator('.inception-root')).not.toHaveAttribute('inert', '');
 }
@@ -1348,7 +1350,7 @@ test.describe('Inception strongroom', () => {
       if (requestKeys.length === 1) { firstRoundId = session.round.id; await route.abort(); }
       else await route.fulfill({ response, json: session });
     });
-    await finishApproachForTest(page);
+    await finishApproachForTest(page, false);
     await expect(page.getByRole('button', { name: 'Retry start' })).toBeVisible();
     const firstRequestId = requestKeys[0];
     await page.keyboard.press('Escape');
