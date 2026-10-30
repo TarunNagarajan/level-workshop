@@ -245,7 +245,7 @@ export function addInceptionRoutes(app, { store, member, inceptionMember = membe
     const stateJson = JSON.stringify(state), actorKeyHash = inceptionIdempotencyHash(actorKey);
     let allocatedRound = null;
     try {
-      allocatedRound = await createRound({ version, frozenConfig: { ...selection.config, selectionReason: selection.reason, selectionCheckedAt: selection.checkedAt }, tester: actor.name, userId: actor.id, source: 'inception-play', parentId: latest?.id || null, ...(!organizerPolicy && !previouslyAccepted ? { consentAt: now, recordingAckUserId: actor.id } : {}), ...(organizerPolicy ? { recordingPolicy: INCEPTION_ORGANIZER_RECORDING_POLICY } : {}), inceptionState: { state: stateJson, startKeyHash: keyHash, actorKeyHash, actorId: actor.id, createdAt: now } });
+      allocatedRound = await createRound({ version, frozenConfig: { ...selection.config, initialSelection: { providerId: selection.config.providerId, model: selection.config.model }, selectionReason: selection.reason, selectionCheckedAt: selection.checkedAt }, tester: actor.name, userId: actor.id, source: 'inception-play', parentId: latest?.id || null, ...(!organizerPolicy && !previouslyAccepted ? { consentAt: now, recordingAckUserId: actor.id } : {}), ...(organizerPolicy ? { recordingPolicy: INCEPTION_ORGANIZER_RECORDING_POLICY } : {}), inceptionState: { state: stateJson, startKeyHash: keyHash, actorKeyHash, actorId: actor.id, createdAt: now } });
       await capacity.attachReservation(selection.reservationId, allocatedRound.id);
       return res.status(201).json({ round: allocatedRound, state: publicInceptionState(state), profile: publicInceptionProfile(JSON.parse(version.data)) });
     } catch (error) {

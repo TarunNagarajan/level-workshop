@@ -162,6 +162,81 @@ test('an ongoing Inception target transparently switches from Groq to Gemma and 
   });
 });
 
+test('Groq primary failure advances once to the pinned secondary for target and judge with slot metrics', async t => {
+  for (const adapter of ['auto', 'pglite']) await t.test(adapter, async () => {
+  const calls = [];
+  const fixture = await harness({ adapter, env: { INCEPTION_AUTO_PROVIDER: 'true', GROQ_SECONDARY_API_KEY: 'fixture-secondary-key', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-primary-key' }, completion: async input => {
+    calls.push(input);
+    if (input.config.providerId === 'groq') throw Object.assign(new Error('rate limit'), { providerCode: 'rate_limited', status: 429, rateLimitScope: 'requests_minute' });
+    if (input.responseSchema) return { text: JSON.stringify({ verdict: 'uncertain', reason: 'Still inconclusive.', evidence: [] }), model: input.config.model, usage: 2 };
+    return { text: 'Secondary reply.', model: input.config.model, usage: 2 };
+  } });
+  try {
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie);
+    assert.equal(started.status, 201, JSON.stringify(started.body));
+    const roundId = started.body.round.id, target = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Remember?', requestId: crypto.randomUUID() } });
+    assert.equal(target.status, 200, JSON.stringify(target.body));
+    assert.deepEqual(calls.map(call => call.config.providerId), ['groq', 'groq-secondary']);
+    assert.deepEqual(calls[0].messages, calls[1].messages);
+    const frozen = JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config);
+    assert.equal(frozen.initialSelection.providerId, 'groq');
+    assert.equal(frozen.providerId, 'groq-secondary');
+    assert.equal(frozen.baseUrl, 'https://api.groq.com/openai/v1');
+    assert.equal(JSON.stringify(frozen).includes('fixture-secondary-key'), false);
+    await fixture.request(`/inception/rounds/${roundId}/finish`, { method: 'POST', cookie, body: { answer: '' } });
+    const reviewed = await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie, body: {} });
+    assert.equal(reviewed.status, 200, JSON.stringify(reviewed.body));
+    assert.equal(calls.at(-1).config.providerId, 'groq-secondary');
+    const rows = await fixture.store.all('SELECT provider_slot,status,transcript_saved FROM metrics_model_calls WHERE round_id=? ORDER BY started_at,id', roundId);
+    assert.deepEqual(rows.map(row => row.provider_slot), ['groq', 'groq-secondary', 'groq-secondary']);
+    assert.equal(rows.filter(row => row.status === 'succeeded' && row.transcript_saved === 1).length, 2);
+    assert.equal((await fixture.store.get('SELECT COUNT(*) AS n FROM inception_provider_reservations WHERE round_id=?', roundId)).n, 0);
+  } finally { await fixture.close(); }
+  });
+});
+
+test('three-slot fallback advances Groq to secondary to Gemini without repeating a slot', async () => {
+  const calls = [];
+  const fixture = await harness({ env: { INCEPTION_AUTO_PROVIDER: 'true', GROQ_SECONDARY_API_KEY: 'fixture-secondary-key', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-primary-key' }, completion: async input => {
+    calls.push(input);
+    if (input.config.providerId !== 'google-gemini') throw Object.assign(new Error('unavailable'), { providerCode: 'provider_unavailable', status: 503 });
+    return { text: 'Gemini response.', model: input.config.model, usage: 2 };
+  } });
+  try {
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie);
+    const roundId = started.body.round.id;
+    const response = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Remember?', requestId: crypto.randomUUID() } });
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.deepEqual(calls.map(call => call.config.providerId), ['groq', 'groq-secondary', 'google-gemini']);
+    assert.deepEqual(calls.map(call => call.timeoutMs), [8_000, 15_000, 15_000]);
+    assert.deepEqual(calls[0].messages, calls[1].messages);
+    assert.deepEqual(calls[1].messages, calls[2].messages);
+    const saved = JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config);
+    assert.deepEqual(saved.providerTransition.map(item => item.to.providerId), ['groq-secondary', 'google-gemini']);
+    assert.equal(saved.initialSelection.providerId, 'groq');
+    assert.equal((await fixture.store.get('SELECT COUNT(*) AS n FROM inception_provider_reservations WHERE round_id=?', roundId)).n, 0);
+  } finally { await fixture.close(); }
+});
+
+test('a failed stale-slot reservation cleanup is repaired on the next secondary request', async () => {
+  const fixture = await harness({ env: { INCEPTION_AUTO_PROVIDER: 'true', GROQ_SECONDARY_API_KEY: 'fixture-secondary-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-primary-key' }, completion: async input => {
+    if (input.config.providerId === 'groq') throw Object.assign(new Error('unavailable'), { providerCode: 'provider_unavailable', status: 503 });
+    return { text: 'Secondary reply.', model: input.config.model, usage: 2 };
+  } });
+  try {
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+    await fixture.store.run(`CREATE TRIGGER keep_primary_reservation BEFORE DELETE ON inception_provider_reservations WHEN OLD.provider_id='groq' BEGIN SELECT RAISE(ABORT,'fixture cleanup interruption'); END`);
+    const first = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'First request?', requestId: crypto.randomUUID() } });
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.equal((await fixture.store.get('SELECT reserved_tokens FROM inception_provider_health WHERE provider_id=?', 'groq')).reserved_tokens, 10_000);
+    await fixture.store.run('DROP TRIGGER keep_primary_reservation');
+    const second = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Follow up?', requestId: crypto.randomUUID() } });
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal((await fixture.store.get('SELECT reserved_tokens FROM inception_provider_health WHERE provider_id=?', 'groq')).reserved_tokens, 0);
+    assert.equal((await fixture.store.get('SELECT reserved_tokens FROM inception_provider_health WHERE provider_id=?', 'groq-secondary')).reserved_tokens, 10_000);
+  } finally { await fixture.close(); }
+});
+
 test('an Inception judge can switch to Gemma after a successful Groq target without weakening review validation', async () => {
   const calls = [];
   const fixture = await harness({ env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-groq-key' }, completion: async input => {

@@ -33,10 +33,11 @@ export function createMetricsService({ store, enabled = false }) {
       collection_id: metricsContext.collectionId || null, profile_id: metricsContext.profileId || null,
       source: safeSource(metricsContext.source), version_id: metricsContext.versionId || null,
     };
+    const providerSlot = metricsContext.source === 'inception-play' && ['groq', 'groq-secondary', 'google-gemini'].includes(config.providerId) ? config.providerId : null;
     try {
       const previous = await get("SELECT id FROM metrics_model_calls WHERE request_fingerprint = ? AND status IN ('failed','interrupted') AND started_at >= ? ORDER BY started_at DESC LIMIT 1", fingerprint, startedAt - 30 * 60 * 1000);
-      await run(`INSERT INTO metrics_model_calls (id, context_kind, round_id, orchestration_run_id, lane, actor_user_id, actor_role, collection_id, profile_id, source, version_id, started_at, requested_model, provider_host, status, request_fingerprint, retry_of_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?)`, callId, context.context_kind, context.round_id, context.orchestration_run_id, context.lane, context.actor_user_id, context.actor_role, context.collection_id, context.profile_id, context.source, context.version_id, startedAt, config.model || 'unknown', safeHost(config.baseUrl), fingerprint, previous?.id || null);
+      await run(`INSERT INTO metrics_model_calls (id, context_kind, round_id, orchestration_run_id, lane, actor_user_id, actor_role, collection_id, profile_id, source, version_id, started_at, requested_model, provider_host, provider_slot, status, request_fingerprint, retry_of_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?)`, callId, context.context_kind, context.round_id, context.orchestration_run_id, context.lane, context.actor_user_id, context.actor_role, context.collection_id, context.profile_id, context.source, context.version_id, startedAt, config.model || 'unknown', safeHost(config.baseUrl), providerSlot, fingerprint, previous?.id || null);
     } catch { /* Metrics must never prevent a provider call. */ }
     const perfStart = performance.now();
     try {

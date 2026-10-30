@@ -99,52 +99,98 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
       const { roundLockToken: lease, roundConfig: expectedRoundConfig, ...completionInput } = input;
       let selected = completionInput.config;
       const roundId = completionInput.metricsContext?.roundId;
+      let expectedConfig = expectedRoundConfig;
+      const routeStarted = performance.now();
+      const slotOrder = ['groq', 'groq-secondary', 'google-gemini'];
+      const configuredSlots = new Set([...(provider.apiKey ? ['groq'] : []), ...(env.GROQ_SECONDARY_API_KEY && env.GROQ_SECONDARY_API_KEY !== provider.apiKey ? ['groq-secondary'] : []), ...(env.GEMINI_API_KEY ? ['google-gemini'] : [])]);
+      const chainShape = providerId => {
+        const index = slotOrder.indexOf(providerId);
+        return index < 0 ? [] : slotOrder.slice(index).filter(id => configuredSlots.has(id));
+      };
+      const originalProviderId = selected?.providerId || 'groq';
+      const initialChainLength = chainShape(originalProviderId).length;
+      const routingBudgetMs = initialChainLength >= 3 ? 25_000 : initialChainLength === 2 ? 31_000 : 33_000;
+      const attemptTimeout = (providerId, fallbackAttempt = false) => {
+        const chainLength = chainShape(providerId).length;
+        const cap = chainLength >= 3 ? 8_000 : chainLength === 2 || fallbackAttempt ? 15_000 : 30_000;
+        const remaining = routingBudgetMs - (performance.now() - routeStarted) - 1_500;
+        return remaining < 1_000 ? null : Math.min(cap, remaining);
+      };
+      const invoke = async (config, fallbackAttempt = false) => {
+        if (!lease || !roundId) throw Object.assign(new Error('The strongroom request lease expired. Retry this saved request.'), { status: 503, providerCode: 'round_lease_lost', providerAttempted: false });
+        const leaseRow = await get('SELECT token FROM round_locks WHERE round_id=? AND token=? AND expires>? ', roundId, lease, Date.now());
+        const configRow = await get('SELECT config FROM rounds WHERE id=?', roundId);
+        if (!leaseRow || !configRow || (typeof expectedConfig === 'string' && configRow.config !== expectedConfig)) throw Object.assign(new Error('The strongroom request lease expired. Retry this saved request.'), { status: 503, providerCode: 'round_lease_lost', providerAttempted: false });
+        const timeoutMs = inceptionCapacity.enabled ? attemptTimeout(config.providerId || 'groq', fallbackAttempt) : completionInput.timeoutMs;
+        if (inceptionCapacity.enabled && timeoutMs === null) throw Object.assign(new Error('The model request exceeded its safe routing window. Retry the saved request.'), { status: 504, providerCode: 'timeout', providerAttempted: false });
+        return instrumentedCompletion({ ...completionInput, config, ...(timeoutMs ? { timeoutMs } : {}) });
+      };
       const switchProvider = async reason => {
         if (!inceptionCapacity.enabled || !roundId || !lease) return null;
-        const fallback = await inceptionCapacity.fallbackForOngoing();
+        const currentId = selected?.providerId || 'groq';
+        const fallback = await inceptionCapacity.fallbackForOngoing(currentId, roundId);
         if (!fallback) return null;
+        if (attemptTimeout(fallback.providerId, true) === null) { await inceptionCapacity.releaseReservation(fallback.capacityReservationId); return null; }
         const saved = await get('SELECT config FROM rounds WHERE id=?', roundId);
-        if (!saved) return null;
-        if (typeof expectedRoundConfig === 'string' && saved.config !== expectedRoundConfig) return null;
+        if (!saved || (typeof expectedConfig === 'string' && saved.config !== expectedConfig)) { await inceptionCapacity.releaseReservation(fallback.capacityReservationId); return null; }
         let frozen;
-        try { frozen = JSON.parse(saved.config); } catch { return null; }
-        try { inceptionCapacity.credentialsForFrozen(frozen); } catch { return null; }
-        if (frozen.providerId !== 'groq' && !( !frozen.providerId && frozen.baseUrl === provider.baseUrl && frozen.model === provider.model)) return null;
+        try { frozen = JSON.parse(saved.config); } catch { await inceptionCapacity.releaseReservation(fallback.capacityReservationId); return null; }
+        try { inceptionCapacity.credentialsForFrozen(frozen); } catch { await inceptionCapacity.releaseReservation(fallback.capacityReservationId); return null; }
+        if ((frozen.providerId || 'groq') !== currentId) { await inceptionCapacity.releaseReservation(fallback.capacityReservationId); return null; }
         const next = { providerId: fallback.providerId, model: fallback.model, baseUrl: fallback.baseUrl,
           ...(frozen.reasoningEffort ? { reasoningEffort: frozen.reasoningEffort } : {}),
           ...(frozen.selectionReason ? { selectionReason: frozen.selectionReason } : {}),
+          ...(frozen.initialSelection ? { initialSelection: frozen.initialSelection } : {}),
           ...(Number.isFinite(frozen.selectionCheckedAt) ? { selectionCheckedAt: frozen.selectionCheckedAt } : {}),
-          ...(typeof frozen.capacityReservationId === 'string' ? { capacityReservationId: frozen.capacityReservationId } : {}),
-          providerTransition: [{ from: { providerId: frozen.providerId || 'groq', model: frozen.model }, to: { providerId: fallback.providerId, model: fallback.model }, at: Date.now(), reason, role: completionInput.metricsContext?.kind === 'judge' ? 'judge' : 'target' }] };
+          ...(typeof fallback.capacityReservationId === 'string' ? { capacityReservationId: fallback.capacityReservationId } : {}),
+          providerTransition: [...(Array.isArray(frozen.providerTransition) ? frozen.providerTransition : []), { from: { providerId: frozen.providerId || 'groq', model: frozen.model }, to: { providerId: fallback.providerId, model: fallback.model }, at: Date.now(), reason, role: completionInput.metricsContext?.kind === 'judge' ? 'judge' : 'target' }].slice(0, 2) };
         const changed = await run('UPDATE rounds SET config=? WHERE id=? AND config=? AND EXISTS (SELECT 1 FROM round_locks WHERE round_id=? AND token=? AND expires>?)', JSON.stringify(next), roundId, saved.config, roundId, lease, Date.now());
-        if (changed.changes !== 1) return null;
-        try { await inceptionCapacity.releaseRoundReservation(roundId); } catch { /* A later Gemma request or review retries idempotent reservation cleanup. */ }
+        if (changed.changes !== 1) { await inceptionCapacity.releaseReservation(fallback.capacityReservationId); return null; }
+        expectedConfig = JSON.stringify(next);
+        selected = fallback;
+        try {
+          await inceptionCapacity.releaseStaleSlotReservation(roundId, currentId);
+        } catch { /* A later request or review retries idempotent reservation cleanup. */ }
         return { ...fallback };
       };
-      if (inceptionCapacity.enabled && (selected?.providerId === 'groq' || (!selected?.providerId && selected?.baseUrl === provider.baseUrl))) {
-        if (await inceptionCapacity.activeCooldown('groq')) {
-          const next = await switchProvider('primary_cooldown');
+      if (inceptionCapacity.enabled && ['groq', 'groq-secondary'].includes(selected?.providerId || 'groq')) {
+        if (await inceptionCapacity.activeCooldown(selected?.providerId || 'groq')) {
+          const next = await switchProvider((selected?.providerId || 'groq') === 'groq' ? 'primary_cooldown' : 'secondary_cooldown');
           if (next) selected = next;
-          else throw Object.assign(new Error('The model service is temporarily rate limited. Your prompt is saved; wait before trying again.'), { status: 429, providerCode: 'rate_limited', rateLimitScope: 'unknown', retryAfterSeconds: await inceptionCapacity.cooldownRemaining('groq') || undefined });
+          else throw Object.assign(new Error('The model service is temporarily rate limited. Your prompt is saved; wait before trying again.'), { status: 429, providerCode: 'rate_limited', rateLimitScope: 'unknown', retryAfterSeconds: await inceptionCapacity.cooldownRemaining(selected?.providerId || 'groq') || undefined });
         }
       }
       const providerId = selected?.providerId || 'groq';
+      try { await inceptionCapacity.reconcileRoundReservations(roundId, providerId); } catch { /* The frozen slot remains authoritative; review/expiry retries cleanup. */ }
       if (providerId === 'google-gemini') try { await inceptionCapacity.releaseRoundReservation(roundId); } catch { /* Retry on the next request. */ }
       try {
-        const result = await instrumentedCompletion({ ...completionInput, config: selected, timeoutMs: selected.providerId === 'google-gemini' ? 30000 : inceptionCapacity.enabled ? 15000 : completionInput.timeoutMs });
+        const result = await invoke(selected);
         try { await inceptionCapacity.observe(providerId, { usage: result.usageDetails || { total: result.usage } }); } catch { /* Provider completion remains usable if telemetry storage is temporarily unavailable. */ }
         return result;
       } catch (error) {
-        try { await inceptionCapacity.observe(providerId, { error }); } catch { /* Capacity telemetry must not replace the provider failure. */ }
-        if (providerId === 'groq' && inceptionCapacity.enabled && ['rate_limited', 'timeout', 'provider_unavailable', 'provider_auth', 'empty_response'].includes(error.providerCode)) {
+        if (error.providerAttempted !== false) try { await inceptionCapacity.observe(providerId, { error }); } catch { /* Capacity telemetry must not replace the provider failure. */ }
+        if (['groq', 'groq-secondary'].includes(providerId) && inceptionCapacity.enabled && ['rate_limited', 'timeout', 'provider_unavailable', 'provider_auth', 'empty_response'].includes(error.providerCode)) {
           const next = await switchProvider(error.providerCode);
           if (next) {
             try {
-              const result = await instrumentedCompletion({ ...completionInput, config: next, timeoutMs: 15000 });
+              const result = await invoke(next, true);
               try { await inceptionCapacity.observe(next.providerId, { usage: result.usageDetails || { total: result.usage } }); } catch { /* Capacity telemetry must not replace a successful reply. */ }
               return result;
             } catch (fallbackError) {
-              try { await inceptionCapacity.observe(next.providerId, { error: fallbackError }); } catch { /* Capacity telemetry must not replace the provider failure. */ }
+              if (fallbackError.providerAttempted !== false) try { await inceptionCapacity.observe(next.providerId, { error: fallbackError }); } catch { /* Capacity telemetry must not replace the provider failure. */ }
+              if (next.providerId === 'groq-secondary' && ['rate_limited', 'timeout', 'provider_unavailable', 'provider_auth', 'empty_response'].includes(fallbackError.providerCode)) {
+                const final = await switchProvider(fallbackError.providerCode);
+                if (final) {
+                  try {
+                    const result = await invoke(final, true);
+                    try { await inceptionCapacity.observe(final.providerId, { usage: result.usageDetails || { total: result.usage } }); } catch { /* telemetry is best effort */ }
+                    return result;
+                  } catch (finalError) {
+                    if (finalError.providerAttempted !== false) try { await inceptionCapacity.observe(final.providerId, { error: finalError }); } catch { /* telemetry is best effort */ }
+                    throw finalError;
+                  }
+                }
+              }
               throw fallbackError;
             }
           }

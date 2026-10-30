@@ -188,6 +188,38 @@ test('feature flag off preserves the configured Groq selection even when fallbac
   } finally { store.db.close(); }
 });
 
+test('secondary Groq is independently budgeted, pinned to Groq, and selected after only primary cooldown', async () => {
+  const store = openStore(':memory:'), at = Date.now();
+  const env = { INCEPTION_AUTO_PROVIDER: 'true', GROQ_SECONDARY_API_KEY: 'secondary-fixture-key', GEMINI_API_KEY: 'gemini-secret', INCEPTION_GROQ_DAILY_TOKEN_BUDGET: '20000', INCEPTION_GROQ_SECONDARY_DAILY_TOKEN_BUDGET: '30000' };
+  const capacity = inceptionProviderCapacity({ store, primary, env, now: () => at });
+  try {
+    await store.run('INSERT INTO inception_provider_health (provider_id,observed_at,blocked_until) VALUES (?,?,?)', 'groq', at, at + 60_000);
+    const selection = await capacity.selectForStart();
+    assert.equal(selection.config.providerId, 'groq-secondary');
+    assert.equal(selection.config.baseUrl, 'https://api.groq.com/openai/v1');
+    assert.equal(selection.config.model, primary.model);
+    assert.equal(JSON.stringify(selection.config).includes('secondary-fixture-key'), false);
+    assert.equal(capacity.credentialsForFrozen(selection.config).apiKey, 'secondary-fixture-key');
+    assert.equal(capacity.credentialsForFrozen(selection.config).baseUrl, 'https://api.groq.com/openai/v1');
+    assert.throws(() => capacity.credentialsForFrozen({ ...selection.config, baseUrl: 'https://example.test/v1' }), error => error.providerCode === 'provider_configuration_changed');
+    assert.equal((await store.get('SELECT reserved_tokens FROM inception_provider_health WHERE provider_id=?', 'groq')).reserved_tokens || 0, 0);
+    assert.equal((await store.get('SELECT reserved_tokens FROM inception_provider_health WHERE provider_id=?', 'groq-secondary')).reserved_tokens, 10_000);
+    const status = await capacity.status();
+    assert.equal(status.providers.groq.applicationDailyBudget, 20_000);
+    assert.equal(status.providers['groq-secondary'].applicationDailyBudget, 30_000);
+    await capacity.releaseReservation(selection.reservationId);
+  } finally { store.db.close(); }
+});
+
+test('duplicate secondary credentials are not represented as an extra capacity slot', async () => {
+  const store = openStore(':memory:');
+  try {
+    const capacity = inceptionProviderCapacity({ store, primary, env: { INCEPTION_AUTO_PROVIDER: 'true', GROQ_SECONDARY_API_KEY: primary.apiKey, GEMINI_API_KEY: 'gemini-secret' } });
+    assert.equal((await capacity.status()).providers['groq-secondary'].configured, false);
+    assert.equal((await capacity.status()).selectionPolicy.providerOrder.includes('groq-secondary'), false);
+  } finally { store.db.close(); }
+});
+
 test('concurrent starts reserve Groq capacity once and account for usage after the observed snapshot', async () => {
   const store = openStore(':memory:');
   let clock = Date.now();
