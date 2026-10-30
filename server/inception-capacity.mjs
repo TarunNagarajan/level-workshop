@@ -250,13 +250,15 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
     for (const reservation of reservations) if (reservation.provider_id !== providerId || reservation.reservation_id !== activeReservationId) await releaseReservation(reservation.reservation_id);
   }
 
-  async function status() {
-    await releaseExpiredReservations();
+  async function status({ readOnly = false } = {}) {
+    if (!readOnly) await releaseExpiredReservations();
     const list = await all('SELECT provider_id, observed_at, last_success_at, blocked_until, last_error_code, daily_limit, daily_used, daily_observed_at, app_tokens_today, app_usage_day, failed_calls_today, failed_calls_day, app_tokens_after_observation, reserved_tokens FROM inception_provider_health WHERE provider_id IN (?,?,?)', GROQ_ID, SECONDARY_GROQ_ID, GOOGLE_ID);
     const at = now(), today = dateKey(at);
+    const liveReservations = readOnly ? await all('SELECT provider_id,SUM(tokens) AS tokens FROM inception_provider_reservations WHERE expires_at>? GROUP BY provider_id', at) : [];
+    const liveReserved = new Map(liveReservations.map(row => [row.provider_id, Number(row.tokens || 0)]));
     const groq = list.find(row => row.provider_id === GROQ_ID);
     const applicationTokensToday = groq?.app_usage_day === today ? Number(groq.app_tokens_today || 0) : 0;
-    const activeReservedTokens = Number(groq?.reserved_tokens || 0);
+    const activeReservedTokens = readOnly ? (liveReserved.get(GROQ_ID) || 0) : Number(groq?.reserved_tokens || 0);
     const configuredBudgets = [primary.apiKey ? appBudget : null, secondary ? secondaryBudget : null].filter(item => item?.valid).map(item => item.value);
     const expectedBudgetCount = Number(Boolean(primary.apiKey)) + Number(Boolean(secondary));
     const planningBudget = configuredBudgets.reduce((sum, value) => sum + value, 0);
@@ -264,7 +266,7 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
       const item = list.find(row => row.provider_id === id);
       return sum + (item?.app_usage_day === today ? Number(item.app_tokens_today || 0) : 0);
     }, 0);
-    const plannedReservations = [GROQ_ID, SECONDARY_GROQ_ID].reduce((sum, id) => sum + Number(list.find(row => row.provider_id === id)?.reserved_tokens || 0), 0);
+    const plannedReservations = [GROQ_ID, SECONDARY_GROQ_ID].reduce((sum, id) => sum + (readOnly ? (liveReserved.get(id) || 0) : Number(list.find(row => row.provider_id === id)?.reserved_tokens || 0)), 0);
     return {
       featureEnabled: flagEnabled,
       selectionPolicy: { primary: GROQ_ID, fallback: GOOGLE_ID, providerOrder: routingEnabled ? [GROQ_ID, SECONDARY_GROQ_ID, GOOGLE_ID].filter(id => id !== SECONDARY_GROQ_ID || Boolean(secondary)) : [GROQ_ID], reserveTokens: RESERVE, quotaObservationFreshMs: QUOTA_FRESH_MS, unknownPrimaryHeadroomSelects: GROQ_ID },
@@ -286,7 +288,7 @@ export function inceptionProviderCapacity({ store, primary, env = process.env, n
         const dailyFresh = quotaAge !== null && quotaAge <= QUOTA_FRESH_MS && at >= Number(item.daily_observed_at) && item.daily_limit != null && item.daily_used != null;
         const observedRemaining = dailyFresh ? Math.max(0, Number(item.daily_limit) - Number(item.daily_used)) : null;
         const appAfter = dailyFresh ? Number(item.app_tokens_after_observation || 0) : null;
-        const reserved = Number(item?.reserved_tokens || 0);
+        const reserved = readOnly ? (liveReserved.get(id) || 0) : Number(item?.reserved_tokens || 0);
         return [id, {
           configured: id === GROQ_ID ? Boolean(primary.apiKey) : id === SECONDARY_GROQ_ID ? Boolean(secondary) : Boolean(env.GEMINI_API_KEY),
           model: id === GROQ_ID ? primary.model : id === SECONDARY_GROQ_ID ? secondary?.model || primary.model : GEMINI_MODEL,
