@@ -99,7 +99,7 @@ export function createCollectionModelServices({ store, provider, completion, met
       const rawSource = assignment?.source || round?.source;
       const source = ({ 'collection-participant':'participant','collection-preview':'preview','reference-research-preview':'preview','reference-research':'participant','reference-blind':'participant','blind':'participant' })[rawSource] || rawSource || null;
       const metricsContext = { kind: 'round', roundId: row.id, userId: actor?.id || null, userRole: actor?.role || null, source, versionId: row.version_id, collectionId: assignment?.collection_id || null, profileId: assignment?.profile_id || profileId || null };
-      const lockContext = roundLockToken ? { roundLockToken } : {};
+      const lockContext = roundLockToken ? { roundLockToken, roundConfig: row.config } : {};
       if (!assignment) return { result: await completion({ config: configOverride || { ...config, apiKey: provider.apiKey }, system, messages, temperature, metricsContext, ...lockContext }), callId: null };
       const callId = id(), startedAt = Date.now();
       const context = { baseUrl: safeBaseUrl(config.baseUrl), body: buildCompletionBody({ config, system, messages, temperature }) };

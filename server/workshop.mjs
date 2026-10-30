@@ -96,7 +96,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
     const inceptionCompletion = async input => {
       const inceptionCall = input.metricsContext?.source === 'inception-play';
       if (!inceptionCall) return instrumentedCompletion(input);
-      const { roundLockToken: lease, ...completionInput } = input;
+      const { roundLockToken: lease, roundConfig: expectedRoundConfig, ...completionInput } = input;
       let selected = completionInput.config;
       const roundId = completionInput.metricsContext?.roundId;
       const switchProvider = async reason => {
@@ -105,6 +105,7 @@ export function createWorkshop({ store, provider = modelConfig(), completion = c
         if (!fallback) return null;
         const saved = await get('SELECT config FROM rounds WHERE id=?', roundId);
         if (!saved) return null;
+        if (typeof expectedRoundConfig === 'string' && saved.config !== expectedRoundConfig) return null;
         let frozen;
         try { frozen = JSON.parse(saved.config); } catch { return null; }
         try { inceptionCapacity.credentialsForFrozen(frozen); } catch { return null; }

@@ -111,39 +111,55 @@ test('a clean database creates only revision 2 and selects Standard by default',
   } finally { await fixture.close(); }
 });
 
-test('an ongoing Inception target transparently switches from Groq to Gemma and saves one idempotent turn', async () => {
+test('an ongoing Inception target transparently switches from Groq to Gemma and saves one idempotent turn', async t => {
+  for (const adapter of ['auto', 'pglite']) await t.test(adapter, async () => {
   const calls = [];
-  const fixture = await harness({ env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-groq-key' }, completion: async input => {
+  const fixture = await harness({ adapter, env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-groq-key' }, completion: async input => {
     calls.push(input);
-    if (input.config.providerId === 'groq') throw Object.assign(new Error('rate limit'), { providerCode: 'rate_limited', status: 429, rateLimitScope: 'requests_minute', retryAfterSeconds: 30 });
+    if (input.responseSchema) return { text: JSON.stringify({ verdict: 'uncertain', reason: 'The saved conversation is inconclusive.', evidence: [] }), model: input.config.model, latencyMs: 1, usage: 3 };
+    if (input.config.providerId === 'groq' && calls.filter(call => !call.responseSchema && call.config.providerId === 'groq').length === 2) throw Object.assign(new Error('rate limit'), { providerCode: 'rate_limited', status: 429, rateLimitScope: 'requests_minute', retryAfterSeconds: 30 });
+    if (input.config.providerId === 'groq') return { text: 'An earlier saved reply.', model: input.config.model, latencyMs: 1, usage: 3, usageDetails: { inputTokens: 2, outputTokens: 1, totalTokens: 3 } };
     return { text: 'A reply from the fallback.', model: input.config.model, latencyMs: 1, usage: 3, usageDetails: { inputTokens: 2, outputTokens: 1, totalTokens: 3 } };
   } });
   try {
     const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie);
     assert.equal(started.status, 201);
-    const roundId = started.body.round.id, requestId = crypto.randomUUID();
+    const roundId = started.body.round.id, priorId = crypto.randomUUID(), requestId = crypto.randomUUID();
+    const prior = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Earlier question?', requestId: priorId } });
+    assert.equal(prior.status, 200);
     const reply = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'What do you remember?', requestId } });
     assert.equal(reply.status, 200, JSON.stringify(reply.body));
-    assert.deepEqual(calls.map(call => call.config.providerId), ['groq', 'google-gemini']);
-    assert.deepEqual(calls[0].messages, calls[1].messages, 'fallback receives the identical opening, transcript and current submission');
-    assert.equal(reply.body.messages.filter(message => message.role === 'user').length, 1, 'the submitted user message is saved once');
+    assert.deepEqual(calls.map(call => call.config.providerId), ['groq', 'groq', 'google-gemini']);
+    assert.deepEqual(calls[1].messages, calls[2].messages, 'fallback receives the identical prior transcript and current submission');
+    assert.ok(calls[1].messages.some(message => message.content === 'An earlier saved reply.'));
+    assert.equal(reply.body.messages.filter(message => message.role === 'user' && message.content === 'What do you remember?').length, 1, 'the submitted user message is saved once');
     assert.equal(reply.body.messages.filter(message => message.content === 'A reply from the fallback.').length, 1, 'the fallback assistant reply is saved once');
     assert.equal(reply.body.messages.at(-1).model, GEMINI_MODEL);
     const savedConfig = JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config);
     assert.equal(savedConfig.providerId, 'google-gemini');
     assert.equal(savedConfig.providerTransition.at(-1).reason, 'rate_limited');
-    const metrics = await fixture.store.all('SELECT requested_model,provider_host,status,transcript_saved FROM metrics_model_calls WHERE round_id=? ORDER BY started_at', roundId);
-    assert.deepEqual(metrics.map(row => [row.requested_model, row.provider_host, row.status, row.transcript_saved]), [['openai/gpt-oss-20b', 'api.groq.com', 'failed', 0], [GEMINI_MODEL, 'generativelanguage.googleapis.com', 'succeeded', 1]]);
+    assert.equal((await fixture.store.get('SELECT COUNT(*) AS count FROM inception_provider_reservations WHERE round_id=?', roundId)).count, 0, 'switch releases the primary reservation on both SQLite and PostgreSQL');
+    const metrics = await fixture.store.all('SELECT requested_model,provider_host,status,transcript_saved FROM metrics_model_calls WHERE round_id=?', roundId);
+    assert.equal(metrics.filter(row => row.requested_model === 'openai/gpt-oss-20b' && row.status === 'succeeded' && row.transcript_saved === 1).length, 1);
+    assert.equal(metrics.filter(row => row.requested_model === 'openai/gpt-oss-20b' && row.status === 'failed' && row.transcript_saved === 0).length, 1);
+    assert.equal(metrics.filter(row => row.requested_model === GEMINI_MODEL && row.status === 'succeeded' && row.transcript_saved === 1).length, 1);
     const second = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'And what else?', requestId: crypto.randomUUID() } });
     assert.equal(second.status, 200);
-    assert.equal(calls[2].config.providerId, 'google-gemini', 'later turns use the persisted fallback');
-    assert.ok(calls[2].messages.some(message => message.content === 'What do you remember?'));
-    assert.ok(calls[2].messages.some(message => message.content === 'A reply from the fallback.'));
+    assert.equal(calls[3].config.providerId, 'google-gemini', 'later turns use the persisted fallback');
+    assert.ok(calls[3].messages.some(message => message.content === 'What do you remember?'));
+    assert.ok(calls[3].messages.some(message => message.content === 'A reply from the fallback.'));
+    assert.equal((await fixture.request(`/inception/rounds/${roundId}/finish`, { method: 'POST', cookie, body: { answer: '' } })).status, 200);
+    const review = await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie, body: {} });
+    assert.equal(review.status, 200);
+    assert.equal(calls[4].config.providerId, 'google-gemini', 'the judge reads and uses the persisted Gemma selection');
+    const finalGemmaMetrics = await fixture.store.get("SELECT COUNT(*) AS count FROM metrics_model_calls WHERE round_id=? AND requested_model=? AND status='succeeded' AND transcript_saved=1", roundId, GEMINI_MODEL);
+    assert.equal(finalGemmaMetrics.count, 3, 'fallback target, later target and judge successful saves are marked individually');
     const retry = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'What do you remember?', requestId } });
     assert.equal(retry.status, 200);
-    assert.equal(calls.length, 3, 'receipt recovery does not call either provider again');
-    assert.equal((await fixture.store.get('SELECT COUNT(*) AS count FROM durable_submissions WHERE round_id=?', roundId)).count, 2);
+    assert.equal(calls.length, 5, 'receipt recovery does not call either provider again');
+    assert.equal((await fixture.store.get('SELECT COUNT(*) AS count FROM durable_submissions WHERE round_id=?', roundId)).count, 3);
   } finally { await fixture.close(); }
+  });
 });
 
 test('an Inception judge can switch to Gemma after a successful Groq target without weakening review validation', async () => {
@@ -199,6 +215,138 @@ test('missing or cooling down Gemma preserves the failed Groq receipt without sw
       const config = JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config);
       assert.equal(config.providerId, 'groq');
       assert.equal(config.providerTransition, undefined);
+    } finally { await fixture.close(); }
+  });
+});
+
+test('the automatic fallback allowlist retries timeout, outage, authentication failure and empty response once', async t => {
+  for (const code of ['timeout', 'provider_unavailable', 'provider_auth', 'empty_response']) await t.test(code, async () => {
+    const calls = [];
+    const fixture = await harness({ env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-groq-key' }, completion: async input => {
+      calls.push(input);
+      if (input.config.providerId === 'groq') throw Object.assign(new Error(code), { providerCode: code, status: code === 'provider_auth' ? 502 : 503 });
+      return { text: 'Gemma reply.', model: input.config.model, latencyMs: 1, usage: 2 };
+    } });
+    try {
+      const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+      const response = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Continue.', requestId: crypto.randomUUID() } });
+      assert.equal(response.status, 200, JSON.stringify(response.body));
+      assert.deepEqual(calls.map(input => input.config.providerId), ['groq', 'google-gemini']);
+      assert.equal(JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config).providerTransition[0].reason, code);
+      assert.equal((await fixture.store.get("SELECT COUNT(*) AS count FROM durable_submissions WHERE round_id=? AND status='succeeded' AND transcript_saved=1", roundId)).count, 1);
+    } finally { await fixture.close(); }
+  });
+});
+
+test('refusals, provider rejections and trusted-host tampering never authorize fallback', async t => {
+  for (const scenario of ['refusal', 'rejected', 'tampered']) await t.test(scenario, async () => {
+    const calls = [];
+    const fixture = await harness({ env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-groq-key' }, completion: async input => {
+      calls.push(input);
+      if (scenario === 'rejected') throw Object.assign(new Error('rejected'), { providerCode: 'provider_rejected', status: 400 });
+      return { text: 'I cannot provide that information.', model: input.config.model, latencyMs: 1, usage: 2 };
+    } });
+    try {
+      const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+      if (scenario === 'tampered') {
+        const config = JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config);
+        config.baseUrl = 'https://attacker.invalid/v1';
+        await fixture.store.run('UPDATE rounds SET config=? WHERE id=?', JSON.stringify(config), roundId);
+      }
+      const response = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Continue.', requestId: crypto.randomUUID() } });
+      if (scenario === 'refusal') {
+        assert.equal(response.status, 200);
+        assert.equal(response.body.messages.at(-1).content, 'I cannot provide that information.');
+      } else assert.notEqual(response.status, 200);
+      assert.equal(calls.length, scenario === 'tampered' ? 0 : 1);
+      const config = JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config);
+      assert.equal(config.providerTransition, undefined);
+    } finally { await fixture.close(); }
+  });
+});
+
+test('if both providers fail, the failed receipt reports Gemma retry metadata and appends no partial turn', async () => {
+  const calls = [];
+  const fixture = await harness({ env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-groq-key' }, completion: async input => {
+    calls.push(input.config.providerId);
+    throw Object.assign(new Error('limited'), { providerCode: 'rate_limited', status: 429, rateLimitScope: 'requests_minute', retryAfterSeconds: input.config.providerId === 'groq' ? 30 : 120 });
+  } });
+  try {
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id, requestId = crypto.randomUUID();
+    const response = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Do not partially save me.', requestId } });
+    assert.equal(response.status, 429);
+    assert.equal(response.body.failureCode, 'rate_limited');
+    assert.equal(response.body.retryAfterSeconds, 120);
+    assert.equal(response.body.rateLimitScope, 'requests_minute');
+    assert.deepEqual(calls, ['groq', 'google-gemini']);
+    const receipt = await fixture.store.get('SELECT status,transcript_saved FROM durable_submissions WHERE round_id=?', roundId);
+    assert.deepEqual([receipt.status, receipt.transcript_saved], ['failed', 0]);
+    const round = await fixture.store.get('SELECT messages FROM rounds WHERE id=?', roundId);
+    assert.equal(JSON.parse(round.messages).some(message => message.content === 'Do not partially save me.'), false);
+    const duplicate = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Do not partially save me.', requestId } });
+    assert.equal(duplicate.status, 409);
+    assert.deepEqual(calls, ['groq', 'google-gemini']);
+  } finally { await fixture.close(); }
+});
+
+test('judge schema validation failure after a successful Groq response does not retry on Gemma', async () => {
+  const calls = [];
+  const fixture = await harness({ env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-groq-key' }, completion: async input => {
+    calls.push(input.config.providerId);
+    return { text: input.responseSchema ? '{ malformed judge output' : 'A saved target reply.', model: input.config.model, latencyMs: 1, usage: 2 };
+  } });
+  try {
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+    assert.equal((await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Continue.', requestId: crypto.randomUUID() } })).status, 200);
+    assert.equal((await fixture.request(`/inception/rounds/${roundId}/finish`, { method: 'POST', cookie, body: { answer: '' } })).status, 200);
+    const review = await fixture.request(`/inception/rounds/${roundId}/review`, { method: 'POST', cookie, body: {} });
+    assert.equal(review.body.review.status, 'unavailable');
+    assert.deepEqual(calls, ['groq', 'groq']);
+    assert.equal(JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config).providerTransition, undefined);
+  } finally { await fixture.close(); }
+});
+
+test('an existing Groq cooldown bypasses Groq and switches the active round before requesting', async () => {
+  const calls = [];
+  const fixture = await harness({ env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-groq-key' }, completion: async input => { calls.push(input.config.providerId); return { text: 'Gemma reply.', model: input.config.model, latencyMs: 1, usage: 2 }; } });
+  try {
+    const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie), roundId = started.body.round.id;
+    await fixture.store.run("INSERT INTO inception_provider_health(provider_id,observed_at,blocked_until) VALUES('groq',?,?) ON CONFLICT(provider_id) DO UPDATE SET blocked_until=excluded.blocked_until", Date.now(), Date.now() + 60000);
+    const response = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Continue.', requestId: crypto.randomUUID() } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls, ['google-gemini']);
+    const config = JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config);
+    assert.equal(config.providerTransition[0].reason, 'primary_cooldown');
+  } finally { await fixture.close(); }
+});
+
+test('round-lock expiry or a newer round-config write defeats failover CAS without a Gemma call', async t => {
+  for (const race of ['stolen_lock', 'newer_config']) await t.test(race, async () => {
+    const calls = [];
+    let fixture, roundId;
+    fixture = await harness({ env: { INCEPTION_AUTO_PROVIDER: 'true', GEMINI_API_KEY: 'fixture-gemini-key' }, provider: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'fixture-groq-key' }, completion: async input => {
+      calls.push(input.config.providerId);
+      if (input.config.providerId === 'groq') {
+        if (race === 'stolen_lock') await fixture.store.run('UPDATE round_locks SET token=?,expires=? WHERE round_id=?', 'new-owner-token', Date.now() + 30000, roundId);
+        else {
+          const saved = await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId), config = JSON.parse(saved.config);
+          config.selectionReason = 'newer-selection';
+          await fixture.store.run('UPDATE rounds SET config=? WHERE id=?', JSON.stringify(config), roundId);
+        }
+        throw Object.assign(new Error('rate limited'), { providerCode: 'rate_limited', status: 429, retryAfterSeconds: 45 });
+      }
+      return { text: 'unexpected', model: input.config.model, latencyMs: 1, usage: 1 };
+    } });
+    try {
+      const cookie = await setupOwner(fixture.request), started = await start(fixture.request, cookie); roundId = started.body.round.id;
+      const response = await fixture.request(`/rounds/${roundId}/messages`, { method: 'POST', cookie, body: { content: 'Must fail closed.', requestId: crypto.randomUUID() } });
+      assert.notEqual(response.status, 200);
+      assert.deepEqual(calls, ['groq']);
+      const config = JSON.parse((await fixture.store.get('SELECT config FROM rounds WHERE id=?', roundId)).config);
+      assert.equal(config.providerTransition, undefined);
+      if (race === 'newer_config') assert.equal(config.selectionReason, 'newer-selection', 'CAS does not overwrite a newer saved configuration');
+      else assert.equal((await fixture.store.get('SELECT token FROM round_locks WHERE round_id=?', roundId)).token, 'new-owner-token');
+      assert.equal((await fixture.store.get('SELECT COUNT(*) AS count FROM durable_submissions WHERE round_id=? AND transcript_saved=1', roundId)).count, 0);
     } finally { await fixture.close(); }
   });
 });
