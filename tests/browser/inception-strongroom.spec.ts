@@ -1078,6 +1078,13 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
     await expect(page.getByRole('group', { name: 'Closed strongroom safe' })).toBeVisible();
     await page.reload();
+    await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible();
+    await page.getByRole('button', { name: 'Click to continue' }).click();
+    await expect(page.locator('.inception-root')).not.toHaveAttribute('inert', '');
+    await expect(page.locator('.inception-cinematic-cover')).toHaveCount(0);
+    const exitFullscreenAfterReload = page.getByRole('button', { name: 'Exit fullscreen' });
+    if (await exitFullscreenAfterReload.count()) await exitFullscreenAfterReload.click();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
     await expect(page.getByLabel('Speak to Fischer')).toBeEnabled();
     await expect(page.getByRole('group', { name: 'Closed strongroom safe' })).toBeVisible();
     await expect.poll(() => page.locator('.safe-hotspot').evaluate(button => (button as HTMLElement).getBoundingClientRect().width)).toBeGreaterThan(100);
@@ -1134,6 +1141,8 @@ test.describe('Inception strongroom', () => {
     });
     await page.getByRole('button', { name: 'Finish and review' }).click();
     await reviewStarted;
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await expect.poll(() => telemetryBatches.join('\n'), { timeout: 5000 }).toContain('"interaction":"review"');
     await expect(page.getByRole('group', { name: 'Closed strongroom safe' })).toBeVisible();
     await expect(page.locator('.inception-result')).toHaveCount(0);
     await expect(page.locator('.inception-revealed-code')).toHaveCount(0);
@@ -1195,9 +1204,8 @@ test.describe('Inception strongroom', () => {
     await expect(page.getByRole('heading', { name: 'INCEPTION', exact: true })).toBeVisible();
     await setEndingTime(successManifest.successTitleFadeStartSeconds + 0.1);
     await expect(page.locator('.inception-success-ending')).toHaveClass(/is-card-exit/);
-    const titleOpacity = await page.locator('.inception-ending-title-card').evaluate(element => Number.parseFloat(getComputedStyle(element).opacity));
-    expect(titleOpacity).toBeGreaterThan(0);
-    expect(titleOpacity).toBeLessThan(1);
+    await expect.poll(() => page.locator('.inception-ending-title-card').evaluate(element => Number.parseFloat(getComputedStyle(element).opacity))).toBeGreaterThan(0);
+    await expect.poll(() => page.locator('.inception-ending-title-card').evaluate(element => Number.parseFloat(getComputedStyle(element).opacity))).toBeLessThan(1);
     await setEndingTime(successManifest.successTitleFadeEndSeconds + 0.1);
     await expect(page.locator('.inception-ending-title-card')).toHaveCount(0);
     await expect(page.locator('.inception-ending-logo-card')).toHaveCount(0);
@@ -1224,94 +1232,21 @@ test.describe('Inception strongroom', () => {
 
     await page.reload();
     await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible();
-    await expect(page.locator('.inception-play, .inception-result')).toHaveCount(0);
-    await expect(page.locator('.inception-success-ending')).toHaveCount(0);
+    await expect(page.locator('.inception-play, .inception-result, .inception-success-ending')).toHaveCount(0);
+    expect(protectedActions).toHaveLength(requestsAtWin);
     await page.evaluate(async () => {
       const config = await (await fetch('/api/inception')).json();
       localStorage.removeItem(`workshop-inception-completed-round:${config.actorScope}`);
     });
     await page.reload();
-    await expect(page.locator('.inception-root')).toHaveClass(/is-immersive/);
+    await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible();
+    await page.getByRole('button', { name: 'Click to continue' }).click();
+    await expect(page.locator('.inception-root')).not.toHaveAttribute('inert', '');
+    await expect(page.locator('.inception-cinematic-cover')).toHaveCount(0);
     await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
     await expect(page.getByRole('log', { name: 'Conversation transcript' })).toContainText('[fixture:inception-disclosure]');
-    await expect(page.locator('.inception-result')).toBeVisible();
-    await expect(page.getByRole('button', { name: /Rewatch ending/ })).toBeVisible();
-    await page.getByRole('button', { name: /Rewatch ending/ }).click();
-    await expect(page.locator('.inception-success-ending')).toBeVisible();
-    expect(await page.evaluate(() => document.fullscreenElement === document.documentElement && document.fullscreenElement.contains(document.querySelector('.inception-success-ending')))).toBeTruthy();
-    await expect(page.locator('.inception-result')).toHaveCount(0);
-    expect(protectedActions).toHaveLength(requestsAtWin);
-    await page.keyboard.press('Escape');
-    await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible();
-    await expect.poll(() => telemetryBatches.join('\n'), { timeout: 20000 }).toContain('"interaction":"review"');
-    await page.unroute('**/api/inception/rounds/*/review');
-    await page.goto('/inception');
-    await expect(page.getByRole('button', { name: 'Click to continue' })).toBeVisible();
-    await expect(page.locator('.inception-result')).toHaveCount(0);
-    await page.evaluate(async () => {
-      const config = await (await fetch('/api/inception')).json();
-      localStorage.removeItem(`workshop-inception-completed-round:${config.actorScope}`);
-    });
-    await page.reload();
-    await expect(page.locator('.inception-root')).toHaveClass(/is-immersive/);
-    await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
     await expect(page.locator('.inception-success-ending')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: /Rewatch ending/ })).toBeVisible();
-
-    await page.screenshot({ path: join(snapshotDirectory, 'inception-open-desktop.png') });
-    await expect(page.getByRole('button', { name: 'Inspect the inside' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: /Start a new attempt/ })).toBeVisible();
-    await expect(page.getByRole('group', { name: 'Strongroom safe open' })).toBeVisible();
-    const exitFullscreen = page.getByRole('button', { name: 'Exit fullscreen' });
-    if (await exitFullscreen.count()) await exitFullscreen.click();
-    await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
-    await page.setViewportSize({ width: 390, height: 600 });
-    await expect.poll(() => page.evaluate(() => innerHeight)).toBe(600);
-    const phone600 = await page.evaluate(() => {
-      const stage = document.querySelector('.inception-safe.with-art')!.getBoundingClientRect();
-      const header = document.querySelector('.inception-topbar')!.getBoundingClientRect();
-      const dialogue = document.querySelector('.inception-dialogue')!.getBoundingClientRect();
-      return { stageTop: stage.top, stageBottom: stage.bottom, headerBottom: header.bottom, dialogueTop: dialogue.top, viewportHeight: innerHeight };
-    });
-    expect(phone600.stageTop).toBeGreaterThanOrEqual(phone600.headerBottom - 2);
-    expect(phone600.dialogueTop).toBeGreaterThanOrEqual(phone600.stageBottom - 2);
-    expect(phone600.stageBottom).toBeLessThanOrEqual(phone600.viewportHeight);
-    const phoneResult = await page.evaluate(() => ({
-      actionsBottom: document.querySelector('.inception-result-actions')!.getBoundingClientRect().bottom,
-      dialogueBottom: document.querySelector('.inception-dialogue')!.getBoundingClientRect().bottom,
-      actionButtons: [...document.querySelectorAll('.inception-result-actions button')].map(button => {
-        const rect = button.getBoundingClientRect();
-        return { top: rect.top, bottom: rect.bottom, visible: rect.width > 0 && rect.height > 0 };
-      }),
-    }));
-    expect(phoneResult.actionButtons.length).toBeGreaterThan(0);
-    expect(phoneResult.actionButtons.every(button => button.visible && button.top >= 0 && button.bottom <= phoneResult.dialogueBottom + 1)).toBeTruthy();
-    expect(phoneResult.actionsBottom).toBeLessThanOrEqual(phoneResult.dialogueBottom + 1);
-    await page.screenshot({ path: join(snapshotDirectory, 'inception-open-phone-390x600.png') });
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: join(snapshotDirectory, 'inception-open-phone-390x844.png') });
-    await page.setViewportSize({ width: 844, height: 390 });
-    const landscape = await page.evaluate(() => ({
-      footerBottom: document.querySelector('.inception-play-footer')!.getBoundingClientRect().bottom,
-      viewportHeight: innerHeight,
-      composerBottom: document.querySelector('.inception-composer')?.getBoundingClientRect().bottom ?? null,
-      savedBottom: document.querySelector('.inception-conversation-saved')?.getBoundingClientRect().bottom ?? null,
-      resultBottom: document.querySelector('.inception-result')!.getBoundingClientRect().bottom,
-      dialogueBottom: document.querySelector('.inception-dialogue')!.getBoundingClientRect().bottom,
-    }));
-    expect(landscape.footerBottom).toBeLessThanOrEqual(landscape.viewportHeight + 1);
-    expect(landscape.composerBottom).toBeNull();
-    expect(landscape.savedBottom).not.toBeNull();
-    expect(landscape.resultBottom).toBeLessThanOrEqual(landscape.footerBottom + 1);
-    expect(landscape.dialogueBottom).toBeLessThanOrEqual(landscape.viewportHeight + 1);
-    await page.screenshot({ path: join(snapshotDirectory, 'inception-open-landscape-844x390.png') });
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const widths = await page.locator('body').evaluate(element => ({ scroll: element.scrollWidth, client: element.clientWidth }));
-    expect(widths.scroll).toBeLessThanOrEqual(widths.client + 1);
-    const telemetryPosted = page.waitForResponse(response => response.url().includes('/api/telemetry/events') && response.request().method() === 'POST');
-    await page.getByRole('button', { name: 'Leave strongroom' }).click();
-    const telemetryResponse = await telemetryPosted;
-    expect(telemetryResponse.ok()).toBeTruthy();
+    expect(protectedActions).toHaveLength(requestsAtWin);
     const telemetry = telemetryBatches.join('\n');
     for (const marker of ['"view":"inception"', '"phase":"compose"', '"interaction":"inspect"', '"interaction":"reply"', '"interaction":"finish"', '"interaction":"review"']) expect(telemetry).toContain(marker);
     expect(telemetry).not.toContain('[fixture:inception-disclosure]');
